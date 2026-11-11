@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Jobber — Power House{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('settings') }}">Settings</a><span>/</span>Jobber</div>
+<div class="page-heading heading-actions">
+  <div><span class="eyebrow">Settings / Jobber</span><h1>Pull from Jobber</h1><p>Bring clients and jobs over from Jobber. Reading only: nothing is ever changed in Jobber. You see what will happen before anything is saved here.</p></div>
+  {% if connected %}<form method="POST" action="{{ url_for('jobber_pull') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if state.status == 'running' }}>⇩ Pull from Jobber</button></form>{% endif %}
+</div>
+
+{% if state.status == 'running' %}
+<section class="panel jobber-running" id="jobber-running">
+  <div class="release-spinner" aria-hidden="true"></div>
+  <div><strong>Reading from Jobber…</strong>
+    <ul class="release-log" id="jobber-log">{% for line in state.log %}<li>{{ line }}</li>{% endfor %}</ul>
+    <small class="muted">This page updates by itself. Large accounts can take a few minutes (Jobber limits how fast it answers).</small></div>
+</section>
+{% elif state.status == 'failed' %}
+<div class="panel release-error"><strong>The last pull did not finish.</strong> {{ state.error }}</div>
+{% endif %}
+
+{% if plan %}
+<section class="panel section-panel jobber-preview">
+  <div class="section-title"><div><span class="eyebrow">Step 2 · Review</span><h2>What an import will do</h2>
+    <p class="muted">Pulled {{ state.finished_at.replace('T', ' ') }} UTC{% if state.account %} from <strong>{{ state.account }}</strong>{% endif %} by {{ state.by }}. Nothing has been saved yet.</p></div></div>
+  <div class="jobber-counts">
+    <div><strong>{{ plan.counts.clients_new }}</strong><span>new clients</span></div>
+    <div><strong>{{ plan.counts.clients_link }}</strong><span>clients already here, linked<small>matched by email, phone or name; only blanks filled</small></span></div>
+    <div><strong>{{ plan.counts.clients_update }}</strong><span>clients refreshed<small>imported before, not edited here</small></span></div>
+    <div><strong>{{ plan.counts.jobs_new }}</strong><span>new jobs<small>{{ plan.counts.from_request }} from requests · {{ plan.counts.from_quote }} from quotes · {{ plan.counts.from_job }} from jobs</small></span></div>
+    <div><strong>{{ plan.counts.jobs_update }}</strong><span>jobs refreshed</span></div>
+    <div><strong>{{ plan.counts.clients_fill + plan.counts.jobs_fill }}</strong><span>edited here since the last pull<small>only blank fields are filled</small></span></div>
+  </div>
+  <div class="jobber-rules">
+    <div><span class="status-dot status-in_works"></span><strong>Requests</strong> become jobs <em>In the works</em> (a scheduled assessment becomes the site review).</div>
+    <div><span class="status-dot status-quoted"></span><strong>Quotes</strong> waiting on the client become <em>Quoted</em>; approved ones <em>Active</em>; archived ones <em>Completed</em> (declined).</div>
+    <div><span class="status-dot status-active"></span><strong>Jobs</strong> become <em>Active</em> (scheduled or in progress) or <em>Completed</em>, with their dates, total, line items, visits and invoices.</div>
+    <div><span class="status-dot status-completed"></span>Converted and archived requests are left out: their quote or job carries them.</div>
+  </div>
+
+  <details class="jobber-list" open><summary>Clients <span class="muted">({{ plan.clients|length }})</span></summary>
+    <div class="item-table-wrap"><table class="item-table jobber-table"><thead><tr><th>Jobber client</th><th>Contact</th><th>Address</th><th>Will</th></tr></thead><tbody>
+    {% for c in plan.clients[:60] %}<tr><td><strong>{{ c.fields.first_name }} {{ c.fields.last_name }}</strong>{% if c.fields.company_name and c.fields.company_name != c.fields.first_name %}<small>{{ c.fields.company_name }}</small>{% endif %}</td>
+      <td>{{ c.fields.email or '—' }}<small>{{ c.fields.phone }}</small></td>
+      <td>{{ c.fields.address_line1 }}<small>{{ c.fields.city }}{% if c.fields.properties|length > 1 %} · {{ c.fields.properties|length }} addresses{% endif %}</small></td>
+      <td><span class="jobber-action action-{{ c.action }}">{{ {'new': 'Add', 'link': 'Link to ' ~ c.client.full_name, 'update': 'Refresh', 'fill': 'Fill blanks'}[c.action] }}</span>{% if c.why %}<small>{{ c.why }}</small>{% endif %}</td></tr>{% endfor %}
+    {% if plan.clients|length > 60 %}<tr><td colspan="4" class="muted">…and {{ plan.clients|length - 60 }} more.</td></tr>{% endif %}
+    </tbody></table></div>
+  </details>
+  <details class="jobber-list"><summary>Jobs <span class="muted">({{ plan.jobs|length }})</span></summary>
+    <div class="item-table-wrap"><table class="item-table jobber-table"><thead><tr><th>Title</th><th>From</th><th>Becomes</th><th>Amount</th><th>Will</th></tr></thead><tbody>
+    {% for j in plan.jobs[:80] %}<tr><td><strong>{{ j.fields.title }}</strong><small>{{ j.fields.address_line1 or 'no address' }}</small></td>
+      <td>{{ {'request': 'Request', 'quote': 'Quote #' ~ j.fields.get('number', ''), 'job': 'Job #' ~ j.fields.get('jobber_number', '')}[j.kind] }}</td>
+      <td>{{ status_labels.get(j.fields.status, j.fields.status) }}</td>
+      <td>{% set amount = j.fields.get('contract_amount') or j.fields.get('total') %}{{ '$%s'|format('{:,.2f}'.format(amount)) if amount else '—' }}</td>
+      <td><span class="jobber-action action-{{ j.action }}">{{ {'new': 'Add', 'update': 'Refresh', 'fill': 'Fill blanks'}[j.action] }}</span></td></tr>{% endfor %}
+    {% if plan.jobs|length > 80 %}<tr><td colspan="5" class="muted">…and {{ plan.jobs|length - 80 }} more.</td></tr>{% endif %}
+    </tbody></table></div>
+  </details>
+  {% if missing %}<details class="jobber-list"><summary>Fields this Jobber account's API did not offer <span class="muted">({{ missing|length }})</span></summary><p class="muted">Power House asked for these and Jobber's API version does not have them; everything else came over. Nothing to do.</p><p class="jobber-missing">{{ missing|join(', ') }}</p></details>{% endif %}
+
+  <form method="POST" action="{{ url_for('jobber_import') }}" class="jobber-import" onsubmit="return confirm('Import into Power House now? The database is backed up first.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-primary">Import into Power House</button>
+    <small class="muted">The database is backed up first (instance/backups/). Pulling and importing again later never makes duplicates.</small>
+  </form>
+</section>
+{% endif %}
+
+{% if last_import.at %}
+<section class="panel section-panel">
+  <span class="eyebrow">Last import</span>
+  <p>{{ last_import.at.replace('T', ' ') }} UTC by {{ last_import.by }}: {{ last_import.counts.clients_new }} new clients, {{ last_import.counts.jobs_new }} new jobs, {{ last_import.counts.clients_update + last_import.counts.clients_link + last_import.counts.jobs_update }} refreshed or linked.{% if last_import.backup %} Backup taken first: <code>{{ last_import.backup }}</code>.{% endif %}</p>
+</section>
+{% endif %}
+
+<section class="panel section-panel jobber-connection">
+  <div class="section-title"><div><span class="eyebrow">Step 1 · Connect</span><h2>Jobber connection</h2></div>
+    <span class="status-pill {{ 'status-active' if connected else 'status-completed' }}">{{ 'Connected' if connected else 'Not connected' }}</span></div>
+  {% if connected %}
+    <p>Connected{% if account.name %} to <strong>{{ account.name }}</strong>{% endif %}{% if account.by %} by {{ account.by }}{% endif %}. Power House only reads from Jobber.</p>
+    <form method="POST" action="{{ url_for('jobber_disconnect') }}" onsubmit="return confirm('Disconnect Jobber? Everything already imported stays.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-danger btn-small">Disconnect</button></form>
+  {% else %}
+    <ol class="jobber-steps">
+      <li>Sign in at <a href="https://developer.getjobber.com/" target="_blank" rel="noopener">developer.getjobber.com ↗</a> with your Jobber login and choose <strong>Create App</strong>.</li>
+      <li>Name it <em>Power House</em>. For the <strong>OAuth Callback URL</strong> paste:<code class="jobber-callback">{{ callback_url }}</code></li>
+      <li>Under <strong>Scopes</strong> tick read access for <strong>Clients</strong>, <strong>Requests</strong>, <strong>Quotes</strong>, <strong>Jobs</strong> and <strong>Invoices</strong> (read only is enough), then save.</li>
+      <li>Copy the app's <strong>Client ID</strong> and <strong>Client Secret</strong> into the boxes below and press <strong>Connect with Jobber</strong>. Jobber asks you to sign in and allow it once.</li>
+    </ol>
+  {% endif %}
+  <details {{ 'open' if not connected }}><summary class="muted">{{ 'App keys' if connected else 'Your Jobber app' }}</summary>
+    <form method="POST" action="{{ url_for('jobber_keys') }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Client ID<input name="client_id" value="{{ client_id }}" autocomplete="off" required></label>
+      <label>Client Secret<input type="password" name="client_secret" autocomplete="off" placeholder="{{ 'Saved — leave blank to keep it' if has_secret else '' }}" {{ '' if has_secret else 'required' }}></label>
+      <div class="wide"><button class="btn btn-primary">{{ 'Save and reconnect' if connected else 'Connect with Jobber' }}</button> <small class="muted">The secret and Jobber's sign-in are stored encrypted.</small></div>
+    </form>
+  </details>
+</section>
+
+{% if state.status == 'running' %}
+<script>
+(function () {
+  var log = document.getElementById('jobber-log');
+  function look() {
+    fetch('{{ url_for('jobber_status') }}', {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (d) {
+      if (log && d.log) { log.innerHTML = ''; d.log.forEach(function (line) { var li = document.createElement('li'); li.textContent = line; log.appendChild(li); }); }
+      if (d.status !== 'running') { window.location.reload(); } else { setTimeout(look, 2000); }
+    }).catch(function () { setTimeout(look, 4000); });
+  }
+  setTimeout(look, 1500);
+})();
+</script>
+{% endif %}
+{% endblock %}
