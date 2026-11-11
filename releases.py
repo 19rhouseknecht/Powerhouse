@@ -89,8 +89,9 @@ def gh(method, path, token, repo, body=None, raw=False, timeout=30):
     if status == 401:
         raise ReleaseError("GitHub did not accept the token (401). Make a new one and save it under Connection." + quoted, 401)
     if status == 403:
-        raise ReleaseError("GitHub refused the request (403)." + quoted + " The token needs Contents: Read and Metadata: Read "
-                           "on this repository (and Webhooks: Read and write for instant deploys).", 403)
+        raise ReleaseError("GitHub refused the request (403)." + quoted + " A classic token needs the repo scope (and "
+                           "admin:repo_hook for instant deploys); a fine-grained one needs Contents, Actions and Metadata: Read "
+                           "(and Webhooks: Read and write).", 403)
     if status == 404:
         raise ReleaseError("GitHub found nothing there (404): check the repository name and that the token can see it." + quoted, 404)
     if status >= 400:
@@ -145,13 +146,79 @@ def commit(token, repo, sha):
     return _commit_row(gh("GET", "/repos/{repo}/commits/%s" % sha, token, repo))
 
 
+# --------------------------------------------------------------------------- the "tests" gate
+CHECK_NAME = "tests"     # the job in .github/workflows/tests.yml; keep the names in step
+
+
+def _runs(token, repo, sha):
+    """The commit's "tests" runs as [{status, conclusion, at}]: its check runs, or, when the token may not
+    read checks (GitHub answers 403), the same result from Actions' workflow runs."""
+    try:
+        data = gh("GET", "/repos/{repo}/commits/%s/check-runs?check_name=%s&per_page=20" % (sha, CHECK_NAME), token, repo)
+        return [{"status": r.get("status"), "conclusion": r.get("conclusion"), "at": r.get("started_at") or ""}
+                for r in (data.get("check_runs") or [])]
+    except ReleaseError as exc:
+        if exc.status != 403:
+            raise
+    data = gh("GET", "/repos/{repo}/actions/runs?head_sha=%s&per_page=20" % sha, token, repo)
+    return [{"status": r.get("status"), "conclusion": r.get("conclusion"), "at": r.get("run_started_at") or r.get("created_at") or ""}
+            for r in (data.get("workflow_runs") or []) if r.get("name") == CHECK_NAME]
+
+
+def tests_result(token, repo, sha):
+    """'passed', 'failed', 'running' or 'none' for one commit, from its newest "tests" run."""
+    runs = _runs(token, repo, sha) if sha else []
+    if not runs:
+        return "none"
+    newest = sorted(runs, key=lambda r: r.get("at") or "", reverse=True)[0]
+    if newest.get("status") != "completed":
+        return "running"
+    return "passed" if newest.get("conclusion") == "success" else "failed"
+
+
+def passed(token, repo, sha, branch="main"):
+    """(ok, why). A build may go live by itself when its own tests passed, or, while its own run is still
+    going (or never ran), when the pull request it was merged from passed its tests."""
+    own = tests_result(token, repo, sha)
+    if own == "passed":
+        return True, "its tests passed"
+    if own == "failed":
+        return False, "its tests failed"
+    pulls = gh("GET", "/repos/{repo}/commits/%s/pulls" % sha, token, repo)
+    pull = next((p for p in (pulls if isinstance(pulls, list) else [])
+                 if p.get("merged_at") and (p.get("base") or {}).get("ref") == branch), None)
+    if pull is not None:
+        theirs = tests_result(token, repo, (pull.get("head") or {}).get("sha") or "")
+        if theirs == "passed":
+            return True, "pull request #%s passed its tests" % pull.get("number")
+        if theirs == "failed":
+            return False, "pull request #%s failed its tests" % pull.get("number")
+    if own == "running":
+        return False, "its tests are still running"
+    return False, "no tests have run on it"
+
+
+def test_badges(token, repo, branch="main"):
+    """{sha: 'passed' | 'failed' | 'running'} for the branch's recent builds, from one call."""
+    data = gh("GET", "/repos/{repo}/actions/runs?branch=%s&per_page=100" % branch, token, repo)
+    found = {}
+    for run in sorted((data.get("workflow_runs") or []), key=lambda r: r.get("run_started_at") or r.get("created_at") or "", reverse=True):
+        if run.get("name") != CHECK_NAME or run.get("head_sha") in found:
+            continue
+        if run.get("status") != "completed":
+            found[run.get("head_sha")] = "running"
+        else:
+            found[run.get("head_sha")] = "passed" if run.get("conclusion") == "success" else "failed"
+    return found
+
+
 def create_hook(token, repo, url, secret, old_id=""):
     if old_id:
         try:
             gh("DELETE", "/repos/{repo}/hooks/%s" % old_id, token, repo)
         except ReleaseError:
             pass
-    hook = gh("POST", "/repos/{repo}/hooks", token, repo, {"name": "web", "active": True, "events": ["push"],
+    hook = gh("POST", "/repos/{repo}/hooks", token, repo, {"name": "web", "active": True, "events": ["push", "workflow_run"],
               "config": {"url": url, "content_type": "json", "secret": secret, "insecure_ssl": "0"}})
     return str(hook.get("id") or "")
 
