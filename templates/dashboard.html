@@ -4,7 +4,7 @@
 <div class="page-heading"><div><span class="eyebrow">Powerhouse workspace</span><h1>Good to see you, {{ current_user.username }}</h1><p>Build a dependable service library now, then use it to generate consistent quotes later.</p></div></div>
 <div class="metric-grid">
   <a class="metric-card" href="{{ url_for('services') }}"><span class="metric-icon">⚡</span><strong>{{ service_count }}</strong><span>Services ready</span><small>View service library →</small></a>
-  <div class="metric-card muted-card"><span class="metric-icon">◫</span><strong>6</strong><span>Quote options</span><small>Basic through Platinum</small></div>
+  <div class="metric-card muted-card"><span class="metric-icon">◫</span><strong>6</strong><span>Quote options</span><small>Economy through Platinum</small></div>
   <div class="metric-card muted-card"><span class="metric-icon">✓</span><strong>Next</strong><span>Pricing sheet</span><small>Planned workspace</small></div>
 </div>
 <div class="panel callout-panel"><div><span class="eyebrow">Start here</span><h2>Build your repeatable service catalog</h2><p class="muted">Capture the exact materials, example quantities, special tools, and field drawing your team needs for each job type.</p></div><a href="{{ url_for('create_service') }}" class="btn btn-primary">Create a service</a></div>
