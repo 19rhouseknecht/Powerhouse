@@ -34,5 +34,12 @@ Auto-deploy takes the newest `main` only when its own "tests" run passed, or the
 `static/uploads/` or the virtualenv, and reloads the web app. Admins can still deploy or roll back to any build by hand.
 Keep the workflow and job name `tests` (`releases.CHECK_NAME`).
 
+## Jobber (`jobber.py`, Settings → Jobber)
+Read only: never call a Jobber mutation. GraphQL queries are built from `jobber.WANT` and trimmed to the fields Jobber's
+schema reports (introspection), so add a wanted field there, not in a hand-written query. Every record keeps Jobber's id
+(`jobber_id`, `jobber_quote_id`, `jobber_request_id`), which is how pulling again never duplicates; a record edited here after
+the last pull (`updated_at > jobber_synced_at`) only gets blanks filled. Tests replace `jobber.TRANSPORT` and `jobber.SLEEP`.
+`tests/test_upgrade.py` boots the code on main, then this build on the same database: keep schema changes additive.
+
 ## Never commit
 `instance/`, databases, uploads, keys or tokens (`.gitignore` covers the usual ones; look anyway).

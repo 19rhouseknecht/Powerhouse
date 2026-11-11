@@ -781,3 +781,47 @@ body:has(.client-presentation) .topbar, body:has(.client-presentation) .sidebar 
 .release-tests.tests-failed { color: #fca5a5; border-color: #7f1d1d; background: rgba(127, 29, 29, .25); }
 .release-tests.tests-running { color: #fcd34d; border-color: #713f12; }
 .release-waiting { color: #fcd34d; font-size: 13px; margin: 8px 0 0; }
+
+/* Jobber */
+.jobber-settings-actions { justify-content: flex-start; margin-top: 14px; }
+.jobber-running { display: flex; gap: 16px; align-items: flex-start; border-color: var(--accent); margin-bottom: 16px; padding: 18px 20px; }
+.jobber-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 18px 0; }
+.jobber-counts > div { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 4px; }
+.jobber-counts strong { font-size: 26px; font-variant-numeric: tabular-nums; }
+.jobber-counts span { color: #d6d3d1; font-size: 12px; line-height: 1.4; }
+.jobber-counts small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.jobber-rules { display: grid; gap: 7px; font-size: 13px; color: #d6d3d1; margin-bottom: 16px; }
+.jobber-rules > div { display: flex; gap: 9px; align-items: baseline; }
+.jobber-rules em { font-style: normal; color: var(--text); font-weight: 600; }
+.jobber-list { border-top: 1px solid var(--border); padding: 12px 0; }
+.jobber-list summary { cursor: pointer; font-weight: 650; }
+.jobber-table td:not(:first-child), .jobber-table th:not(:first-child) { text-align: left !important; }
+.jobber-action { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; background: #292524; white-space: nowrap; }
+.jobber-action.action-new { background: #14532d; color: #bbf7d0; }
+.jobber-action.action-link { background: #1e3a8a; color: #dbeafe; }
+.jobber-action.action-fill { background: #713f12; color: #fde68a; }
+.jobber-missing { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); line-height: 1.7; }
+.jobber-import { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; border-top: 1px solid var(--border); padding-top: 16px; }
+.jobber-steps { color: #d6d3d1; line-height: 1.7; padding-left: 20px; font-size: 14px; }
+.jobber-steps a { color: var(--accent-hover); }
+.jobber-callback { display: block; margin: 6px 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; font-size: 12px; word-break: break-all; color: var(--text); user-select: all; }
+.jobber-connection details { margin-top: 12px; }
+.jobber-connection summary { cursor: pointer; }
+.jobber-facts { display: flex; flex-wrap: wrap; gap: 8px 28px; margin: 14px 0 6px; }
+.jobber-facts dt { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.jobber-facts dd { margin: 3px 0 0; font-size: 14px; }
+.jobber-sub { margin: 18px 0 8px; font-size: 13px; color: var(--muted); }
+.jobber-visits { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.jobber-visits li { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.jobber-visits span { color: var(--muted); }
+.client-extra-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px 24px; }
+.client-extra-grid .wide { grid-column: 1 / -1; }
+.client-extra-grid strong { display: block; margin-top: 4px; }
+.client-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.client-tags span { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); }
+.client-properties { margin: 6px 0 0; padding-left: 18px; line-height: 1.8; font-size: 13px; }
+.jobber-rules > div { display: block; }
+.jobber-rules .status-dot { display: inline-block; margin-right: 8px; }
+.client-extra { margin-bottom: 16px; }
+.client-extra-grid small { display: block; margin-top: 3px; }
+.client-extra-grid a { display: inline-block; margin-top: 4px; }

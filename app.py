@@ -549,14 +549,49 @@ class Client(db.Model):
     postal_code = db.Column(db.String(20), nullable=False, default="")
     notes = db.Column(db.Text, nullable=False, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, nullable=True, default=datetime.utcnow, onupdate=datetime.utcnow)
+    company_name = db.Column(db.String(180), nullable=False, default="")
+    other_contacts = db.Column(db.Text, nullable=False, default="")       # extra phones and emails, one per line
+    tags = db.Column(db.String(255), nullable=False, default="")
+    lead_source = db.Column(db.String(120), nullable=False, default="")
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    jobber_url = db.Column(db.String(255), nullable=False, default="")
+    jobber_raw = db.Column(db.Text, nullable=False, default="")           # the whole Jobber record, as it was pulled
+    jobber_synced_at = db.Column(db.DateTime, nullable=True)
     jobs = db.relationship("Job", backref="client", cascade="all, delete-orphan", order_by="Job.created_at.desc()")
+    properties = db.relationship("ClientProperty", backref="client", cascade="all, delete-orphan", order_by="ClientProperty.id")
 
     @property
     def full_name(self):
-        return f"{self.first_name} {self.last_name}".strip()
+        name = f"{self.first_name} {self.last_name}".strip()
+        if self.company_name and self.company_name != name:
+            return f"{name} ({self.company_name})" if name else self.company_name
+        return name
+
+    @property
+    def tag_list(self):
+        return [t.strip() for t in (self.tags or "").split(",") if t.strip()]
 
     @property
     def primary_address(self):
+        parts = [self.address_line1, self.address_line2, ", ".join(filter(None, [self.city, self.state])), self.postal_code]
+        return " ".join(part for part in parts if part).strip()
+
+
+class ClientProperty(db.Model):
+    """A service address a client has besides the primary one (a rental, a second building)."""
+    id = db.Column(db.Integer, primary_key=True)
+    client_id = db.Column(db.Integer, db.ForeignKey("client.id"), nullable=False, index=True)
+    address_line1 = db.Column(db.String(180), nullable=False, default="")
+    address_line2 = db.Column(db.String(180), nullable=False, default="")
+    city = db.Column(db.String(100), nullable=False, default="")
+    state = db.Column(db.String(40), nullable=False, default="")
+    postal_code = db.Column(db.String(20), nullable=False, default="")
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    @property
+    def text(self):
         parts = [self.address_line1, self.address_line2, ", ".join(filter(None, [self.city, self.state])), self.postal_code]
         return " ".join(part for part in parts if part).strip()
 
@@ -588,6 +623,17 @@ class Job(db.Model):
     drive_checked_at = db.Column(db.DateTime, nullable=True)
     drive_error = db.Column(db.String(255), nullable=False, default="")
     drive_minutes_override = db.Column(db.Float, nullable=True)
+    source = db.Column(db.String(20), nullable=False, default="")          # '' made here · 'jobber' pulled from Jobber
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    jobber_number = db.Column(db.String(20), nullable=False, default="")
+    jobber_url = db.Column(db.String(255), nullable=False, default="")
+    jobber_quote_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    jobber_quote_number = db.Column(db.String(20), nullable=False, default="")
+    jobber_quote_status = db.Column(db.String(40), nullable=False, default="")
+    jobber_quote_total = db.Column(db.Float, nullable=True)
+    jobber_request_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    jobber_raw = db.Column(db.Text, nullable=False, default="")             # {"job":…, "quote":…, "request":…} as pulled
+    jobber_synced_at = db.Column(db.DateTime, nullable=True)
     assigned_user = db.relationship("User", backref="assigned_jobs")
     quotes = db.relationship("Quote", backref="job", cascade="all, delete-orphan", order_by="Quote.created_at.desc()")
     inspections = db.relationship("OnsiteInspection", backref="job", cascade="all, delete-orphan", order_by="OnsiteInspection.updated_at.desc()")
@@ -608,7 +654,17 @@ class Job(db.Model):
             return "active"
         if any(quote.status == "confirmed" for quote in self.quotes):
             return "quoted"
+        if self.jobber_quote_status in ("awaiting_response", "changes_requested"):
+            return "quoted"                  # a quote sent from Jobber, waiting on the client
         return "in_works"
+
+    @property
+    def jobber(self):
+        """What Jobber had for this job (line items, visits, invoices, the quote), for the job page."""
+        try:
+            return json.loads(self.jobber_raw) if self.jobber_raw else {}
+        except ValueError:
+            return {}
 
     @property
     def job_address(self):
@@ -1229,7 +1285,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
@@ -2601,7 +2657,7 @@ def clients():
     search = request.args.get("q", "").strip()
     query = Client.query
     if search:
-        query = query.filter(db.or_(Client.first_name.ilike(f"%{search}%"), Client.last_name.ilike(f"%{search}%"), Client.email.ilike(f"%{search}%"), Client.phone.ilike(f"%{search}%"), Client.address_line1.ilike(f"%{search}%")))
+        query = query.filter(db.or_(Client.first_name.ilike(f"%{search}%"), Client.last_name.ilike(f"%{search}%"), Client.email.ilike(f"%{search}%"), Client.phone.ilike(f"%{search}%"), Client.address_line1.ilike(f"%{search}%"), Client.company_name.ilike(f"%{search}%"), Client.tags.ilike(f"%{search}%")))
     return render_template("clients.html", clients=query.order_by(Client.last_name, Client.first_name).all(), search=search)
 
 
@@ -3501,6 +3557,7 @@ def render_settings_page(new_local_cooper_token=None):
         roles=Role.query.order_by(Role.name).all(),
         local_cooper_token_active=token_setting is not None,
         new_local_cooper_token=new_local_cooper_token,
+        jobber_connected=jobber_connected(), jobber_state=jobber_pull_state(), jobber_last_import=jobber_json("last_import"),
         dispatch_address=get_dispatch_address(),
         travel_road_factor=get_numeric_setting("travel_road_factor", 1.25),
         travel_average_speed=get_numeric_setting("travel_average_speed", 45),
@@ -4828,10 +4885,15 @@ def apply_ai_quote_options(quote, option_data):
 def populate_client_from_form(client):
     first_name = request.form.get("first_name", "").strip()
     last_name = request.form.get("last_name", "").strip()
-    if not first_name or not last_name:
-        return "First and last name are required."
-    client.first_name = first_name
+    company_name = request.form.get("company_name", "").strip()
+    if not (first_name and last_name) and not company_name:
+        return "Enter a first and last name, or a company name."
+    client.first_name = first_name or ("" if last_name else company_name)
     client.last_name = last_name
+    client.company_name = company_name[:180]
+    client.other_contacts = request.form.get("other_contacts", "").strip()
+    client.tags = ", ".join(t.strip() for t in request.form.get("tags", "").split(",") if t.strip())[:255]
+    client.lead_source = request.form.get("lead_source", "").strip()[:120]
     client.email = request.form.get("email", "").strip()
     client.phone = request.form.get("phone", "").strip()
     client.address_line1 = request.form.get("address_line1", "").strip()
@@ -5208,6 +5270,416 @@ def flow_save():
     chart.updated_by = current_user
     db.session.commit()
     return jsonify({"ok": True, "version": chart.version})
+
+
+# ---------------- Jobber (Settings -> Jobber) ----------------
+# "Pull from Jobber" reads clients, requests, quotes and jobs out of Jobber (read only, jobber.py) into a
+# file under instance/jobber/, and shows what an import would do. "Import" backs up the database and then
+# creates or updates clients and jobs here. Records are linked by their Jobber id, so pulling again never
+# duplicates anything; a record edited here since the last pull only gets its blank fields filled.
+
+import jobber as jb
+
+JOBBER_DIR = os.path.join(basedir, "instance", "jobber")
+
+
+def jobber_setting(key, default=""):
+    row = db.session.get(CompanySetting, "jobber_" + key)
+    return row.value if row and row.value is not None else default
+
+
+def put_jobber_setting(key, value, commit=True):
+    row = db.session.get(CompanySetting, "jobber_" + key) or CompanySetting(key="jobber_" + key)
+    row.value = value if isinstance(value, str) else json.dumps(value, default=str)
+    db.session.add(row)
+    if commit:
+        db.session.commit()
+
+
+def jobber_secret(key):
+    stored = jobber_setting(key)
+    if not stored:
+        return ""
+    try:
+        return supplier_cipher().decrypt(stored.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""
+
+
+def put_jobber_secret(key, value, commit=True):
+    put_jobber_setting(key, supplier_cipher().encrypt(value.encode("utf-8")).decode("ascii") if value else "", commit)
+
+
+def jobber_json(key):
+    try:
+        value = json.loads(jobber_setting(key) or "{}")
+        return value if isinstance(value, dict) else {}
+    except ValueError:
+        return {}
+
+
+def jobber_session():
+    tokens = {}
+    try:
+        tokens = json.loads(jobber_secret("tokens") or "{}")
+    except ValueError:
+        pass
+    return jb.Session(jobber_setting("client_id"), jobber_secret("client_secret"), tokens,
+                      save=lambda fresh: put_jobber_secret("tokens", json.dumps(fresh)))
+
+
+def jobber_connected():
+    return bool(jobber_setting("client_id") and jobber_secret("tokens"))
+
+
+def jobber_callback_url():
+    return url_for("jobber_callback", _external=True, _scheme="https")
+
+
+def jobber_pull_state():
+    state = jobber_json("pull")
+    if state.get("status") == "running":
+        try:
+            started = datetime.fromisoformat(state.get("started_at", ""))
+        except ValueError:
+            started = None
+        if started is None or datetime.utcnow() - started > timedelta(minutes=30):
+            state.update(status="failed", error="The pull stopped without finishing (the web worker restarted). Pull again.")
+            put_jobber_setting("pull", state)
+    return state
+
+
+def jobber_pulled():
+    """The newest pull's data, or None."""
+    path = jobber_pull_state().get("file") or ""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _jobber_pull_worker(by):
+    with app.app_context():
+        state = {"status": "running", "started_at": datetime.utcnow().isoformat(timespec="seconds"), "by": by, "log": []}
+
+        def say(line):
+            state["log"] = (state["log"] + [line])[-12:]
+            put_jobber_setting("pull", state)
+
+        try:
+            data = jb.pull(jobber_session(), say)
+            os.makedirs(JOBBER_DIR, exist_ok=True)
+            path = os.path.join(JOBBER_DIR, "pull-%s.json" % datetime.utcnow().strftime("%Y%m%d-%H%M%S"))
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle)
+            rel.prune(JOBBER_DIR, "pull-*.json", 5)
+            state.update(status="done", file=path, finished_at=datetime.utcnow().isoformat(timespec="seconds"),
+                         counts={k: len(data.get(k) or []) for k in jb.ORDER}, account=(data.get("account") or {}).get("name", ""),
+                         calls=data.get("calls", 0))
+            say("Done: %s." % ", ".join("%d %s" % (len(data.get(k) or []), k) for k in jb.ORDER))
+        except jb.JobberError as exc:
+            db.session.rollback()
+            state.update(status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat(timespec="seconds"))
+            put_jobber_setting("pull", state)
+        except Exception as exc:  # noqa: BLE001 — a pull never takes the web worker down
+            db.session.rollback()
+            state.update(status="failed", error="Unexpected %s: %s" % (exc.__class__.__name__, exc),
+                         finished_at=datetime.utcnow().isoformat(timespec="seconds"))
+            put_jobber_setting("pull", state)
+
+
+def _digits(text):
+    return re.sub(r"\D", "", text or "")[-10:]
+
+
+def _edited_here(row):
+    """True when someone changed this record here after the last pull: then the pull only fills blanks."""
+    return bool(row.jobber_synced_at and row.updated_at and row.updated_at > row.jobber_synced_at)
+
+
+def jobber_plan(data):
+    """What an import of `data` would do, without changing anything.
+    Returns {"clients": [...], "jobs": [...], "counts": {...}}; each entry says new · link · update · fill."""
+    linked = {c.jobber_id: c for c in Client.query.filter(Client.jobber_id != "").all()}
+    unlinked = Client.query.filter(Client.jobber_id == "").all()
+    by_email = {c.email.strip().lower(): c for c in unlinked if c.email.strip()}
+    by_phone = {_digits(c.phone): c for c in unlinked if len(_digits(c.phone)) >= 7}
+    by_name = {(c.first_name.strip().lower(), c.last_name.strip().lower()): c for c in unlinked}
+    taken = set()
+    clients = []
+    for raw in data.get("clients") or []:
+        fields = jb.client_fields(raw)
+        row, how = linked.get(fields["jobber_id"]), ""
+        if row is None:
+            for key, table, label in ((fields["email"].lower(), by_email, "same email"), (_digits(fields["phone"]), by_phone, "same phone"),
+                                      ((fields["first_name"].lower(), fields["last_name"].lower()), by_name, "same name")):
+                candidate = table.get(key) if key and key != ("", "") else None
+                if candidate is not None and candidate.id not in taken and (not isinstance(key, str) or len(key) >= 3):
+                    row, how = candidate, label
+                    break
+        if row is not None:
+            taken.add(row.id)
+        action = "new" if row is None else ("link" if not row.jobber_id else ("fill" if _edited_here(row) else "update"))
+        clients.append({"fields": fields, "raw": raw, "client": row, "action": action, "why": how})
+
+    local_jobs = Job.query.filter(db.or_(Job.jobber_id != "", Job.jobber_quote_id != "", Job.jobber_request_id != "")).all()
+    by_job = {j.jobber_id: j for j in local_jobs if j.jobber_id}
+    by_quote = {j.jobber_quote_id: j for j in local_jobs if j.jobber_quote_id}
+    by_request = {j.jobber_request_id: j for j in local_jobs if j.jobber_request_id}
+    quotes = {q.get("id"): q for q in (data.get("quotes") or [])}
+    requests_ = {r.get("id"): r for r in (data.get("requests") or [])}
+    jobs_raw = data.get("jobs") or []
+    quotes_with_jobs = {(j.get("quote") or {}).get("id") for j in jobs_raw}
+    requests_onward = {(q.get("request") or {}).get("id") for q in quotes.values()} | {(j.get("request") or {}).get("id") for j in jobs_raw}
+    entries = []
+    for raw in data.get("requests") or []:
+        fields = jb.request_fields(raw)
+        if fields["skip"] or fields["jobber_id"] in requests_onward:
+            continue
+        entries.append(("request", fields, {"request": raw}, by_request.get(fields["jobber_id"])))
+    for raw in data.get("quotes") or []:
+        fields = jb.quote_fields(raw)
+        if fields["jobber_id"] in quotes_with_jobs or fields["quote_status"] == "converted":
+            continue
+        row = by_quote.get(fields["jobber_id"]) or by_request.get(fields["request_jobber_id"] or "-")
+        entries.append(("quote", fields, {"quote": raw, "request": requests_.get(fields["request_jobber_id"])}, row))
+    for raw in jobs_raw:
+        fields = jb.job_fields(raw)
+        row = by_job.get(fields["jobber_id"]) or by_quote.get(fields["quote_jobber_id"] or "-") or by_request.get(fields["request_jobber_id"] or "-")
+        entries.append(("job", fields, {"job": raw, "quote": quotes.get(fields["quote_jobber_id"]), "request": requests_.get(fields["request_jobber_id"])}, row))
+    jobs = []
+    for kind, fields, raw, row in entries:
+        action = "new" if row is None else ("fill" if _edited_here(row) else "update")
+        jobs.append({"kind": kind, "fields": fields, "raw": raw, "job": row, "action": action})
+    counts = {"clients_" + a: sum(1 for c in clients if c["action"] == a) for a in ("new", "link", "update", "fill")}
+    counts.update({"jobs_" + a: sum(1 for j in jobs if j["action"] == a) for a in ("new", "update", "fill")})
+    counts.update({"from_" + k: sum(1 for j in jobs if j["kind"] == k) for k in ("request", "quote", "job")})
+    return {"clients": clients, "jobs": jobs, "counts": counts}
+
+
+CLIENT_FIELDS = ("first_name", "last_name", "company_name", "email", "phone", "address_line1", "address_line2", "city", "state",
+                 "postal_code", "other_contacts", "tags", "lead_source")
+
+
+def _put(row, field, value, fill_only):
+    if value is None or value == "":
+        return
+    if fill_only and getattr(row, field) not in (None, "", 0, 0.0):
+        return
+    setattr(row, field, value)
+
+
+def jobber_apply(data):
+    """Import `data`: create or update clients and jobs. Returns the plan's counts."""
+    plan = jobber_plan(data)
+    now = datetime.utcnow()
+    client_for = {}
+    for entry in plan["clients"]:
+        fields, row = entry["fields"], entry["client"]
+        fill_only = entry["action"] in ("fill", "link")       # a client matched here keeps what it has; blanks are filled
+        if row is None:
+            row = Client(first_name=fields["first_name"], last_name=fields["last_name"], state=fields["state"] or "PA",
+                         created_at=fields["created_at"] or now)
+            db.session.add(row)
+            fill_only = False
+        for field in CLIENT_FIELDS:
+            _put(row, field, fields[field], fill_only)
+        row.jobber_id, row.jobber_url = fields["jobber_id"], fields["jobber_url"] or row.jobber_url
+        row.jobber_raw = json.dumps(entry["raw"])
+        known = {p.jobber_id for p in row.properties if p.jobber_id}
+        for prop in fields["properties"]:
+            same_as_primary = (prop["address_line1"] or "").lower() == (row.address_line1 or "").lower()
+            if prop["jobber_id"] in known or same_as_primary or not prop["address_line1"]:
+                continue
+            row.properties.append(ClientProperty(**prop))
+        row.jobber_synced_at = now
+        client_for[fields["jobber_id"]] = row
+    db.session.flush()
+
+    touched = []
+    for entry in plan["jobs"]:
+        fields, row = entry["fields"], entry["job"]
+        client = client_for.get(fields.get("client_jobber_id"))
+        if client is None and row is None:
+            continue                                   # a record whose client did not come over: skipped
+        fill_only = entry["action"] == "fill"
+        if row is None:
+            row = Job(client=client, title=fields["title"], job_number=next_job_number(), source="jobber",
+                      created_at=fields.get("created_at") or now, state="")
+            db.session.add(row)
+            fill_only = False
+        for field in ("title", "description", "address_line1", "address_line2", "city", "state", "postal_code"):
+            _put(row, field, fields.get(field), fill_only)
+        if not row.address_line1 and client is not None:
+            for field in ("address_line1", "address_line2", "city", "state", "postal_code"):
+                setattr(row, field, getattr(client, field) or getattr(row, field))
+        if not fill_only:
+            row.status = fields["status"]
+            if entry["kind"] == "job":
+                row.work_start_date = fields["work_start_date"] or row.work_start_date
+                row.duration_days = fields["duration_days"] or row.duration_days
+            if entry["kind"] == "request" and fields.get("review_at"):
+                row.review_at = fields["review_at"]
+        if entry["kind"] == "job":
+            row.jobber_id, row.jobber_number = fields["jobber_id"], fields["jobber_number"]
+            row.jobber_url = fields["jobber_url"] or row.jobber_url
+            if fields["contract_amount"] is not None:
+                _put(row, "contract_amount", fields["contract_amount"], fill_only)
+            quote = jb.quote_fields(entry["raw"]["quote"]) if entry["raw"].get("quote") else None
+            if fields["quote_jobber_id"]:
+                row.jobber_quote_id = fields["quote_jobber_id"]
+        else:
+            quote = fields if entry["kind"] == "quote" else None
+            if entry["kind"] == "request" or (quote and not row.jobber_url):
+                row.jobber_url = fields["jobber_url"] or row.jobber_url
+        if quote:
+            row.jobber_quote_id = quote["jobber_id"]
+            row.jobber_quote_number = quote["number"]
+            row.jobber_quote_status = quote["quote_status"]
+            row.jobber_quote_total = quote["total"]
+        request_raw = entry["raw"].get("request")
+        if request_raw:
+            row.jobber_request_id = request_raw.get("id") or row.jobber_request_id
+        if entry["kind"] == "job":
+            detail = {"job": dict((k, fields[k]) for k in ("jobber_number", "salesperson", "job_type", "line_items", "visits", "invoices"))}
+        else:
+            detail = {}
+        if quote:
+            detail["quote"] = {k: quote[k] for k in ("number", "quote_status", "total", "salesperson", "line_items", "jobber_url")}
+        detail["raw"] = entry["raw"]
+        row.jobber_raw = json.dumps(detail, default=str)
+        row.jobber_synced_at = now
+        touched.append(row)
+    db.session.commit()
+    # stamp again after the save, so nothing just imported counts as "edited here" next time
+    stamp = datetime.utcnow()
+    for row in list(client_for.values()) + touched:
+        row.jobber_synced_at = row.updated_at = stamp         # set together: any edit after this counts as "edited here"
+    db.session.commit()
+    return plan["counts"]
+
+
+@app.route("/settings/jobber")
+@login_required
+def jobber_page():
+    state = jobber_pull_state()
+    data = jobber_pulled() if state.get("status") == "done" else None
+    plan = jobber_plan(data) if data else None
+    return render_template("jobber.html", client_id=jobber_setting("client_id"), has_secret=bool(jobber_secret("client_secret")),
+                           connected=jobber_connected(), account=jobber_json("account"), callback_url=jobber_callback_url(),
+                           state=state, plan=plan, data=data, last_import=jobber_json("last_import"), status_labels=JOB_STATUS_LABELS,
+                           missing=(data or {}).get("missing") or [])
+
+
+@app.route("/settings/jobber/keys", methods=["POST"])
+@login_required
+def jobber_keys():
+    check_csrf()
+    client_id = "".join(request.form.get("client_id", "").split())
+    secret = "".join(request.form.get("client_secret", "").split())
+    if not client_id or not (secret or jobber_secret("client_secret")):
+        flash("Paste both the Client ID and the Client Secret from your app in Jobber's Developer Center.", "error")
+        return redirect(url_for("jobber_page"))
+    if client_id != jobber_setting("client_id"):
+        put_jobber_secret("tokens", "", commit=False)          # a different app: connect again
+    put_jobber_setting("client_id", client_id, commit=False)
+    if secret:
+        put_jobber_secret("client_secret", secret, commit=False)
+    db.session.commit()
+    return redirect(url_for("jobber_connect"))
+
+
+@app.route("/settings/jobber/connect")
+@login_required
+def jobber_connect():
+    if not jobber_setting("client_id"):
+        flash("Save the Client ID and Secret first.", "error")
+        return redirect(url_for("jobber_page"))
+    session["jobber_state"] = secrets.token_urlsafe(24)
+    return redirect(jb.authorize_url(jobber_setting("client_id"), jobber_callback_url(), session["jobber_state"]))
+
+
+@app.route("/settings/jobber/callback")
+@login_required
+def jobber_callback():
+    expected = session.pop("jobber_state", "")
+    if request.args.get("error"):
+        flash("Jobber did not connect: %s" % (request.args.get("error_description") or request.args.get("error")), "error")
+        return redirect(url_for("jobber_page"))
+    if not expected or not secrets.compare_digest(expected, request.args.get("state", "")):
+        flash("That sign-in link was stale. Press Connect with Jobber again.", "error")
+        return redirect(url_for("jobber_page"))
+    try:
+        tokens = jb.exchange(jobber_setting("client_id"), jobber_secret("client_secret"), request.args.get("code", ""), jobber_callback_url())
+        put_jobber_secret("tokens", json.dumps(tokens))
+        sess = jobber_session()
+        account = (sess.gql("{ account { id name } }") or {}).get("account") or {}
+        put_jobber_setting("account", {"name": account.get("name", ""), "connected_at": datetime.utcnow().isoformat(timespec="seconds"),
+                                       "by": current_user.username})
+        flash("Connected to Jobber%s." % ((" (" + account["name"] + ")") if account.get("name") else ""), "success")
+    except jb.JobberError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("jobber_page"))
+
+
+@app.route("/settings/jobber/disconnect", methods=["POST"])
+@login_required
+def jobber_disconnect():
+    check_csrf()
+    put_jobber_secret("tokens", "", commit=False)
+    put_jobber_setting("account", "{}", commit=False)
+    db.session.commit()
+    flash("Jobber disconnected. Everything already imported stays.", "success")
+    return redirect(url_for("jobber_page"))
+
+
+@app.route("/settings/jobber/pull", methods=["POST"])
+@login_required
+def jobber_pull():
+    check_csrf()
+    if not jobber_connected():
+        flash("Connect Jobber first: it takes a Client ID and Secret from Jobber's Developer Center.", "error")
+        return redirect(url_for("jobber_page"))
+    if jobber_pull_state().get("status") == "running":
+        flash("A pull is already running.", "error")
+        return redirect(url_for("jobber_page"))
+    put_jobber_setting("pull", {"status": "running", "started_at": datetime.utcnow().isoformat(timespec="seconds"),
+                                "by": current_user.username, "log": ["Starting…"]})
+    threading.Thread(target=_jobber_pull_worker, args=(current_user.username,), daemon=True).start()
+    return redirect(url_for("jobber_page"))
+
+
+@app.route("/settings/jobber/status")
+@login_required
+def jobber_status():
+    state = jobber_pull_state()
+    return jsonify({"status": state.get("status", ""), "log": state.get("log", [])[-6:], "error": state.get("error", "")})
+
+
+@app.route("/settings/jobber/import", methods=["POST"])
+@login_required
+def jobber_import():
+    check_csrf()
+    data = jobber_pulled()
+    if data is None:
+        flash("Pull from Jobber first.", "error")
+        return redirect(url_for("jobber_page"))
+    backup = rel.backup_database(os.path.join(basedir, "instance", "app.db"), RELEASE_BACKUPS, "before-jobber-import")
+    try:
+        counts = jobber_apply(data)
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        flash("The import stopped and nothing was saved (%s: %s)." % (exc.__class__.__name__, exc), "error")
+        return redirect(url_for("jobber_page"))
+    put_jobber_setting("last_import", {"at": datetime.utcnow().isoformat(timespec="seconds"), "by": current_user.username,
+                                       "counts": counts, "backup": os.path.basename(backup) if backup else ""})
+    flash("Imported from Jobber: %d new clients, %d new jobs, %d updated." % (
+        counts["clients_new"], counts["jobs_new"], counts["clients_update"] + counts["clients_link"] + counts["clients_fill"] +
+        counts["jobs_update"] + counts["jobs_fill"]), "success")
+    return redirect(url_for("jobber_page"))
 
 
 # ---------------- Releases (Settings -> Releases) ----------------
@@ -5718,6 +6190,20 @@ with app.app_context():
         db.session.execute(text("UPDATE training SET description = notes WHERE description = '' AND notes != ''"))
         db.session.execute(text("UPDATE training SET notes = '' WHERE description != ''"))
         db.session.commit()
+    for table, column, sql in [
+        ("client", "updated_at", "DATETIME"), ("client", "company_name", "VARCHAR(180) NOT NULL DEFAULT ''"),
+        ("client", "other_contacts", "TEXT NOT NULL DEFAULT ''"), ("client", "tags", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("client", "lead_source", "VARCHAR(120) NOT NULL DEFAULT ''"), ("client", "jobber_id", "VARCHAR(80) NOT NULL DEFAULT ''"),
+        ("client", "jobber_url", "VARCHAR(255) NOT NULL DEFAULT ''"), ("client", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
+        ("client", "jobber_synced_at", "DATETIME"),
+        ("job", "source", "VARCHAR(20) NOT NULL DEFAULT ''"), ("job", "jobber_id", "VARCHAR(80) NOT NULL DEFAULT ''"),
+        ("job", "jobber_number", "VARCHAR(20) NOT NULL DEFAULT ''"), ("job", "jobber_url", "VARCHAR(255) NOT NULL DEFAULT ''"),
+        ("job", "jobber_quote_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_quote_number", "VARCHAR(20) NOT NULL DEFAULT ''"),
+        ("job", "jobber_quote_status", "VARCHAR(40) NOT NULL DEFAULT ''"), ("job", "jobber_quote_total", "FLOAT"),
+        ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
+        ("job", "jobber_synced_at", "DATETIME"),
+    ]:
+        add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")
     add_column_if_missing("user", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
