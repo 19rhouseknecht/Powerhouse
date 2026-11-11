@@ -8,7 +8,7 @@
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/app-icon-192.png') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
   <meta name="theme-color" content="#171412">
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
 </head>
 <body>
   {% if current_user.is_authenticated %}
@@ -61,6 +61,7 @@
     <a href="{{ url_for('settings') }}" class="side-link {{ 'active' if request.endpoint in ['settings', 'roles', 'update_role', 'edit_agent'] else '' }}"><span>⚙</span> Settings</a>
     <a href="{{ url_for('tools_library') }}" class="side-link {{ 'active' if request.endpoint in ['tools_library', 'create_tool', 'edit_tool', 'delete_tool'] else '' }}"><span>⌁</span> Tools</a>
     <a href="{{ url_for('settings_bug_reports') }}" class="side-link {{ 'active' if request.endpoint in ['settings_bug_reports', 'create_bug_report', 'update_bug_report'] else '' }}"><span>⚠</span> Bug Reports</a>
+    <a href="{{ url_for('releases_page') }}" class="side-link {{ 'active' if request.endpoint == 'releases_page' else '' }}"><span>⇪</span> Releases</a>
     {% endif %}
   </aside>
   {% endif %}
@@ -88,9 +89,9 @@
     'expenses': url_for('expenses'), 'onsite': url_for('onsite_checklist'), 'reviews': url_for('sales_reviews'), 'settings': url_for('settings'),
     'allowed': {'pricing': can('view_pricing'), 'services': can('view_services'), 'quotes': can('view_quoting'), 'clients': can('view_clients'), 'jobs': can('view_jobs'), 'schedule': can('view_schedule'), 'clock': can('view_time'), 'timesheet': can('view_time'), 'tasks': can('view_tasks'), 'training': can('view_training'), 'finance': can('view_finance'), 'expenses': can('view_expenses'), 'onsite': can('view_sales'), 'reviews': can('view_sales'), 'settings': current_user.role and current_user.role.is_admin}
   }|tojson }}</script>
-  <script src="{{ url_for('static', filename='js/tour.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/date-pickers.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/tour.js', v=asset_version) }}"></script>
+  <script src="{{ url_for('static', filename='js/date-pickers.js', v=asset_version) }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js', v=asset_version) }}"></script>
   {% endif %}
 </body>
 </html>

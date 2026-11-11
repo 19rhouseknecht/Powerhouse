@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block title %}Releases — Power House{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('settings') }}">Settings</a><span>/</span>Releases</div>
+<div class="page-heading heading-actions">
+  <div><span class="eyebrow">Settings / Releases</span><h1>Releases</h1><p>Every build on GitHub's <strong>{{ branch }}</strong> branch can go live from here. The newest one goes live by itself; any older one can be put back with one click.</p></div>
+  {% if connected %}<div class="button-row">
+    <a class="btn btn-secondary" href="{{ url_for('releases_page', refresh=1) }}">Refresh list</a>
+    <form method="POST" action="{{ url_for('releases_check') }}" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary">Check GitHub now</button></form>
+  </div>{% endif %}
+</div>
+
+{% if running %}
+<section class="panel release-running" id="release-running">
+  <div class="release-spinner" aria-hidden="true"></div>
+  <div><strong>Deploying {{ running.title or running.short }}</strong> <code>{{ running.short }}</code>
+    <ul class="release-log" id="release-log">{% for line in running.message.splitlines()[-8:] %}<li>{{ line }}</li>{% endfor %}</ul>
+    <small class="muted">This page refreshes by itself when it is done.</small></div>
+</section>
+{% endif %}
+
+<div class="release-top">
+  <section class="panel section-panel release-live">
+    <span class="eyebrow">Live now</span>
+    {% if live %}
+      <h2>{{ live.title or 'Untitled build' }}</h2>
+      <div class="release-meta">{% if live.version %}<span class="release-version">v{{ live.version }}</span>{% endif %}<code>{{ live.short }}</code><span>{{ sources.get(live.source, live.source) }}</span><span>{{ live.finished_at.strftime('%b %-d, %Y · %-I:%M %p') }} UTC</span><span>by {{ live.by_label }}</span></div>
+    {% else %}
+      <h2>The build that was uploaded by hand</h2>
+      <p class="muted">Nothing has been deployed from GitHub yet. The first deploy saves this code first, so it can always be put back.</p>
+    {% endif %}
+  </section>
+  <section class="panel section-panel release-auto">
+    <span class="eyebrow">Auto-deploy</span>
+    {% if not connected %}
+      <h2>Not connected</h2><p class="muted">Connect GitHub below to start.</p>
+    {% elif auto_on %}
+      <h2><span class="release-dot on"></span>On</h2>
+      <p class="muted">New builds on <strong>{{ branch }}</strong> go live by themselves{% if hook_on %} the moment they land (webhook){% else %} within about 5 minutes while someone is using the site{% endif %}.</p>
+      <form method="POST" action="{{ url_for('releases_auto') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="on" value="0"><button class="btn btn-secondary btn-small">Pause auto-deploy</button></form>
+    {% else %}
+      <h2><span class="release-dot off"></span>Paused</h2>
+      <p class="muted">{{ paused_note or 'New builds wait here until you deploy them.' }}</p>
+      <form method="POST" action="{{ url_for('releases_auto') }}" onsubmit="return confirm('Turn auto-deploy back on? The newest build will go live right away.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="on" value="1"><button class="btn btn-primary btn-small">Resume — go to newest</button></form>
+    {% endif %}
+    {% if looked_at %}<small class="muted release-looked">Last looked at GitHub {{ looked_at.replace('T', ' ') }} UTC</small>{% endif %}
+  </section>
+</div>
+
+{% if check_error %}<div class="panel release-error"><strong>GitHub:</strong> {{ check_error }}</div>{% endif %}
+
+{% if connected %}
+<section class="panel section-panel">
+  <div class="section-title"><div><h2>Builds on GitHub</h2><p class="muted">Newest first, from <strong>{{ repo }}</strong> · {{ branch }}. Each one is checked (every Python file must compile) and the database is backed up before it goes live.</p></div></div>
+  {% if builds_error %}<div class="release-error">{{ builds_error }}</div>{% endif %}
+  {% if builds %}
+  <ol class="release-builds">
+    {% for build in builds %}
+    <li class="release-build place-{{ build.place }}">
+      <div class="release-build-main">
+        <div class="release-build-title">
+          {% if build.place == 'live' %}<span class="status-pill status-active">Live</span>{% elif build.place in ('newer', 'newest') %}<span class="status-pill status-in_works">{{ 'Newest' if loop.first else 'Newer' }}</span>{% endif %}
+          {% if build.last_status == 'failed' %}<span class="status-pill release-pill-failed" title="{{ build.last_message }}">Failed</span>{% endif %}
+          <strong>{{ build.title or '(no message)' }}</strong>
+        </div>
+        <div class="release-meta"><code>{{ build.short }}</code>{% if build.author %}<span>{{ build.author }}</span>{% endif %}{% if build.date %}<span>{{ build.date.strftime('%b %-d, %Y · %-I:%M %p') }} UTC</span>{% endif %}{% if build.url %}<a href="{{ build.url }}" target="_blank" rel="noopener">View on GitHub ↗</a>{% endif %}</div>
+        {% if build.notes %}<details class="release-notes"><summary>Notes</summary><pre>{{ build.notes }}</pre></details>{% endif %}
+        {% if build.last_status == 'failed' and build.last_message %}<small class="release-failed-why">{{ build.last_message }}</small>{% endif %}
+      </div>
+      <div class="release-build-action">
+        {% if build.place == 'live' %}
+          <span class="muted">Running now</span>
+        {% elif not running %}
+          <form method="POST" action="{{ url_for('releases_deploy') }}" onsubmit="return confirm('{{ 'Deploy' if build.place in ('newer', 'newest') else 'Roll back to' }} {{ build.short }} on the live site?{{ ' Auto-deploy will pause until you resume it.' if build.place == 'older' or (build.place == 'newer' and not loop.first) else '' }}');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="sha" value="{{ build.sha }}">
+            {% if build.place in ('newer', 'newest') %}<button class="btn btn-primary btn-small">Deploy</button>{% else %}<button class="btn btn-secondary btn-small">Roll back to this</button>{% endif %}
+          </form>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% elif not builds_error %}<p class="muted">No builds on {{ branch }} yet.</p>{% endif %}
+</section>
+{% endif %}
+
+<section class="panel section-panel">
+  <div class="section-title"><div><h2>Deploy history</h2><p class="muted">What went live, when, and how. Each deploy keeps a database backup in <code>instance/backups/</code> (the newest 20).</p></div></div>
+  {% if history %}
+  <div class="item-table-wrap"><table class="item-table release-history">
+    <thead><tr><th>Build</th><th>How</th><th>When (UTC)</th><th>Result</th><th></th></tr></thead>
+    <tbody>
+    {% for row in history %}
+      <tr>
+        <td><strong>{{ row.title or row.short }}</strong><small>{% if row.version %}v{{ row.version }} · {% endif %}<code>{{ row.short }}</code> · {{ row.by_label }}</small></td>
+        <td>{{ sources.get(row.source, row.source) }}</td>
+        <td>{{ (row.finished_at or row.started_at).strftime('%b %-d · %-I:%M %p') }}</td>
+        <td><span class="status-pill release-pill-{{ row.status }}">{{ {'live': 'Live', 'replaced': 'Replaced', 'failed': 'Failed', 'running': 'Running'}.get(row.status, row.status) }}</span>{% if row.status in ('live', 'replaced') and row.source != 'snapshot' %}<small>{{ row.files_changed }} changed · {{ row.files_removed }} removed</small>{% endif %}</td>
+        <td>{% if row.message %}<details class="release-notes"><summary>Log</summary><pre>{{ row.message }}</pre></details>{% endif %}
+          {% if row.source == 'snapshot' and row.status == 'replaced' and not running %}<form method="POST" action="{{ url_for('releases_restore', release_id=row.id) }}" onsubmit="return confirm('Put the pre-GitHub code back on the live site? Auto-deploy will pause.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-secondary btn-small">Restore</button></form>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<p class="muted">Nothing deployed from here yet.</p>{% endif %}
+</section>
+
+<details class="panel section-panel release-connection" {{ 'open' if not connected }}>
+  <summary><strong>Connection</strong> <span class="muted">{% if connected %}{{ repo }} · {{ branch }} · token {{ token_hint }}{% if hook_on %} · webhook on{% endif %}{% else %}not connected{% endif %}</span></summary>
+  <form method="POST" action="{{ url_for('releases_connect') }}" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Repository<input name="repo" value="{{ repo or '19rhouseknecht/Powerhouse' }}" required placeholder="owner/name"></label>
+    <label>Branch<input name="branch" value="{{ branch }}" required></label>
+    <label class="wide">GitHub token<input type="password" name="token" autocomplete="off" placeholder="{{ 'Saved (' ~ token_hint ~ ') — leave blank to keep it' if token_hint else 'github_pat_…' }}" {{ '' if token_hint else 'required' }}>
+      <small>A fine-grained token for this one repository: <strong>Contents: Read</strong> and <strong>Metadata: Read</strong>; add <strong>Webhooks: Read and write</strong> so builds go live the moment they land. Stored encrypted.</small></label>
+    <div class="wide button-row release-connect-actions"><button class="btn btn-primary">{{ 'Save connection' if connected else 'Connect GitHub' }}</button></div>
+  </form>
+  <div class="release-facts">
+    <div><span class="eyebrow">Webhook address</span><code>{{ hook_url }}</code></div>
+    <div><span class="eyebrow">Reload</span>{% if wsgi_path %}<code>{{ wsgi_path }}</code> <small class="muted">touched after each deploy</small>{% else %}<span class="muted">WSGI file not found — after a deploy, press Reload on PythonAnywhere's Web tab.</span>{% endif %}</div>
+  </div>
+  {% if connected %}<form method="POST" action="{{ url_for('releases_disconnect') }}" onsubmit="return confirm('Disconnect GitHub? The live site keeps the build it runs.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-danger btn-small">Disconnect</button></form>{% endif %}
+</details>
+
+{% if running %}
+<script>
+(function () {
+  var log = document.getElementById('release-log');
+  function look() {
+    fetch('{{ url_for('releases_status') }}', {credentials: 'same-origin'}).then(function (r) { return r.json(); }).then(function (d) {
+      if (log && d.log) { log.innerHTML = ''; d.log.forEach(function (line) { var li = document.createElement('li'); li.textContent = line; log.appendChild(li); }); }
+      if (!d.running) { setTimeout(function () { window.location.reload(); }, 2500); } else { setTimeout(look, 2000); }
+    }).catch(function () { setTimeout(look, 4000); });
+  }
+  setTimeout(look, 1500);
+})();
+</script>
+{% endif %}
+{% endblock %}

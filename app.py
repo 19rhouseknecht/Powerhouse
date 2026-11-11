@@ -7,6 +7,8 @@ import re
 import stat
 import threading
 import math
+import shutil
+import zipfile
 from difflib import SequenceMatcher
 from functools import wraps
 from urllib.parse import quote_plus
@@ -282,6 +284,35 @@ class ServiceTool(db.Model):
 class CompanySetting(db.Model):
     key = db.Column(db.String(100), primary_key=True)
     value = db.Column(db.Text, nullable=False, default="")
+
+
+class Release(db.Model):
+    """One deploy of a build onto the live site (Settings -> Releases)."""
+    id = db.Column(db.Integer, primary_key=True)
+    sha = db.Column(db.String(40), nullable=False, default="", index=True)
+    version = db.Column(db.String(40), nullable=False, default="")
+    title = db.Column(db.String(255), nullable=False, default="")
+    notes = db.Column(db.Text, nullable=False, default="")
+    author = db.Column(db.String(120), nullable=False, default="")
+    committed_at = db.Column(db.DateTime, nullable=True)
+    source = db.Column(db.String(20), nullable=False, default="manual")      # auto, manual, rollback, snapshot
+    status = db.Column(db.String(20), nullable=False, default="running")     # running, live, replaced, failed
+    by_label = db.Column(db.String(120), nullable=False, default="")
+    started_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    files_changed = db.Column(db.Integer, nullable=False, default=0)
+    files_removed = db.Column(db.Integer, nullable=False, default=0)
+    db_backup = db.Column(db.String(255), nullable=False, default="")
+    zip_path = db.Column(db.String(255), nullable=False, default="")
+    message = db.Column(db.Text, nullable=False, default="")
+
+    @property
+    def short(self):
+        return self.sha[:7] if self.sha else "snapshot"
+
+    @property
+    def label(self):
+        return self.version or self.short
 
 
 class AiAgent(db.Model):
@@ -1182,7 +1213,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
@@ -5080,6 +5111,475 @@ def populate_service_from_form(service):
                 db.session.flush()
             service.tools.append(ServiceTool(tool_id=catalog_tool.id, name=catalog_tool.name, tool_type=catalog_tool.tool_type, rental_cost=catalog_tool.rental_cost, notes=tool_notes[position].strip() if position < len(tool_notes) else "", is_critical=str(position) in critical_tools, position=position))
     return None
+
+
+# ---------------- Releases (Settings -> Releases) ----------------
+# Builds come straight from GitHub onto the live site; there is no test site.
+# The newest build on the branch goes live by itself (GitHub's webhook, or a look
+# every few minutes while someone is using the site). Any older build can be put
+# back by hand: a rollback, which pauses auto-deploy until it is switched back on.
+# The machinery lives in releases.py; this block owns the order things happen in.
+
+import releases as rel
+
+RELEASE_DIR = os.path.join(basedir, "instance", "releases")
+RELEASE_BUILDS = os.path.join(RELEASE_DIR, "builds")
+RELEASE_BACKUPS = os.path.join(basedir, "instance", "backups")
+RELEASE_INFO = os.path.join(basedir, "instance", "release.json")
+RELEASE_LOOK_EVERY = timedelta(minutes=5)
+RELEASE_SOURCES = {"auto": "Auto-deploy", "manual": "Deployed by hand", "rollback": "Rollback", "snapshot": "Restore"}
+_release_lock = rel.Lock(os.path.join(RELEASE_DIR, "deploy.lock"))
+_release_memory = {"looked": None, "builds": None, "builds_at": None}
+
+
+def release_setting(key, default=""):
+    row = db.session.get(CompanySetting, "releases_" + key)
+    return row.value if row and row.value is not None else default
+
+
+def put_release_setting(key, value, commit=True):
+    row = db.session.get(CompanySetting, "releases_" + key) or CompanySetting(key="releases_" + key)
+    row.value = str(value)
+    db.session.add(row)
+    if commit:
+        db.session.commit()
+
+
+def release_secret(key):
+    stored = release_setting(key)
+    if not stored:
+        return ""
+    try:
+        return supplier_cipher().decrypt(stored.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        return ""
+
+
+def put_release_secret(key, value, commit=True):
+    put_release_setting(key, supplier_cipher().encrypt(value.encode("utf-8")).decode("ascii") if value else "", commit)
+
+
+def release_conn():
+    return release_secret("token"), release_setting("repo"), release_setting("branch", "main") or "main"
+
+
+def release_connected():
+    token, repo, _branch = release_conn()
+    return bool(token and repo)
+
+
+def release_live():
+    return Release.query.filter_by(status="live").order_by(Release.finished_at.desc()).first()
+
+
+def release_running():
+    """The deploy in progress, if any. One left 'running' for over 30 minutes died with its worker."""
+    running = Release.query.filter_by(status="running").order_by(Release.started_at.desc()).first()
+    if running and datetime.utcnow() - running.started_at > timedelta(minutes=30):
+        running.status, running.finished_at = "failed", datetime.utcnow()
+        running.message = (running.message + "\n" if running.message else "") + "Stopped without finishing (the web worker restarted)."
+        db.session.commit()
+        return None
+    return running
+
+
+def release_auto_on():
+    return release_setting("auto", "1") == "1"
+
+
+def release_info():
+    try:
+        with open(RELEASE_INFO, encoding="utf-8") as handle:
+            data = json.load(handle)
+            return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _asset_version():
+    info = release_info()
+    if info.get("sha"):
+        return info["sha"][:7]
+    try:
+        return str(int(os.path.getmtime(os.path.join(basedir, "static", "css", "style.css"))))
+    except OSError:
+        return "1"
+
+
+ASSET_VERSION = _asset_version()     # appended to CSS/JS links so a deploy never shows stale styling
+app.jinja_env.globals["asset_version"] = ASSET_VERSION
+
+
+def _release_log(release, line):
+    release.message = (release.message + "\n" if release.message else "") + line
+    db.session.commit()
+
+
+def start_release(sha, source, by_label, zip_path="", meta=None):
+    """Record the deploy and run it in the background. Returns (release or None, sentence)."""
+    if release_running() or _release_lock.busy():
+        return None, "A deploy is already running. Wait for it to finish."
+    meta = meta or {}
+    release = Release(sha=sha or "", source=source, by_label=by_label[:120], status="running", zip_path=zip_path,
+                      title=(meta.get("title") or "")[:250], notes=meta.get("notes") or "", author=(meta.get("author") or "")[:120],
+                      committed_at=meta.get("date"), started_at=datetime.utcnow())
+    db.session.add(release)
+    db.session.commit()
+    worker = threading.Thread(target=_release_worker, args=(release.id,), daemon=True)
+    worker.start()
+    return release, "Deploying %s…" % (release.title or release.short)
+
+
+def _release_worker(release_id):
+    with app.app_context():
+        release = db.session.get(Release, release_id)
+        if release is None:
+            return
+        if not _release_lock.acquire():
+            release.status, release.finished_at = "failed", datetime.utcnow()
+            _release_log(release, "Another deploy was already running, so this one did not start.")
+            return
+        staged = ""
+        try:
+            staged = _release_deploy(release)
+        except (rel.ReleaseError, OSError, ValueError, zipfile.BadZipFile) as exc:
+            db.session.rollback()
+            release = db.session.get(Release, release_id)
+            release.status, release.finished_at = "failed", datetime.utcnow()
+            _release_log(release, "Not deployed: %s" % exc)
+        except Exception as exc:  # noqa: BLE001 — a deploy never takes the web worker down
+            db.session.rollback()
+            release = db.session.get(Release, release_id)
+            release.status, release.finished_at = "failed", datetime.utcnow()
+            _release_log(release, "Not deployed: unexpected %s: %s" % (exc.__class__.__name__, exc))
+        finally:
+            if staged:
+                shutil.rmtree(staged, ignore_errors=True)
+            _release_lock.release()
+
+
+def _release_deploy(release):
+    """Download, check, back up, copy, record, reload. Nothing live changes until the build has passed its checks."""
+    token, repo, _branch = release_conn()
+    if release.zip_path and os.path.isfile(release.zip_path):
+        zip_path = release.zip_path
+    else:
+        if not release.sha:
+            raise rel.ReleaseError("That snapshot's zip is no longer on the server.")
+        zip_path = rel.download(token, repo, release.sha, RELEASE_BUILDS)
+        release.zip_path = zip_path
+    _release_log(release, "Build downloaded." if release.sha else "Snapshot found.")
+    staged = rel.stage(zip_path, RELEASE_DIR)
+    release.version = rel.read_version(staged)
+    _release_log(release, "Build checked: every Python file compiles.")
+
+    # The very first deploy from GitHub keeps the code that was uploaded by hand, so it can be put back.
+    if not Release.query.filter(Release.status.in_(("live", "replaced"))).first():
+        snapshot = rel.snapshot_code(basedir, os.path.join(RELEASE_BUILDS, "before-github.zip"))
+        db.session.add(Release(source="snapshot", status="replaced", title="Code that was live before GitHub releases",
+                               by_label="Saved automatically", zip_path=snapshot, started_at=datetime.utcnow(),
+                               finished_at=datetime.utcnow(), message="Saved before the first deploy from GitHub."))
+        _release_log(release, "Saved the code that was live before GitHub releases (it can be restored below).")
+
+    release.db_backup = rel.backup_database(os.path.join(basedir, "instance", "app.db"), RELEASE_BACKUPS,
+                                            "before-" + (release.version or release.short))
+    if release.db_backup:
+        _release_log(release, "Database backed up: instance/backups/%s" % os.path.basename(release.db_backup))
+
+    if rel.file_hash(os.path.join(staged, "requirements.txt")) != rel.file_hash(os.path.join(basedir, "requirements.txt")):
+        _release_log(release, "requirements.txt changed: installing packages…")
+        ok, output = rel.pip_install(staged)
+        _release_log(release, ("Packages installed." if ok else "Package install failed:\n" + output))
+        if not ok:
+            raise rel.ReleaseError("the packages in requirements.txt could not be installed; the live site was not changed.")
+
+    try:
+        previous = json.loads(release_setting("manifest", "[]") or "[]")
+    except ValueError:
+        previous = []
+    changed, removed, manifest = rel.sync(staged, basedir, previous)
+    release.files_changed, release.files_removed = changed, removed
+    put_release_setting("manifest", json.dumps(manifest), commit=False)
+    for other in Release.query.filter(Release.status == "live", Release.id != release.id).all():
+        other.status = "replaced"
+    release.status, release.finished_at = "live", datetime.utcnow()
+    with open(RELEASE_INFO, "w", encoding="utf-8") as handle:
+        json.dump({"sha": release.sha, "version": release.version, "title": release.title, "release_id": release.id,
+                   "deployed_at": release.finished_at.isoformat(timespec="seconds")}, handle, indent=1)
+    _release_log(release, "%d file%s updated, %d removed." % (changed, "" if changed == 1 else "s", removed))
+    ok, said = rel.reload_web_app(release_setting("wsgi_path"))
+    _release_log(release, said)
+    return staged
+
+
+def release_check(by_label="GitHub", force=False):
+    """Look at the branch; put its newest build live when auto-deploy is on. Returns a sentence. Never raises."""
+    token, repo, branch = release_conn()
+    if not (token and repo):
+        return "GitHub is not connected yet."
+    put_release_setting("looked_at", datetime.utcnow().isoformat(timespec="seconds"))
+    try:
+        newest = rel.head(token, repo, branch)
+    except rel.ReleaseError as exc:
+        put_release_setting("error", str(exc))
+        return str(exc)
+    put_release_setting("error", "")
+    _release_memory["builds_at"] = None
+    live = release_live()
+    if live and live.sha == newest["sha"]:
+        return "The live site already runs the newest build (%s)." % newest["short"]
+    if not release_auto_on() and not force:
+        return "A newer build is on GitHub (%s). Auto-deploy is paused, so it is waiting for you." % newest["short"]
+    if not force and Release.query.filter_by(sha=newest["sha"], status="failed", source="auto").first():
+        return "The newest build (%s) already failed to deploy; it will not be retried by itself." % newest["short"]
+    release, said = start_release(newest["sha"], "auto", by_label, meta=newest)
+    return said
+
+
+def _release_check_in_background(by_label):
+    def run():
+        with app.app_context():
+            try:
+                release_check(by_label)
+            except Exception:  # noqa: BLE001
+                db.session.rollback()
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.before_request
+def release_poll():
+    """While anyone is using the site, look at GitHub every few minutes (the webhook is the quick way)."""
+    if not current_user.is_authenticated or request.endpoint in (None, "static", "releases_status"):
+        return
+    now = datetime.utcnow()
+    if _release_memory["looked"] and now - _release_memory["looked"] < RELEASE_LOOK_EVERY:
+        return
+    _release_memory["looked"] = now
+    if not release_connected() or not release_auto_on():
+        return
+    try:
+        last = datetime.fromisoformat(release_setting("looked_at")) if release_setting("looked_at") else None
+    except ValueError:
+        last = None
+    if last and now - last < RELEASE_LOOK_EVERY:
+        return
+    put_release_setting("looked_at", now.isoformat(timespec="seconds"))
+    _release_check_in_background("Auto-deploy (regular check)")
+
+
+def release_builds(force=False):
+    """The branch's builds, newest first, remembered for a minute. (builds, error)."""
+    token, repo, branch = release_conn()
+    if not (token and repo):
+        return [], ""
+    now = datetime.utcnow()
+    if not force and _release_memory["builds_at"] and now - _release_memory["builds_at"] < timedelta(seconds=60):
+        return _release_memory["builds"], ""
+    try:
+        builds = rel.list_builds(token, repo, branch)
+    except rel.ReleaseError as exc:
+        return [], str(exc)
+    _release_memory["builds"], _release_memory["builds_at"] = builds, now
+    return builds, ""
+
+
+@app.route("/settings/releases")
+@login_required
+def releases_page():
+    wsgi = release_setting("wsgi_path")
+    if not wsgi or not os.path.isfile(wsgi):
+        found = rel.find_wsgi(request.host)
+        if found != wsgi:
+            put_release_setting("wsgi_path", found)
+            wsgi = found
+    running = release_running()
+    live = release_live()
+    builds, builds_error = release_builds(force=request.args.get("refresh") == "1")
+    history = Release.query.order_by(Release.started_at.desc()).limit(40).all()
+    by_sha = {}
+    for row in sorted(history, key=lambda r: r.started_at):
+        if row.sha:
+            by_sha[row.sha] = row
+    live_index = next((i for i, b in enumerate(builds) if live and b["sha"] == live.sha), None)
+    for index, build in enumerate(builds):
+        last = by_sha.get(build["sha"])
+        build["last_status"] = last.status if last else ""
+        build["last_message"] = last.message.splitlines()[-1] if last and last.message else ""
+        if live and build["sha"] == live.sha:
+            build["place"] = "live"
+        elif live_index is None:
+            build["place"] = "newest" if index == 0 else "older"
+        else:
+            build["place"] = "newer" if index < live_index else "older"
+    token, repo, branch = release_conn()
+    return render_template("releases.html", live=live, running=running, builds=builds, builds_error=builds_error,
+                           history=history, sources=RELEASE_SOURCES, connected=bool(token and repo), repo=repo, branch=branch,
+                           token_hint=("ends in " + token[-4:]) if len(token) >= 8 else ("saved" if token else ""),
+                           auto_on=release_auto_on(), paused_note=release_setting("paused_note"),
+                           hook_on=bool(release_setting("hook_id")), hook_url=url_for("releases_github_hook", _external=True, _scheme="https"),
+                           looked_at=release_setting("looked_at"), check_error=release_setting("error"), wsgi_path=wsgi,
+                           newer_waiting=bool(builds and live and builds[0]["sha"] != live.sha), info=release_info())
+
+
+@app.route("/settings/releases/status")
+@login_required
+def releases_status():
+    running = release_running()
+    live = release_live()
+    latest = Release.query.order_by(Release.started_at.desc()).first()
+    return jsonify({"running": bool(running), "live": live.short if live else "",
+                    "log": (running or latest).message.splitlines()[-8:] if (running or latest) else [],
+                    "latest_status": latest.status if latest else ""})
+
+
+@app.route("/settings/releases/connect", methods=["POST"])
+@login_required
+def releases_connect():
+    check_csrf()
+    repo = rel.clean_repo(request.form.get("repo", ""))
+    branch = (request.form.get("branch", "") or "main").strip() or "main"
+    token = "".join(request.form.get("token", "").split())
+    if not repo:
+        flash("The repository is owner/name, like 19rhouseknecht/Powerhouse.", "error")
+        return redirect(url_for("releases_page"))
+    old_token, old_repo, _old_branch = release_conn()
+    token = token or old_token
+    if not token:
+        flash("Paste a GitHub token to connect.", "error")
+        return redirect(url_for("releases_page"))
+    try:
+        found = rel.gh("GET", "/repos/{repo}", token, repo)
+    except rel.ReleaseError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("releases_page"))
+    if old_repo and old_repo != repo and release_setting("hook_id"):
+        try:
+            rel.delete_hook(old_token, old_repo, release_setting("hook_id"))
+        except rel.ReleaseError:
+            pass
+        put_release_setting("hook_id", "", commit=False)
+    put_release_secret("token", token, commit=False)
+    put_release_setting("repo", found.get("full_name") or repo, commit=False)
+    put_release_setting("branch", branch, commit=False)
+    secret = release_secret("hook_secret") or secrets.token_hex(24)
+    put_release_secret("hook_secret", secret, commit=False)
+    db.session.commit()
+    said = "Connected to %s (%s)." % (found.get("full_name") or repo, branch)
+    try:
+        hook_id = rel.create_hook(token, repo, url_for("releases_github_hook", _external=True, _scheme="https"), secret,
+                                  release_setting("hook_id"))
+        put_release_setting("hook_id", hook_id)
+        said += " GitHub will tell this site the moment a new build lands."
+    except rel.ReleaseError as exc:
+        put_release_setting("hook_id", "")
+        said += " No instant webhook (%s) — the site will still look every few minutes." % str(exc).rstrip(".")
+    _release_memory["builds_at"] = None
+    flash(said, "success")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/settings/releases/disconnect", methods=["POST"])
+@login_required
+def releases_disconnect():
+    check_csrf()
+    token, repo, _branch = release_conn()
+    if release_setting("hook_id"):
+        try:
+            rel.delete_hook(token, repo, release_setting("hook_id"))
+        except rel.ReleaseError:
+            pass
+    for key in ("token", "hook_secret", "hook_id", "repo"):
+        put_release_setting(key, "", commit=False)
+    db.session.commit()
+    _release_memory["builds_at"] = None
+    flash("GitHub disconnected. The live site keeps running the build it has.", "success")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/settings/releases/check", methods=["POST"])
+@login_required
+def releases_check():
+    check_csrf()
+    flash(release_check("Checked by %s" % current_user.username), "success")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/settings/releases/deploy", methods=["POST"])
+@login_required
+def releases_deploy():
+    check_csrf()
+    sha = request.form.get("sha", "").strip()
+    if not (len(sha) == 40 and all(ch in "0123456789abcdef" for ch in sha)):
+        abort(400)
+    token, repo, _branch = release_conn()
+    try:
+        meta = rel.commit(token, repo, sha)
+    except rel.ReleaseError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("releases_page"))
+    builds, _error = release_builds()
+    is_newest = bool(builds) and builds[0]["sha"] == sha
+    source = "manual" if is_newest else "rollback"
+    release, said = start_release(sha, source, current_user.username, meta=meta)
+    if release and source == "rollback":
+        put_release_setting("auto", "0", commit=False)
+        put_release_setting("paused_note", "Paused because %s rolled back to %s on %s." % (
+            current_user.username, meta["short"], datetime.utcnow().strftime("%b %d, %Y %H:%M UTC")))
+    elif release and is_newest:
+        put_release_setting("paused_note", "")
+    flash(said, "success" if release else "error")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/settings/releases/<int:release_id>/restore", methods=["POST"])
+@login_required
+def releases_restore(release_id):
+    check_csrf()
+    snapshot = db.get_or_404(Release, release_id)
+    if snapshot.source != "snapshot" or not os.path.isfile(snapshot.zip_path):
+        flash("That snapshot can no longer be restored.", "error")
+        return redirect(url_for("releases_page"))
+    release, said = start_release("", "snapshot", current_user.username, zip_path=snapshot.zip_path,
+                                  meta={"title": snapshot.title})
+    if release:
+        put_release_setting("auto", "0", commit=False)
+        put_release_setting("paused_note", "Paused because %s restored the pre-GitHub code." % current_user.username)
+    flash(said, "success" if release else "error")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/settings/releases/auto", methods=["POST"])
+@login_required
+def releases_auto():
+    check_csrf()
+    turn_on = request.form.get("on") == "1"
+    put_release_setting("auto", "1" if turn_on else "0", commit=False)
+    put_release_setting("paused_note", "" if turn_on else "Paused by %s." % current_user.username)
+    if turn_on:
+        flash("Auto-deploy is on. " + release_check("Auto-deploy (switched on by %s)" % current_user.username), "success")
+    else:
+        flash("Auto-deploy is paused. New builds will wait here until you deploy them.", "success")
+    return redirect(url_for("releases_page"))
+
+
+@app.route("/releases/github-hook", methods=["POST"])
+def releases_github_hook():
+    """GitHub's ping when the branch changes. Only a correctly signed push to the branch does anything."""
+    body = request.get_data(cache=False) or b""
+    if not rel.signature_ok(release_secret("hook_secret"), body, request.headers.get("X-Hub-Signature-256", "")):
+        return jsonify({"ok": False, "said": "bad signature"}), 403
+    event = request.headers.get("X-GitHub-Event", "")
+    if event == "ping":
+        return jsonify({"ok": True, "said": "pong"})
+    try:
+        payload = json.loads(body.decode("utf-8") or "{}")
+    except ValueError:
+        return jsonify({"ok": False, "said": "not json"}), 400
+    _token, _repo, branch = release_conn()
+    if event != "push" or payload.get("ref") != "refs/heads/" + branch:
+        return jsonify({"ok": True, "said": "not the release branch"})
+    _release_check_in_background("Auto-deploy (GitHub webhook)")
+    return jsonify({"ok": True, "said": "checking"}), 202
 
 
 # Create tables on import — this runs whether the app is started with
