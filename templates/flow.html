@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Power House Flow — Power House{% endblock %}
+{% block content %}
+<div class="flow-page" id="flow-app" data-save-url="{{ url_for('flow_save') }}" data-csrf="{{ csrf_token() }}" data-version="{{ chart.version }}">
+  <div class="page-heading heading-actions flow-heading">
+    <div><span class="eyebrow">Planning</span><h1>Power House Flow</h1><p>How the business runs, from the first call to the last step. Mark each step by how much the software handles today, so it is clear what to build next.</p></div>
+    <div class="flow-toolbar" role="toolbar" aria-label="Flow tools">
+      <span class="flow-saved" id="flow-saved" aria-live="polite"{% if chart.updated_at %} title="Last saved {{ chart.updated_at.strftime('%b %-d, %Y %-I:%M %p') }} UTC{% if chart.updated_by %} by {{ chart.updated_by.username }}{% endif %}"{% endif %}>{% if chart.updated_at %}Saved {{ chart.updated_at.strftime('%b %-d') }}{% if chart.updated_by %} by {{ chart.updated_by.username }}{% endif %}{% endif %}</span>
+      <button type="button" class="btn btn-secondary btn-small" data-flow="undo" title="Undo (Ctrl+Z)" disabled>↶ Undo</button>
+      <button type="button" class="btn btn-secondary btn-small" data-flow="redo" title="Redo (Ctrl+Shift+Z)" disabled>↷ Redo</button>
+      <span class="flow-zoom"><button type="button" class="btn btn-secondary btn-small" data-flow="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><button type="button" class="btn btn-secondary btn-small flow-zoom-value" data-flow="zoom-reset" title="Reset zoom">100%</button><button type="button" class="btn btn-secondary btn-small" data-flow="zoom-in" title="Zoom in" aria-label="Zoom in">＋</button></span>
+      <button type="button" class="btn btn-secondary btn-small" data-flow="print">Print</button>
+    </div>
+  </div>
+
+  <div class="flow-layout">
+    <div class="flow-stage panel" id="flow-stage">
+      <div class="flow-linking" id="flow-linking" hidden>Click the step this one leads to. <button type="button" class="btn btn-small btn-secondary" data-flow="cancel-link">Cancel</button></div>
+      <div class="flow-empty" id="flow-empty" hidden>
+        <span>⇶</span>
+        <h2>Map the business</h2>
+        <p>Start with the very first thing that happens: usually a customer reaching out.</p>
+        <div class="button-row flow-empty-actions">
+          <button type="button" class="btn btn-primary" data-flow="start-blank">Start with a first step</button>
+          <button type="button" class="btn btn-secondary" data-flow="start-sample">Start from a sample flow</button>
+        </div>
+        <small class="muted">The sample is a typical electrical job, from the first call to a Google review. Change or delete any of it.</small>
+      </div>
+      <div class="flow-scroll" id="flow-scroll"><div class="flow-sizer" id="flow-sizer"><div class="flow-canvas" id="flow-canvas"><svg class="flow-edges" id="flow-edges" aria-hidden="true"></svg></div></div></div>
+    </div>
+
+    <aside class="flow-panel panel" id="flow-panel" aria-live="polite"></aside>
+  </div>
+</div>
+<script id="flow-data" type="application/json">{{ data|tojson }}</script>
+<script src="{{ url_for('static', filename='js/flow.js', v=asset_version) }}"></script>
+{% endblock %}

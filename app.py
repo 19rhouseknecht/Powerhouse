@@ -286,6 +286,17 @@ class CompanySetting(db.Model):
     value = db.Column(db.Text, nullable=False, default="")
 
 
+class FlowChart(db.Model):
+    """Power House Flow: the business drawn as a flow chart. Stands apart from everything else."""
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(120), nullable=False, default="Power House Flow")
+    data_json = db.Column(db.Text, nullable=False, default="")
+    version = db.Column(db.Integer, nullable=False, default=0)
+    updated_at = db.Column(db.DateTime, nullable=True)
+    updated_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    updated_by = db.relationship("User")
+
+
 class Release(db.Model):
     """One deploy of a build onto the live site (Settings -> Releases)."""
     id = db.Column(db.Integer, primary_key=True)
@@ -588,10 +599,15 @@ class Job(db.Model):
 
     @property
     def bucket(self):
+        """completed · active (quote approved) · quoted (a confirmed quote, no decision yet) · in_works (before a quote)."""
         if self.status in {"completed", "declined"}:
             return "completed"
         if self.status in {"approved", "scheduled", "active"}:
             return "active"
+        if self.material_order is not None and self.material_order.quote_option_id:
+            return "active"
+        if any(quote.status == "confirmed" for quote in self.quotes):
+            return "quoted"
         return "in_works"
 
     @property
@@ -1213,7 +1229,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
@@ -2648,15 +2664,15 @@ def delete_client(client_id):
 @login_required
 def jobs():
     tab = request.args.get("tab", "active")
-    if tab not in {"active", "in_works", "completed", "all"}:
+    if tab not in {"in_works", "quoted", "active", "completed", "all"}:
         tab = "active"
     search = request.args.get("q", "").strip()
-    query = Job.query.join(Client)
+    query = Job.query.join(Client).options(db.selectinload(Job.quotes), db.selectinload(Job.material_order))
     if search:
         query = query.filter(db.or_(Job.title.ilike(f"%{search}%"), Job.description.ilike(f"%{search}%"), Client.first_name.ilike(f"%{search}%"), Client.last_name.ilike(f"%{search}%"), Job.address_line1.ilike(f"%{search}%")))
     all_jobs = query.order_by(Job.updated_at.desc()).all()
     shown_jobs = all_jobs if tab == "all" else [job for job in all_jobs if job.bucket == tab]
-    counts = {key: sum(job.bucket == key for job in all_jobs) for key in ("active", "in_works", "completed")}
+    counts = {key: sum(job.bucket == key for job in all_jobs) for key in ("in_works", "quoted", "active", "completed")}
     counts["all"] = len(all_jobs)
     return render_template("jobs.html", jobs=shown_jobs, tab=tab, counts=counts, search=search)
 
@@ -2777,6 +2793,8 @@ def select_job_quote_option(job_id):
     order.status = "draft"
     order.cart_ready_at = None
     build_material_order_from_option(order, option)
+    if job.status not in {"approved", "scheduled", "active", "completed"}:
+        job.status = "approved"          # the client picked an option: the quote is approved
     db.session.commit()
     flash(f'{option.tier} selected. The job material order is ready to review.', "success")
     return redirect(url_for("job_material_order", job_id=job.id))
@@ -5111,6 +5129,85 @@ def populate_service_from_form(service):
                 db.session.flush()
             service.tools.append(ServiceTool(tool_id=catalog_tool.id, name=catalog_tool.name, tool_type=catalog_tool.tool_type, rental_cost=catalog_tool.rental_cost, notes=tool_notes[position].strip() if position < len(tool_notes) else "", is_critical=str(position) in critical_tools, position=position))
     return None
+
+
+# ---------------- Power House Flow ----------------
+# A flow chart of how the business runs, first contact to the last step, with branches.
+# It reads and writes nothing but its own table. Drawn and edited by static/js/flow.js.
+
+FLOW_KINDS = {"start", "step", "decision", "end"}
+FLOW_AUTO = {"", "manual", "partial", "software"}
+FLOW_MAX_NODES = 400
+FLOW_ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def flow_clean(data):
+    """Keep only what the editor makes: steps and the arrows between them. Anything else is dropped."""
+    nodes, seen = [], set()
+    for raw in (data.get("nodes") if isinstance(data, dict) else None) or []:
+        if not isinstance(raw, dict) or len(nodes) >= FLOW_MAX_NODES:
+            continue
+        node_id = str(raw.get("id") or "")
+        if not FLOW_ID.match(node_id) or node_id in seen:
+            continue
+        seen.add(node_id)
+        nodes.append({"id": node_id,
+                      "title": str(raw.get("title") or "").strip()[:200] or "Untitled step",
+                      "kind": raw.get("kind") if raw.get("kind") in FLOW_KINDS else "step",
+                      "who": str(raw.get("who") or "").strip()[:80],
+                      "auto": raw.get("auto") if raw.get("auto") in FLOW_AUTO else "",
+                      "notes": str(raw.get("notes") or "")[:4000]})
+    edges, pairs = [], set()
+    for raw in (data.get("edges") if isinstance(data, dict) else None) or []:
+        if not isinstance(raw, dict):
+            continue
+        a, b = str(raw.get("from") or ""), str(raw.get("to") or "")
+        if a not in seen or b not in seen or a == b or (a, b) in pairs:
+            continue
+        pairs.add((a, b))
+        edges.append({"from": a, "to": b, "label": str(raw.get("label") or "").strip()[:80]})
+    return {"nodes": nodes, "edges": edges}
+
+
+def flow_chart():
+    chart = FlowChart.query.order_by(FlowChart.id).first()
+    if chart is None:
+        chart = FlowChart(name="Power House Flow")
+        db.session.add(chart)
+        db.session.commit()
+    return chart
+
+
+@app.route("/flow")
+@login_required
+def flow_page():
+    chart = flow_chart()
+    try:
+        data = flow_clean(json.loads(chart.data_json)) if chart.data_json else {"nodes": [], "edges": []}
+    except ValueError:
+        data = {"nodes": [], "edges": []}
+    return render_template("flow.html", chart=chart, data=data)
+
+
+@app.route("/flow/save", methods=["POST"])
+@login_required
+def flow_save():
+    token = session.get("csrf_token")
+    sent = request.headers.get("X-CSRF-Token", "")
+    if not token or not sent or not secrets.compare_digest(token, sent):
+        return jsonify({"ok": False, "said": "Your session expired. Reload the page."}), 400
+    body = request.get_json(silent=True) or {}
+    chart = flow_chart()
+    if body.get("version") != chart.version:
+        who = chart.updated_by.username if chart.updated_by else "someone"
+        return jsonify({"ok": False, "conflict": True,
+                        "said": "%s changed the flow since you opened it. Reload to see their version." % who}), 409
+    chart.data_json = json.dumps(flow_clean(body.get("data") or {}), separators=(",", ":"))
+    chart.version += 1
+    chart.updated_at = datetime.utcnow()
+    chart.updated_by = current_user
+    db.session.commit()
+    return jsonify({"ok": True, "version": chart.version})
 
 
 # ---------------- Releases (Settings -> Releases) ----------------
