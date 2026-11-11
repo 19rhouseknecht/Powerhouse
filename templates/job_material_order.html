@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Material Order — Job #{{ job.job_number }}{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('jobs') }}">Jobs</a><span>/</span><a href="{{ url_for('job_detail', job_id=job.id) }}">Job #{{ job.job_number }}</a><span>/</span>Material order</div>
+<div class="page-heading heading-actions material-order-heading"><div><span class="eyebrow">Job #{{ job.job_number }} · PO {{ job.purchase_order }}</span><h1>Order the materials</h1><p>{{ job.client.full_name }} · {{ order.quote_option.tier if order.quote_option else 'Selected option' }}{% if order.quote_option %} — {{ order.quote_option.title }}{% endif %}</p></div><div class="material-order-total"><small>Estimated materials</small><strong>${{ '{:,.2f}'.format(order.material_total) }}</strong><span>{{ order.items|length }} line item{{ '' if order.items|length == 1 else 's' }}</span></div></div>
+<div class="material-order-notice"><span>↳</span><div><strong>This is a job-specific copy</strong><p>Quantity, item, and pricing changes here do not alter the original Service, Pricing Sheet, or confirmed quote.</p></div></div>
+{% if order.status == 'cart_ready' %}<div class="cart-ready-banner"><span>✓</span><div><strong>Cart ready for ordering</strong><p>Prepared {{ order.cart_ready_at.strftime('%b %-d, %Y at %-I:%M %p') if order.cart_ready_at else 'now' }}. Editing the list will return it to draft status.</p></div></div>{% endif %}
+<form method="POST" action="{{ url_for('update_job_material_order', job_id=job.id) }}" class="panel material-order-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  {% if order.items %}<div class="item-table-wrap"><table class="item-table material-order-table"><thead><tr><th>Material</th><th>Source</th><th>Quantity</th><th>Unit</th><th>Unit price</th><th>Supplier / Part #</th><th>Notes</th><th>Remove</th></tr></thead><tbody>
+  {% for item in order.items %}<tr><td><input type="hidden" name="item_id[]" value="{{ item.id }}"><input name="item_name[]" value="{{ item.name }}" required>{% if item.price_item_id %}<small>Pricing Sheet item #{{ item.price_item_id }}</small>{% else %}<small>Job-only item</small>{% endif %}</td><td><span class="material-source">{{ item.source_services or 'Added manually' }}</span></td><td><input type="number" min="0.01" step="0.01" name="item_quantity[]" value="{{ '%g'|format(item.quantity) }}" required></td><td><select name="item_unit[]">{% for value, label in [('ea','each'),('ft','foot'),('roll','roll'),('box','box'),('lb','pound'),('job','job')] %}<option value="{{ value }}" {{ 'selected' if item.unit == value }}>{{ label }}</option>{% endfor %}</select></td><td><div class="money-input"><span>$</span><input type="number" min="0" step="0.01" name="item_unit_price[]" value="{{ '%.2f'|format(item.unit_price) }}"></div><small>${{ '{:,.2f}'.format(item.total) }} total</small></td><td><div class="supplier-part-list"><input name="item_supplier[]" value="{{ item.supplier }}" placeholder="Supplier"><input name="item_part_number[]" value="{{ item.part_number }}" placeholder="Part #"></div></td><td><input name="item_notes[]" value="{{ item.notes }}" placeholder="Order note"></td><td class="material-remove"><label><input type="checkbox" name="remove_item_id[]" value="{{ item.id }}"><span>×</span></label></td></tr>{% endfor %}
+  </tbody></table></div><div class="material-order-save"><span>Save after changing quantities, prices, notes, or removals.</span><button class="btn btn-primary">Save order changes</button></div>{% else %}<div class="empty-state compact"><span>□</span><h2>No materials yet</h2><p>Add a Pricing Sheet or job-only item below.</p></div>{% endif %}
+</form>
+<details class="panel add-price-panel material-order-add" open><summary>＋ Add another material</summary><form method="POST" action="{{ url_for('add_job_material_order_item', job_id=job.id) }}" class="material-add-form" id="material-add-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="price_item_id" id="material-price-item-id"><label class="wide">Material<input name="name" id="material-name" list="material-catalog" required placeholder="Search Pricing Sheet or enter a job-only item" autocomplete="off"></label><label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" value="1" required></label><label>Unit<select name="unit" id="material-unit"><option value="ea">each</option><option value="ft">foot</option><option value="roll">roll</option><option value="box">box</option><option value="lb">pound</option><option value="job">job</option></select></label><label>Unit price<input type="number" name="unit_price" id="material-price" min="0" step="0.01" value="0.00" required></label><label>Supplier<input name="supplier" id="material-supplier" placeholder="Optional"></label><label>Part #<input name="part_number" id="material-part-number" placeholder="Optional"></label><label class="wide">Notes<input name="notes" placeholder="Optional order note"></label><button class="btn btn-primary">Add material</button></form></details>
+<datalist id="material-catalog">{% for item in pricing_items %}<option value="{{ item.name }}"></option>{% endfor %}</datalist>
+<div class="material-cart-actions"><a class="btn btn-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Back to job</a><form method="POST" action="{{ url_for('add_job_material_order_to_cart', job_id=job.id) }}" onsubmit="return confirm('Mark this material order ready for your external cart updater?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if not order.items }}>{{ 'Re-send to cart' if order.status == 'cart_ready' else 'Add to cart' }}</button></form></div>
+<script id="material-catalog-data" type="application/json">{{ pricing_items|map_price_items|tojson }}</script>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const catalog = JSON.parse(document.getElementById('material-catalog-data').textContent || '[]');
+  const name = document.getElementById('material-name');
+  const id = document.getElementById('material-price-item-id');
+  const unit = document.getElementById('material-unit');
+  const price = document.getElementById('material-price');
+  const supplier = document.getElementById('material-supplier');
+  const part = document.getElementById('material-part-number');
+  const selectMatch = () => {
+    const match = catalog.find(item => item.name.toLowerCase() === name.value.trim().toLowerCase());
+    id.value = match ? match.id : '';
+    if (!match) return;
+    unit.value = match.unit;
+    price.value = Number(match.price || 0).toFixed(2);
+    const preferred = match.supplier_parts.find(row => row.supplier.toLowerCase().includes('cooper')) || match.supplier_parts[0];
+    supplier.value = preferred ? preferred.supplier : '';
+    part.value = preferred ? preferred.part_number : '';
+  };
+  name.addEventListener('input', selectMatch);
+  name.addEventListener('change', selectMatch);
+});
+</script>
+{% endblock %}

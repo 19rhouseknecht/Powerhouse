@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Leave a Review - Power House{% endblock %}
+{% block content %}
+<div class="review-page-shell">
+  <div class="review-card-screen">
+    <img class="review-wordmark" src="{{ url_for('static', filename='img/logo-wordmark.png') }}" alt="Power House Electrical Solutions">
+    <h1>If our team earned your trust today, we'd be grateful for your five-star Google review.</h1>
+    <div class="review-qr-frame">{% if review_url %}<a href="{{ review_url }}" target="_blank" rel="noopener" aria-label="Open Google review page">{% endif %}<img src="{{ url_for('static', filename='img/google-review-qr.png') }}" alt="Scan to leave a Google review">{% if review_url %}</a>{% endif %}</div>
+    <div class="google-mark"><strong>G</strong><span>Google</span></div>
+    <div class="review-stars" aria-label="Five stars">★★★★★</div>
+    {% if review_url %}<a class="review-open-button" href="{{ review_url }}" target="_blank" rel="noopener">Leave a Google review</a>{% else %}<p class="review-scan-note">Scan the QR code with your phone's camera.</p>{% endif %}
+    <footer><span>PowerhouseElectricalSolutions.com</span><i>⚡</i><span>Office: 570-754-8409</span></footer>
+  </div>
+</div>
+{% endblock %}

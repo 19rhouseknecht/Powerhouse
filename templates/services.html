@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Services — Power House Electrical Solutions{% endblock %}
+{% block content %}
+<div class="page-heading heading-actions">
+  <div><span class="eyebrow">Quoting / Services</span><h1>Service library</h1><p>Standardize what gets installed, what it costs, and what the crew needs to bring.</p></div>
+  <a href="{{ url_for('create_service') }}" class="btn btn-primary">＋ New service</a>
+</div>
+<form class="filter-bar" method="GET">
+  <input type="search" name="q" value="{{ search }}" placeholder="Search services…">
+  <select name="category" onchange="this.form.submit()"><option value="">All categories</option>{% for category in categories %}<option value="{{ category }}" {{ 'selected' if category == selected_category else '' }}>{{ category }}</option>{% endfor %}</select>
+  <button class="btn btn-secondary" type="submit">Search</button>
+</form>
+{% if services %}
+<div class="service-grid">
+  {% for service in services %}
+  <a class="service-card" href="{{ url_for('service_detail', service_id=service.id) }}">
+    <div class="service-art">
+      {% if service.drawing_filename and not service.drawing_filename.lower().endswith('.pdf') %}<img src="{{ url_for('static', filename='uploads/services/' + service.drawing_filename) }}" alt="{{ service.name }} drawing">{% else %}<span>⚡</span>{% endif %}
+      <b>{{ service.category }}</b>
+    </div>
+    <div class="service-card-body"><h2>{{ service.name }}</h2><p>{{ service.description or 'No service description yet.' }}</p><div class="service-stats"><span><strong>{{ service.items|length }}</strong> items</span><span><strong>{{ service.tools|length }}</strong> tools</span><span><strong>${{ '%.2f'|format(service.example_total) }}</strong> example</span></div></div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state"><span>⚡</span><h2>{{ 'No matching services' if search or selected_category else 'Build your first service' }}</h2><p>{{ 'Try changing the search or category.' if search or selected_category else 'Add a repeatable job with its materials, tools, example quantities, and drawing.' }}</p>{% if not search and not selected_category %}<a class="btn btn-primary" href="{{ url_for('create_service') }}">Create a service</a>{% endif %}</div>
+{% endif %}
+{% endblock %}

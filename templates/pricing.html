@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Pricing Sheet — Power House Electrical Solutions{% endblock %}
+{% block content %}
+<div class="page-heading heading-actions">
+  <div>
+  <span class="eyebrow">Quoting / Pricing Sheet</span><h1>Pricing sheet</h1>
+  <p>One source for material names, units, supplier part numbers, labor, and current prices. Updates automatically flow into every linked service.</p>
+  </div><div class="button-row"><a class="btn {{ 'btn-primary' if review_duplicates else 'btn-secondary' }}" href="{{ url_for('pricing_sheet', q=search, category=selected_category, supplier=selected_supplier, unit=selected_unit, sort=selected_sort, direction=selected_direction, duplicates=0 if review_duplicates else 1) }}">{{ 'Hide duplicate review' if review_duplicates else 'Review near duplicates' }}</a><form method="POST" action="{{ url_for('cleanup_duplicate_price_items') }}" onsubmit="return confirm('Merge exact duplicate names and supplier part numbers? Linked services and quotes will be moved to the best existing item.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-secondary">Merge exact duplicates</button></form></div>
+</div>
+<section class="panel cooper-sync-panel">
+  <div class="cooper-sync-info"><span class="supplier-mark">C</span><div><span class="eyebrow">Office price listener</span><h2>Cooper price update</h2><p>{% if active_sync %}Check #{{ active_sync.batch_id }} is {{ active_sync.status }}. The office listener will process it automatically.{% else %}Queue all Cooper part numbers for the always-running office listener, then review every match before applying it.{% endif %}</p>{% if latest_sync %}<a class="inline-link" href="{{ url_for('cooper_sync_preview', batch_id=latest_sync.batch_id) }}">Review latest completed check #{{ latest_sync.batch_id }}</a>{% endif %}</div></div>
+  <div class="button-row">{% if active_sync %}<button class="btn btn-primary" disabled>Update in progress</button><form method="POST" action="{{ url_for('cancel_cooper_price_sync', batch_id=active_sync.batch_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-ghost">Cancel</button></form>{% else %}<form method="POST" action="{{ url_for('check_cooper_prices') }}" data-cooper-sync-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="scope" value="new"><button class="btn btn-secondary">Get new item prices only</button></form><form method="POST" action="{{ url_for('check_cooper_prices') }}" data-cooper-sync-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="scope" value="all"><button class="btn btn-primary">Update all prices</button></form>{% endif %}</div>
+</section>
+<aside class="cooper-bot-window" data-cooper-bot data-status-url="{% if active_sync %}{{ url_for('cooper_sync_status', batch_id=active_sync.batch_id) }}{% endif %}" {{ '' if active_sync else 'hidden' }}><div class="cooper-bot-head"><span class="bot-pulse"></span><div><strong>Cooper price activity</strong><small>Live status from your office listener</small></div><button type="button" data-bot-close>×</button></div><div class="cooper-progress"><span data-bot-progress></span></div><div class="cooper-bot-log" data-bot-log><p>Waiting for activity…</p></div><a class="btn btn-primary btn-small" data-bot-preview hidden>Review proposed prices</a></aside>
+<section class="panel labor-rate-panel">
+  <div><span class="eyebrow">Company pricing</span><h2>Labor rate</h2><p class="muted">This hourly rate is applied to the estimated labor time stored on each service.</p></div>
+  <form method="POST" action="{{ url_for('update_labor_rate') }}" class="labor-rate-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="money-input"><span>$</span><input type="number" min="0" step="0.01" name="labor_rate" value="{{ '%.2f'|format(labor_rate) }}" required></div><span class="muted">per hour</span>
+    <button class="btn btn-primary" type="submit">Save labor rate</button>
+  </form>
+</section>
+<details class="panel add-price-panel" open>
+  <summary>＋ Add pricing item</summary>
+  <form method="POST" action="{{ url_for('create_price_item') }}" class="pricing-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="grow">Item name<input name="name" required placeholder="Weatherhead"></label>
+    <label>Category<input name="category" placeholder="Service Materials"></label>
+    <label>Supplier<input name="supplier_name[]" value="Cooper Electric" placeholder="Cooper, RAB, Lowe's…"></label><label>Supplier part #<input name="supplier_part_number[]" placeholder="Part number"></label>
+    <label>Unit<select name="unit"><option value="ea">each</option><option value="ft">per foot</option><option value="roll">per roll</option><option value="box">per box</option><option value="lb">per pound</option><option value="job">per job</option></select></label>
+    <label>Price<input type="number" min="0" step="0.01" name="price" value="0.00" required></label>
+    <label>Labor / unit<input type="number" min="0" step="0.01" name="labor_hours_per_unit" value="0" required><small>hours per selected unit</small></label>
+    <label class="grow">Notes<input name="notes" placeholder="Optional purchasing note"></label>
+    <button class="btn btn-primary" type="submit">Add item</button>
+  </form>
+</details>
+{% if review_duplicates %}
+<section class="panel section-panel duplicate-review-panel">
+  <div class="section-title"><div><span class="eyebrow">Quality check</span><h2>Possible duplicate items</h2><p class="muted">Nothing is changed automatically. Compare each pair, then rename, delete, or use “Merge exact duplicates” only when appropriate.</p></div><span class="usage-count">{{ duplicate_pairs|length }} pair{{ '' if duplicate_pairs|length == 1 else 's' }}</span></div>
+  {% if duplicate_pairs %}<div class="duplicate-pair-list">{% for pair in duplicate_pairs %}<article><span>{{ pair.score }}% match</span><a href="#price-item-{{ pair.left.id }}">{{ pair.left.name }}</a><b>↔</b><a href="#price-item-{{ pair.right.id }}">{{ pair.right.name }}</a><small>{{ pair.reason }}</small></article>{% endfor %}</div>{% else %}<div class="empty-state compact"><span>✓</span><h3>No likely duplicates found</h3><p>The current filtered items have distinct names and part numbers.</p></div>{% endif %}
+</section>
+{% endif %}
+<form class="filter-bar pricing-filters" method="GET">
+  <input type="hidden" name="duplicates" value="{{ 1 if review_duplicates else 0 }}">
+  <input type="search" name="q" value="{{ search }}" placeholder="Search name, supplier, or part number…">
+  <select name="category" onchange="this.form.submit()"><option value="">All categories</option>{% for category in categories %}<option value="{{ category }}" {{ 'selected' if category == selected_category else '' }}>{{ category }}</option>{% endfor %}</select>
+  <select name="supplier" onchange="this.form.submit()"><option value="">All suppliers</option>{% for supplier in suppliers %}<option value="{{ supplier }}" {{ 'selected' if supplier == selected_supplier else '' }}>{{ supplier }}</option>{% endfor %}</select>
+  <select name="unit" onchange="this.form.submit()"><option value="">All units</option>{% for value, label in [('ea','Each'),('ft','Per foot'),('roll','Roll'),('box','Box'),('lb','Pound'),('job','Job')] %}<option value="{{ value }}" {{ 'selected' if value == selected_unit else '' }}>{{ label }}</option>{% endfor %}</select>
+  <select name="sort" onchange="this.form.submit()"><option value="name" {{ 'selected' if selected_sort == 'name' }}>Item name</option><option value="category" {{ 'selected' if selected_sort == 'category' }}>Category</option><option value="supplier" {{ 'selected' if selected_sort == 'supplier' }}>Supplier</option><option value="unit" {{ 'selected' if selected_sort == 'unit' }}>Unit</option><option value="price" {{ 'selected' if selected_sort == 'price' }}>Material price</option><option value="labor" {{ 'selected' if selected_sort == 'labor' }}>Labor time</option><option value="usage" {{ 'selected' if selected_sort == 'usage' }}>Times used</option></select>
+  <select name="direction" onchange="this.form.submit()"><option value="asc" {{ 'selected' if selected_direction == 'asc' }}>A–Z / Low–High</option><option value="desc" {{ 'selected' if selected_direction == 'desc' }}>Z–A / High–Low</option></select>
+  <button class="btn btn-secondary">Apply</button><a class="btn btn-ghost" href="{{ url_for('pricing_sheet') }}">Clear</a>
+</form>
+<div class="panel pricing-table-panel">
+{% if items %}
+<div class="item-table-wrap"><table class="item-table pricing-table">
+  <thead><tr><th>Item</th><th>Category</th><th>Supplier part numbers</th><th>Unit</th><th>Material price</th><th>Labor / unit</th><th>Used</th><th></th></tr></thead>
+  <tbody>{% for item in items %}{% set form_id = 'price-edit-' ~ item.id %}
+    <tr id="price-item-{{ item.id }}">
+      <td><form id="{{ form_id }}" method="POST" action="{{ url_for('edit_price_item', item_id=item.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="notes" value="{{ item.notes }}"></form><input form="{{ form_id }}" name="name" value="{{ item.name }}" required>{% if item.notes %}<small>{{ item.notes }}</small>{% endif %}</td>
+      <td><input form="{{ form_id }}" name="category" value="{{ item.category }}"></td>
+      <td><div class="supplier-part-list">{% for supplier_part in item.supplier_parts %}<div><input form="{{ form_id }}" name="supplier_name[]" value="{{ supplier_part.supplier }}" placeholder="Supplier"><input form="{{ form_id }}" name="supplier_part_number[]" value="{{ supplier_part.part_number }}" placeholder="Part #"></div>{% endfor %}<div class="supplier-part-add"><input form="{{ form_id }}" name="supplier_name[]" placeholder="Add supplier"><input form="{{ form_id }}" name="supplier_part_number[]" placeholder="Add part #"></div></div></td>
+      <td><select form="{{ form_id }}" name="unit">{% for value, label in [('ea','each'),('ft','per foot'),('roll','per roll'),('box','per box'),('lb','per pound'),('job','per job')] %}<option value="{{ value }}" {{ 'selected' if item.unit == value else '' }}>{{ label }}</option>{% endfor %}</select></td>
+      <td><div class="money-input"><span>$</span><input form="{{ form_id }}" type="number" min="0" step="0.01" name="price" value="{{ '%.2f'|format(item.price) }}"></div></td>
+      <td><div class="labor-hours-input"><input form="{{ form_id }}" type="number" min="0" step="0.01" name="labor_hours_per_unit" value="{{ '%g'|format(item.labor_hours_per_unit) }}"><span>hr/{{ item.unit }}</span></div></td>
+      <td><div class="service-usage-list">{% for service in item.linked_services %}<a href="{{ url_for('service_detail', service_id=service.id) }}">{{ service.name }}</a>{% else %}<span class="muted">Not used</span>{% endfor %}</div></td>
+      <td class="price-actions"><button form="{{ form_id }}" class="btn btn-small btn-secondary">Save</button><form method="POST" action="{{ url_for('delete_price_item', item_id=item.id) }}" onsubmit="return confirm('Remove this pricing item and delete it from every linked service? Confirmed quote history will remain unchanged.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-small btn-danger" title="Remove pricing item">×</button></form></td>
+    </tr>
+  {% endfor %}</tbody>
+</table></div>
+{% else %}<div class="empty-state"><span>＄</span><h2>No pricing items found</h2><p>Add your first item above or change the current filters.</p></div>{% endif %}
+</div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const storageKey = `powerhouse-pricing-scroll:${location.pathname}${location.search}`;
+  const savedPosition = sessionStorage.getItem(storageKey);
+  if (savedPosition !== null) {
+    sessionStorage.removeItem(storageKey);
+    requestAnimationFrame(() => window.scrollTo({ top: Number(savedPosition) || 0, behavior: 'instant' }));
+  }
+
+  document.querySelectorAll('.pricing-table form').forEach((form) => {
+    form.addEventListener('submit', () => {
+      sessionStorage.setItem(storageKey, String(window.scrollY));
+    });
+  });
+});
+</script>
+{% endblock %}

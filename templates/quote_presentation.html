@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}{{ quote.title }} — {{ quote.job.client.full_name }}{% endblock %}
+{% block content %}
+<div class="client-presentation">
+  <div class="presentation-controls"><a href="{{ url_for('job_detail', job_id=quote.job.id) }}">← Return to job</a><a href="{{ url_for('edit_saved_quote', quote_id=quote.id) }}">Manual edit</a><form method="POST" action="{{ url_for('reopen_quote', quote_id=quote.id) }}" onsubmit="return confirm('Reopen quote version {{ quote.revision }} in the autoquoter? It will need to be confirmed again before presentation.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Reopen in autoquoter</button></form><div class="presentation-tabs"><a class="{{ 'active' if view == 'without-pricing' else '' }}" href="{{ url_for('quote_presentation', quote_id=quote.id, view='without-pricing') }}">Without pricing</a><a class="{{ 'active' if view == 'with-pricing' else '' }}" href="{{ url_for('quote_presentation', quote_id=quote.id, view='with-pricing') }}">With pricing</a></div><button type="button" onclick="window.print()">Print</button></div>
+  <header class="proposal-header"><img src="{{ url_for('static', filename='img/logo-wordmark.png') }}" alt="Power House Electrical Solutions"><div><span>Prepared for</span><strong>{{ quote.job.client.full_name }}</strong><small>{{ quote.job.job_address or quote.job.client.primary_address }}</small></div></header>
+  <section class="proposal-intro"><span class="eyebrow">Quote version {{ quote.revision }}</span><h1>{{ quote.title }}</h1>{% if quote.introduction %}<p>{{ quote.introduction }}</p>{% endif %}</section>
+  <div class="proposal-options">{% for option in quote.options|reverse %}<article class="proposal-option"><header><h2>{{ option.tier }}</h2>{% if show_pricing %}<strong class="proposal-price">{{ 'Pricing pending' if option.has_missing_price else '$' + '{:,.2f}'.format(option.total) }}</strong>{% endif %}</header><ul>{% for bullet in option.bullets %}<li>{{ bullet|presentation_scope }}</li>{% endfor %}</ul></article>{% endfor %}</div>
+  <footer class="proposal-footer"><strong>Power House Electrical Solutions</strong><span>Thank you for the opportunity to serve you.</span></footer>
+</div>
+{% endblock %}

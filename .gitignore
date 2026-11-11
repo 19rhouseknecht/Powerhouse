@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Live data — never commit (lives only on PythonAnywhere)
+instance/
+*.db
+*.sqlite3
+static/uploads/
+
+# Secrets / local config
+.env
+*.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

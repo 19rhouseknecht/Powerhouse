@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Bug Reports — Power House{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('settings') }}">Settings</a><span>/</span>Bug Reports</div>
+<div class="page-heading"><span class="eyebrow">Settings / Quality control</span><h1>Bug reports</h1><p>Keep problems in one place, track what is being fixed, and close them when the correction is verified.</p></div>
+<details class="panel add-price-panel bug-report-create" open>
+  <summary>＋ Report a bug</summary>
+  <form method="POST" action="{{ url_for('create_bug_report') }}" class="bug-report-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="wide">Short title<input name="title" required placeholder="Pricing item name will not save"></label>
+    <label>Area<select name="area"><option>General</option><option>Quoting</option><option>Pricing Sheet</option><option>Services</option><option>Clients</option><option>Jobs</option><option>Schedule</option><option>Sales</option><option>Time Tracking</option><option>Tasking</option><option>Training</option><option>Finance</option><option>Settings</option><option>Mobile</option></select></label>
+    <label>Priority<select name="priority">{% for value, label in bug_priorities.items() %}<option value="{{ value }}" {{ 'selected' if value == 'normal' }}>{{ label }}</option>{% endfor %}</select></label>
+    <label class="full">What happened?<textarea name="description" rows="4" required placeholder="Explain what you clicked, what you expected, and what happened instead."></textarea></label>
+    <label class="full">Page or URL <input name="page_url" placeholder="Optional — paste the page address where it happened"></label>
+    <div class="form-actions full"><button class="btn btn-primary">Submit bug report</button></div>
+  </form>
+</details>
+<nav class="view-tabs bug-report-tabs">
+  <a class="{{ 'active' if selected_status == 'active' }}" href="{{ url_for('settings_bug_reports', status='active') }}">Active <span>{{ counts.open + counts.in_progress }}</span></a>
+  <a class="{{ 'active' if selected_status == 'open' }}" href="{{ url_for('settings_bug_reports', status='open') }}">Open <span>{{ counts.open }}</span></a>
+  <a class="{{ 'active' if selected_status == 'in_progress' }}" href="{{ url_for('settings_bug_reports', status='in_progress') }}">In progress <span>{{ counts.in_progress }}</span></a>
+  <a class="{{ 'active' if selected_status == 'completed' }}" href="{{ url_for('settings_bug_reports', status='completed') }}">Completed <span>{{ counts.completed }}</span></a>
+  <a class="{{ 'active' if selected_status == 'all' }}" href="{{ url_for('settings_bug_reports', status='all') }}">All</a>
+</nav>
+{% if reports %}<div class="bug-report-list">
+{% for bug in reports %}<article class="panel bug-report-card priority-{{ bug.priority }}" id="bug-{{ bug.id }}">
+  <header><div><div class="bug-meta"><span class="bug-number">#{{ bug.id }}</span><span class="status-pill status-{{ bug.status }}">{{ bug_statuses[bug.status] }}</span><span class="bug-priority">{{ bug_priorities[bug.priority] }}</span><span>{{ bug.area }}</span></div><h2>{{ bug.title }}</h2></div><time>{{ bug.created_at.strftime('%b %-d, %Y · %-I:%M %p') }}</time></header>
+  <p class="bug-description">{{ bug.description }}</p>
+  {% if bug.page_url %}<a class="bug-page-link" href="{{ bug.page_url }}" target="_blank" rel="noopener">Open reported page ↗</a>{% endif %}
+  <small class="bug-reporter">Reported by {{ bug.created_by.username if bug.created_by else 'Former user' }}{% if bug.completed_at %} · Completed {{ bug.completed_at.strftime('%b %-d, %Y') }}{% endif %}</small>
+  <form method="POST" action="{{ url_for('update_bug_report', bug_id=bug.id) }}" class="bug-update-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="return_status" value="{{ selected_status }}">
+    <label>Status<select name="status">{% for value, label in bug_statuses.items() %}<option value="{{ value }}" {{ 'selected' if bug.status == value }}>{{ label }}</option>{% endfor %}</select></label>
+    <label>Priority<select name="priority">{% for value, label in bug_priorities.items() %}<option value="{{ value }}" {{ 'selected' if bug.priority == value }}>{{ label }}</option>{% endfor %}</select></label>
+    <label class="wide">Correction notes<input name="resolution_notes" value="{{ bug.resolution_notes }}" placeholder="What fixed it or what still needs checked"></label>
+    <button class="btn btn-primary">Save update</button>
+  </form>
+</article>{% endfor %}
+</div>{% else %}<div class="panel empty-state"><span>✓</span><h2>No bug reports here</h2><p>{{ 'Everything reported has been completed.' if selected_status == 'active' else 'Nothing matches this status yet.' }}</p></div>{% endif %}
+{% endblock %}

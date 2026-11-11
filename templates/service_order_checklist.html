@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Order Checklist — {{ service.name }}{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('services') }}">Services</a><span>/</span><a href="{{ url_for('service_detail', service_id=service.id) }}">{{ service.name }}</a><span>/</span>Order checklist</div>
+<div class="page-heading heading-actions order-checklist-heading">
+  <div><span class="eyebrow">AI-organized receiving view</span><h1>Order checklist</h1><p>{{ service.name }} · Based on {{ service.example_quantity }}</p></div>
+  <div class="order-checklist-progress"><strong id="checklist-count">0 / {{ service.items|length }}</strong><span>items checked</span><div><i id="checklist-progress-bar"></i></div></div>
+</div>
+<div class="temporary-checklist-note"><span>✓</span><div><strong>Temporary checklist</strong><p>Check off materials while reviewing an order. Nothing is saved, and the checklist resets when you leave or refresh this page.</p></div></div>
+{% if checklist_groups %}
+<div class="order-checklist-grid" id="order-checklist">
+  {% for group in checklist_groups %}
+  <section class="panel order-checklist-group">
+    <header><div class="checklist-category-icon">{{ group['icon'] }}</div><div><span class="eyebrow">Material group</span><h2>{{ group['label'] }}</h2></div><button type="button" class="check-group-button">Check all</button></header>
+    <div class="order-checklist-items">
+      {% for item in group['items'] %}
+      <label class="order-checklist-item">
+        <input type="checkbox" class="order-item-check">
+        <span class="order-checkbox-visual">✓</span>
+        <span class="order-item-copy"><strong>{{ item.current_name }}</strong>{% if item.notes %}<small>{{ item.notes }}</small>{% endif %}{% if item.catalog_item and item.catalog_item.cooper_part_number %}<small>Cooper #{{ item.catalog_item.cooper_part_number }}</small>{% endif %}</span>
+        <span class="order-item-quantity">{{ '%g'|format(item.quantity) }} <small>{{ item.current_unit }}</small></span>
+      </label>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% else %}<div class="panel empty-state"><span>□</span><h2>No materials to check</h2><p>Add materials to this Service and they will be organized here automatically.</p></div>{% endif %}
+<div class="order-checklist-footer"><a class="btn btn-secondary" href="{{ url_for('service_detail', service_id=service.id) }}">Back to service</a><button class="btn btn-ghost" type="button" id="clear-order-checklist">Clear all checks</button></div>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const checks = [...document.querySelectorAll('.order-item-check')];
+  const count = document.getElementById('checklist-count');
+  const bar = document.getElementById('checklist-progress-bar');
+  const update = () => {
+    const checked = checks.filter(input => input.checked).length;
+    if (count) count.textContent = `${checked} / ${checks.length}`;
+    if (bar) bar.style.width = `${checks.length ? (checked / checks.length) * 100 : 0}%`;
+  };
+  checks.forEach(input => input.addEventListener('change', update));
+  document.querySelectorAll('.order-checklist-group').forEach(group => {
+    const button = group.querySelector('.check-group-button');
+    const groupChecks = [...group.querySelectorAll('.order-item-check')];
+    button?.addEventListener('click', () => {
+      const shouldCheck = groupChecks.some(input => !input.checked);
+      groupChecks.forEach(input => { input.checked = shouldCheck; });
+      button.textContent = shouldCheck ? 'Clear group' : 'Check all';
+      update();
+    });
+  });
+  document.getElementById('clear-order-checklist')?.addEventListener('click', () => {
+    checks.forEach(input => { input.checked = false; });
+    document.querySelectorAll('.check-group-button').forEach(button => { button.textContent = 'Check all'; });
+    update();
+  });
+  update();
+});
+</script>
+{% endblock %}

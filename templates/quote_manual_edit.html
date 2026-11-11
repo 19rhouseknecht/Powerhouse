@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Manual Quote Editor — {{ quote.job.title }}{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('job_detail', job_id=quote.job.id) }}">{{ quote.job.title }}</a><span>/</span>Quote version {{ quote.revision }}<span>/</span>Manual edit</div>
+<div class="page-heading heading-actions"><div><span class="eyebrow">Saved quote · No AI</span><h1>Manual quote editor</h1><p>Change the client-facing wording and final option prices directly.</p></div><a class="btn btn-secondary" href="{{ url_for('quote_presentation', quote_id=quote.id) }}">Cancel</a></div>
+<form method="POST" class="saved-quote-editor"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <section class="panel section-panel saved-quote-overview"><label>Quote title<input name="quote_title" value="{{ quote.title }}" required></label><label>Introduction<textarea name="quote_introduction" rows="3">{{ quote.introduction }}</textarea></label></section>
+  <div class="saved-option-editor-list">{% for option in quote.options|reverse %}<section class="panel saved-option-editor tier-{{ option.tier|lower }}"><header><div><span class="eyebrow">{{ option.tier }}</span><h2>{{ option.title }}</h2></div><label>Final client price ($)<input type="number" name="option_price_{{ option.id }}" min="0" step="0.01" value="{{ '%.2f'|format(option.total) }}" required></label></header><div class="saved-option-editor-grid"><label>Option title<input name="option_title_{{ option.id }}" value="{{ option.title }}" required></label><label>Description<textarea name="option_description_{{ option.id }}" rows="3">{{ option.description }}</textarea></label><div class="saved-bullet-editor"><div class="saved-line-heading"><label>Presented line items</label><button class="btn btn-small btn-secondary add-saved-line" type="button" data-option-id="{{ option.id }}">＋ Add line item</button></div><div class="saved-line-list" id="saved-lines-{{ option.id }}">{% for bullet in option.bullets %}<div class="saved-line-row"><input name="option_bullets_{{ option.id }}[]" value="{{ bullet }}" aria-label="{{ option.tier }} line item"><button type="button" class="remove-saved-line" aria-label="Remove line item">×</button></div>{% endfor %}{% if not option.bullets %}<div class="saved-line-row"><input name="option_bullets_{{ option.id }}[]" placeholder="Premium installation of…" aria-label="{{ option.tier }} line item"><button type="button" class="remove-saved-line" aria-label="Remove line item">×</button></div>{% endif %}</div><small>Each box becomes one line on the customer presentation.</small></div></div><details><summary>Pricing reference</summary><div class="saved-price-reference">{% for line in option.lines %}<span>{{ '%g'|format(line.multiplier) }} × {{ line.service_name }}</span><strong>{{ 'Pending' if line.is_missing else '$' + '{:,.2f}'.format(line.total) }}</strong>{% endfor %}{% if quote.travel_cost_snapshot %}<span>Extended travel</span><strong>${{ '{:,.2f}'.format(quote.travel_cost_snapshot) }}</strong>{% endif %}</div></details></section>{% endfor %}</div>
+  <div class="saved-quote-submit"><div><strong>Save directly to quote version {{ quote.revision }}</strong><span>This does not contact Caden or create a new version.</span></div><button class="btn btn-primary">Save manual changes</button></div>
+</form>
+<script>
+document.addEventListener('click', function (event) {
+  const addButton = event.target.closest('.add-saved-line');
+  if (addButton) {
+    const optionId = addButton.dataset.optionId;
+    const list = document.getElementById('saved-lines-' + optionId);
+    const row = document.createElement('div');
+    row.className = 'saved-line-row';
+    row.innerHTML = '<input name="option_bullets_' + optionId + '[]" placeholder="Premium installation of…" aria-label="New line item"><button type="button" class="remove-saved-line" aria-label="Remove line item">×</button>';
+    list.appendChild(row);
+    row.querySelector('input').focus();
+    return;
+  }
+  const removeButton = event.target.closest('.remove-saved-line');
+  if (removeButton) removeButton.closest('.saved-line-row').remove();
+});
+</script>
+{% endblock %}

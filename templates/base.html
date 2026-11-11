@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Power House Electrical Solutions{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='img/favicon.png') }}">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/app-icon-192.png') }}">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
+  <meta name="theme-color" content="#171412">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+  {% if current_user.is_authenticated %}
+  <header class="topbar">
+    <button type="button" class="mobile-menu-button" data-menu-toggle aria-label="Open menu">☰</button>
+    <a href="{{ url_for('dashboard') }}" class="brand">
+      <img src="{{ url_for('static', filename='img/badge-icon.png') }}" alt="" class="brand-badge">
+      <span class="brand-name">Power House<span class="brand-sub">Electrical Solutions</span></span>
+    </a>
+    <nav class="topnav">
+      <button type="button" class="tour-launch" data-tour-launch><span>?</span> Give a Tour</button>
+      <span class="topnav-user">{{ current_user.username }}</span>
+      <a href="{{ url_for('logout') }}" class="logout-link">Log out</a>
+    </nav>
+  </header>
+  <button class="sidebar-scrim" data-menu-close aria-label="Close menu"></button>
+  <aside class="sidebar">
+    <a href="{{ url_for('dashboard') }}" class="side-link {{ 'active' if request.endpoint == 'dashboard' else '' }}"><span>⌂</span> Dashboard</a>
+    {% if can('view_quoting') or can('view_pricing') or can('view_services') %}<div class="side-section">Quoting</div>{% endif %}
+    {% if can('view_quoting') %}
+    <a href="{{ url_for('generate_quote') }}" class="side-link {{ 'active' if request.endpoint in ['generate_quote', 'quote_assistant', 'quote_presentation'] else '' }}"><span>＋</span> Generate Quote</a>
+    {% endif %}{% if can('view_pricing') %}
+    <a href="{{ url_for('pricing_sheet') }}" class="side-link {{ 'active' if request.endpoint in ['pricing_sheet', 'create_price_item', 'edit_price_item', 'delete_price_item', 'cooper_account', 'test_cooper_account', 'check_cooper_prices', 'cooper_sync_status', 'cooper_sync_preview', 'apply_cooper_prices'] else '' }}"><span>＄</span> Pricing Sheet</a>
+    <a href="{{ url_for('labor_calculator') }}" class="side-link {{ 'active' if request.endpoint in ['labor_calculator', 'upload_labor_reference', 'apply_labor_proposals', 'ask_mike'] else '' }}"><span>◴</span> Labor Calculator</a>
+    {% endif %}{% if can('view_services') %}
+    <a href="{{ url_for('services') }}" class="side-link {{ 'active' if request.endpoint in ['services', 'create_service', 'service_detail', 'edit_service'] else '' }}"><span>⚡</span> Services</a>
+    {% endif %}{% if can('view_clients') or can('view_jobs') or can('view_schedule') %}<div class="side-section">Clients &amp; Jobs</div>{% endif %}
+    {% if can('view_clients') %}
+    <a href="{{ url_for('clients') }}" class="side-link {{ 'active' if request.endpoint in ['clients', 'create_client', 'client_detail', 'edit_client'] else '' }}"><span>♙</span> Clients</a>
+    {% endif %}{% if can('view_jobs') %}
+    <a href="{{ url_for('jobs') }}" class="side-link {{ 'active' if request.endpoint in ['jobs', 'create_job', 'job_detail', 'edit_job', 'select_job_quote_option', 'job_material_order', 'update_job_material_order', 'add_job_material_order_item', 'add_job_material_order_to_cart'] else '' }}"><span>▣</span> Jobs</a>
+    {% endif %}{% if can('view_schedule') %}
+    <a href="{{ url_for('schedule') }}" class="side-link {{ 'active' if request.endpoint == 'schedule' else '' }}"><span>▦</span> Schedule</a>
+    {% endif %}{% if can('view_sales') %}<div class="side-section">Sales</div>
+    <a href="{{ url_for('onsite_checklist') }}" class="side-link {{ 'active' if request.endpoint in ['onsite_checklist', 'onsite_checklist_job', 'save_onsite_checklist', 'refresh_inspection_tip'] else '' }}"><span>☑</span> Onsite Checklist</a>
+    <a href="{{ url_for('sales_reviews') }}" class="side-link {{ 'active' if request.endpoint == 'sales_reviews' else '' }}"><span>★</span> Reviews</a>
+    {% endif %}{% if can('view_time') %}<div class="side-section">Time Tracking</div>
+    <a href="{{ url_for('time_tracking') }}" class="side-link {{ 'active' if request.endpoint in ['time_tracking', 'clock_in', 'clock_out', 'start_job_visit', 'stop_job_visit'] else '' }}"><span>◷</span> Time Clock</a>
+    <a href="{{ url_for('timesheet') }}" class="side-link {{ 'active' if request.endpoint == 'timesheet' else '' }}"><span>▤</span> Timesheet</a>
+    {% endif %}{% if can('view_tasks') or can('view_training') %}<div class="side-section">Bookkeeping</div>{% endif %}
+    {% if can('view_tasks') %}
+    <a href="{{ url_for('tasks') }}" class="side-link {{ 'active' if request.endpoint in ['tasks', 'create_task', 'update_task_status', 'ask_brendon'] else '' }}"><span>✓</span> Tasking</a>
+    {% endif %}{% if can('view_training') %}
+    <a href="{{ url_for('trainings') }}" class="side-link {{ 'active' if request.endpoint in ['trainings', 'create_training', 'edit_training', 'training_detail', 'upload_training_files', 'summarize_training', 'ask_training'] else '' }}"><span>◇</span> Training</a>
+    {% endif %}{% if can('view_finance') or can('view_expenses') %}<div class="side-section">Finance</div>{% endif %}
+    {% if can('view_finance') %}<a href="{{ url_for('finance_dashboard') }}" class="side-link {{ 'active' if request.endpoint == 'finance_dashboard' else '' }}"><span>◉</span> Dashboard</a>{% endif %}
+    {% if can('view_expenses') %}<a href="{{ url_for('expenses') }}" class="side-link {{ 'active' if request.endpoint in ['expenses','create_expense'] else '' }}"><span>▧</span> Expenses</a>{% endif %}
+    <div class="side-spacer"></div>
+    {% if current_user.role and current_user.role.is_admin %}
+    <a href="{{ url_for('settings') }}" class="side-link {{ 'active' if request.endpoint in ['settings', 'roles', 'update_role', 'edit_agent'] else '' }}"><span>⚙</span> Settings</a>
+    <a href="{{ url_for('tools_library') }}" class="side-link {{ 'active' if request.endpoint in ['tools_library', 'create_tool', 'edit_tool', 'delete_tool'] else '' }}"><span>⌁</span> Tools</a>
+    <a href="{{ url_for('settings_bug_reports') }}" class="side-link {{ 'active' if request.endpoint in ['settings_bug_reports', 'create_bug_report', 'update_bug_report'] else '' }}"><span>⚠</span> Bug Reports</a>
+    {% endif %}
+  </aside>
+  {% endif %}
+
+  <main class="page {{ 'centered' if not current_user.is_authenticated else 'app-page' }}">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-stack">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  {% if current_user.is_authenticated %}
+  <script id="tour-routes" type="application/json">{{ {
+    'dashboard': url_for('dashboard'), 'quotes': url_for('generate_quote'),
+    'pricing': url_for('pricing_sheet'), 'services': url_for('services'),
+    'clients': url_for('clients'), 'jobs': url_for('jobs'),
+    'schedule': url_for('schedule'), 'clock': url_for('time_tracking'),
+    'timesheet': url_for('timesheet'), 'tasks': url_for('tasks'),
+    'training': url_for('trainings'), 'finance': url_for('finance_dashboard'),
+    'expenses': url_for('expenses'), 'onsite': url_for('onsite_checklist'), 'reviews': url_for('sales_reviews'), 'settings': url_for('settings'),
+    'allowed': {'pricing': can('view_pricing'), 'services': can('view_services'), 'quotes': can('view_quoting'), 'clients': can('view_clients'), 'jobs': can('view_jobs'), 'schedule': can('view_schedule'), 'clock': can('view_time'), 'timesheet': can('view_time'), 'tasks': can('view_tasks'), 'training': can('view_training'), 'finance': can('view_finance'), 'expenses': can('view_expenses'), 'onsite': can('view_sales'), 'reviews': can('view_sales'), 'settings': current_user.role and current_user.role.is_admin}
+  }|tojson }}</script>
+  <script src="{{ url_for('static', filename='js/tour.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/date-pickers.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+  {% endif %}
+</body>
+</html>

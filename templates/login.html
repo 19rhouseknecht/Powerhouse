@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Log in — Power House Electrical Solutions{% endblock %}
+{% block content %}
+<div class="auth-card">
+  <img src="{{ url_for('static', filename='img/logo-wordmark.png') }}" alt="Power House Electrical Solutions" class="auth-logo">
+  <h1>Quoting Bench</h1>
+  <p class="auth-subtitle">Team access only.</p>
+
+  <form method="POST" action="{{ url_for('login') }}" class="auth-form">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" value="{{ username }}" autofocus required>
+
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" required>
+
+    <button type="submit" class="btn btn-primary btn-block">Log in</button>
+  </form>
+</div>
+{% endblock %}

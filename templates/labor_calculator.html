@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Labor Calculator — Power House Flow{% endblock %}
+{% block content %}
+<div class="page-heading"><span class="eyebrow">Quoting / Labor intelligence</span><h1>Labor calculator</h1><p>Mike turns labor references into reviewable Pricing Sheet recommendations and answers field labor questions. Nothing changes until you approve it.</p></div>
+
+<div class="labor-calculator-grid">
+  <section>
+    <form method="POST" action="{{ url_for('upload_labor_reference') }}" enctype="multipart/form-data" class="panel section-panel labor-reference-upload">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div><span class="eyebrow">Teach Mike</span><h2>Upload a labor reference</h2><p class="muted">Upload a text-based PDF, TXT, MD, or CSV. Mike will propose exact hours-per-unit changes against existing Pricing Sheet items.</p></div>
+      <input type="file" name="labor_reference" accept=".pdf,.txt,.md,.csv" required>
+      <button class="btn btn-primary">Analyze &amp; build preview</button>
+    </form>
+
+    {% for batch in batches %}<section class="panel section-panel labor-proposal-batch">
+      <div class="section-title"><div><span class="eyebrow">{{ batch.status|title }} preview</span><h2>{{ batch.reference_file.original_name if batch.reference_file else 'Labor proposal' }}</h2><p class="muted">Created {{ batch.created_at.strftime('%b %-d, %Y at %-I:%M %p') }}</p></div><span class="usage-count">{{ batch.lines|length }} recommendation{{ '' if batch.lines|length == 1 else 's' }}</span></div>
+      {% if batch.lines %}<form method="POST" action="{{ url_for('apply_labor_proposals', batch_id=batch.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="labor-proposal-list">
+      {% for line in batch.lines %}<article class="{{ 'approved' if line.approved }}"><label class="proposal-select"><input type="checkbox" name="proposal_id" value="{{ line.id }}" {{ 'checked' if not line.approved }} {{ 'disabled' if line.approved or not line.price_item }}></label><div><strong>{{ line.item_name }}</strong><span>{{ line.unit }} · {{ line.confidence }} confidence</span></div><div class="labor-change"><span>{{ '%g'|format(line.current_hours) }} hr</span><b>→</b><strong>{{ '%g'|format(line.proposed_hours) }} hr</strong></div><p>{{ line.rationale }}</p><blockquote>“{{ line.source_excerpt }}”</blockquote></article>{% endfor %}
+      </div>{% if batch.status != 'applied' %}<button class="btn btn-primary">Apply selected labor updates</button>{% else %}<div class="applied-note">✓ Approved values were applied to the Pricing Sheet.</div>{% endif %}</form>{% else %}<div class="empty-state compact"><span>◇</span><h3>No supported matches</h3><p>Mike kept the file as knowledge but did not find an evidence-backed match to a current Pricing Sheet item.</p></div>{% endif %}
+    </section>{% else %}<section class="panel empty-state"><span>◴</span><h2>No labor previews yet</h2><p>Upload your first labor reference to generate a review.</p></section>{% endfor %}
+  </section>
+
+  <aside class="panel mike-chat-panel">
+    <div class="mike-chat-head"><div class="mike-avatar">M</div><div><span class="eyebrow">Labor advisor</span><h2>Ask Mike</h2><small>{{ 'Connected' if api_ready and mike and mike.active else 'Not connected' }} · Company labor rate ${{ '{:,.2f}'.format(labor_rate) }}/hr</small></div></div>
+    <div class="mike-messages">{% for message in messages %}<div class="mike-message {{ message.role }}"><span>{{ 'You' if message.role == 'user' else 'Mike' }}</span><p>{{ message.content }}</p></div>{% else %}<div class="mike-welcome"><strong>Ask a field-time question</strong><p>Example: “How long should it take to run 50 feet of cable through a finished wall?” Mike will state assumptions and use uploaded references when possible.</p></div>{% endfor %}</div>
+    <form method="POST" action="{{ url_for('ask_mike') }}" class="mike-chat-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><textarea name="question" rows="4" required placeholder="Ask about task labor, access conditions, crew time, or unit productivity…"></textarea><button class="btn btn-primary" {{ 'disabled' if not api_ready }}>Ask Mike</button></form>
+    {% if mike and current_user.role and current_user.role.is_admin %}<a class="agent-settings-link" href="{{ url_for('edit_agent', agent_id=mike.id) }}">Edit Mike’s prompt and reference files in Settings →</a>{% endif %}
+  </aside>
+</div>
+{% endblock %}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Onsite Checklist - Power House{% endblock %}
+{% block content %}
+<div class="page-heading"><span class="eyebrow">Sales</span><h1>Onsite Checklist</h1><p>Select the job you are inspecting. The request and saved inspection will stay connected to that job.</p></div>
+<section class="panel section-panel"><div class="section-title"><div><h2>Choose a job</h2><p class="muted">Active and in-progress jobs are shown below.</p></div></div>
+{% if jobs %}<div class="inspection-job-list">{% for job in jobs %}<a href="{{ url_for('onsite_checklist_job', job_id=job.id) }}"><div><span class="status-pill status-{{ job.bucket }}">{{ job.status_label }}</span><strong>#{{ job.job_number }} - {{ job.title }}</strong><small>{{ job.client.full_name }} · {{ job.job_address or 'No work address' }}</small><p>{{ job.description or 'No job description added.' }}</p></div><b>{{ job.inspections[0].checked_count ~ ' saved findings' if job.inspections else 'Start inspection' }} ›</b></a>{% endfor %}</div>{% else %}<p class="muted">There are no active jobs available for an inspection.</p>{% endif %}
+</section>
+{% endblock %}
