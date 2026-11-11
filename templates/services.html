@@ -18,7 +18,7 @@
       {% if service.drawing_filename and not service.drawing_filename.lower().endswith('.pdf') %}<img src="{{ url_for('static', filename='uploads/services/' + service.drawing_filename) }}" alt="{{ service.name }} drawing">{% else %}<span>⚡</span>{% endif %}
       <b>{{ service.category }}</b>
     </div>
-    <div class="service-card-body"><h2>{{ service.name }}</h2><p>{{ service.description or 'No service description yet.' }}</p><div class="service-stats"><span><strong>{{ service.items|length }}</strong> items</span><span><strong>{{ service.tools|length }}</strong> tools</span><span><strong>${{ '%.2f'|format(service.example_total) }}</strong> example</span></div></div>
+    <div class="service-card-body"><h2>{{ service.name }}</h2><p>{{ service.description or 'No service description yet.' }}</p><div class="service-stats"><span><strong>{{ service.items|length }}</strong> items</span><span><strong>{{ service.tools|length }}</strong> tools</span><span><strong>${{ '{:,.2f}'.format(service.example_total) }}</strong> example</span></div></div>
   </a>
   {% endfor %}
 </div>
