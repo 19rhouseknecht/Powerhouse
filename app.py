@@ -5429,6 +5429,15 @@ def release_check(by_label="GitHub", force=False):
         return "A newer build is on GitHub (%s). Auto-deploy is paused, so it is waiting for you." % newest["short"]
     if not force and Release.query.filter_by(sha=newest["sha"], status="failed", source="auto").first():
         return "The newest build (%s) already failed to deploy; it will not be retried by itself." % newest["short"]
+    try:
+        ok, why = rel.passed(token, repo, newest["sha"], branch)
+    except rel.ReleaseError as exc:
+        put_release_setting("error", str(exc))
+        return str(exc)
+    if not ok:
+        put_release_setting("waiting", "%s: %s" % (newest["short"], why))
+        return "The newest build (%s) is waiting: %s. Only builds whose tests passed go live by themselves." % (newest["short"], why)
+    put_release_setting("waiting", "")
     release, said = start_release(newest["sha"], "auto", by_label, meta=newest)
     return said
 
@@ -5476,6 +5485,12 @@ def release_builds(force=False):
         builds = rel.list_builds(token, repo, branch)
     except rel.ReleaseError as exc:
         return [], str(exc)
+    try:
+        badges = rel.test_badges(token, repo, branch)
+    except rel.ReleaseError:
+        badges = {}
+    for build in builds:
+        build["tests"] = badges.get(build["sha"], "")
     _release_memory["builds"], _release_memory["builds_at"] = builds, now
     return builds, ""
 
@@ -5515,6 +5530,7 @@ def releases_page():
                            auto_on=release_auto_on(), paused_note=release_setting("paused_note"),
                            hook_on=bool(release_setting("hook_id")), hook_url=url_for("releases_github_hook", _external=True, _scheme="https"),
                            looked_at=release_setting("looked_at"), check_error=release_setting("error"), wsgi_path=wsgi,
+                           waiting=release_setting("waiting"),
                            newer_waiting=bool(builds and live and builds[0]["sha"] != live.sha), info=release_info())
 
 
@@ -5673,7 +5689,11 @@ def releases_github_hook():
     except ValueError:
         return jsonify({"ok": False, "said": "not json"}), 400
     _token, _repo, branch = release_conn()
-    if event != "push" or payload.get("ref") != "refs/heads/" + branch:
+    if event == "workflow_run":          # the tests finished: a build that was waiting for them may go now
+        run = payload.get("workflow_run") or {}
+        if payload.get("action") != "completed" or run.get("name") != rel.CHECK_NAME or run.get("head_branch") != branch:
+            return jsonify({"ok": True, "said": "not the release branch's tests"})
+    elif event != "push" or payload.get("ref") != "refs/heads/" + branch:
         return jsonify({"ok": True, "said": "not the release branch"})
     _release_check_in_background("Auto-deploy (GitHub webhook)")
     return jsonify({"ok": True, "said": "checking"}), 202

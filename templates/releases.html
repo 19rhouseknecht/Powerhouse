@@ -36,7 +36,8 @@
       <h2>Not connected</h2><p class="muted">Connect GitHub below to start.</p>
     {% elif auto_on %}
       <h2><span class="release-dot on"></span>On</h2>
-      <p class="muted">New builds on <strong>{{ branch }}</strong> go live by themselves{% if hook_on %} the moment they land (webhook){% else %} within about 5 minutes while someone is using the site{% endif %}.</p>
+      <p class="muted">New builds on <strong>{{ branch }}</strong> go live by themselves once their tests pass{% if hook_on %} (GitHub tells the site the moment they do){% else %}, checked about every 5 minutes while someone is using the site{% endif %}.</p>
+      {% if waiting and newer_waiting %}<p class="release-waiting">Waiting: {{ waiting }}</p>{% endif %}
       <form method="POST" action="{{ url_for('releases_auto') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="on" value="0"><button class="btn btn-secondary btn-small">Pause auto-deploy</button></form>
     {% else %}
       <h2><span class="release-dot off"></span>Paused</h2>
@@ -51,7 +52,7 @@
 
 {% if connected %}
 <section class="panel section-panel">
-  <div class="section-title"><div><h2>Builds on GitHub</h2><p class="muted">Newest first, from <strong>{{ repo }}</strong> · {{ branch }}. Each one is checked (every Python file must compile) and the database is backed up before it goes live.</p></div></div>
+  <div class="section-title"><div><h2>Builds on GitHub</h2><p class="muted">Newest first, from <strong>{{ repo }}</strong> · {{ branch }}. GitHub runs the tests on every build; only builds that pass go live by themselves. Before any build goes live, every Python file must compile and the database is backed up.</p></div></div>
   {% if builds_error %}<div class="release-error">{{ builds_error }}</div>{% endif %}
   {% if builds %}
   <ol class="release-builds">
@@ -60,7 +61,8 @@
       <div class="release-build-main">
         <div class="release-build-title">
           {% if build.place == 'live' %}<span class="status-pill status-active">Live</span>{% elif build.place in ('newer', 'newest') %}<span class="status-pill status-in_works">{{ 'Newest' if loop.first else 'Newer' }}</span>{% endif %}
-          {% if build.last_status == 'failed' %}<span class="status-pill release-pill-failed" title="{{ build.last_message }}">Failed</span>{% endif %}
+          {% if build.last_status == 'failed' %}<span class="status-pill release-pill-failed" title="{{ build.last_message }}">Deploy failed</span>{% endif %}
+          {% if build.tests == 'passed' %}<span class="release-tests tests-passed" title="GitHub ran the tests on this build and they passed">✓ Tests passed</span>{% elif build.tests == 'failed' %}<span class="release-tests tests-failed" title="GitHub ran the tests on this build and they failed">✗ Tests failed</span>{% elif build.tests == 'running' %}<span class="release-tests tests-running">Tests running…</span>{% else %}<span class="release-tests tests-none" title="No tests ran on this build on main (it may have passed them in its pull request)">Not tested on main</span>{% endif %}
           <strong>{{ build.title or '(no message)' }}</strong>
         </div>
         <div class="release-meta"><code>{{ build.short }}</code>{% if build.author %}<span>{{ build.author }}</span>{% endif %}{% if build.date %}<span>{{ build.date.strftime('%b %-d, %Y · %-I:%M %p') }} UTC</span>{% endif %}{% if build.url %}<a href="{{ build.url }}" target="_blank" rel="noopener">View on GitHub ↗</a>{% endif %}</div>
@@ -71,7 +73,7 @@
         {% if build.place == 'live' %}
           <span class="muted">Running now</span>
         {% elif not running %}
-          <form method="POST" action="{{ url_for('releases_deploy') }}" onsubmit="return confirm('{{ 'Deploy' if build.place in ('newer', 'newest') else 'Roll back to' }} {{ build.short }} on the live site?{{ ' Auto-deploy will pause until you resume it.' if build.place == 'older' or (build.place == 'newer' and not loop.first) else '' }}');">
+          <form method="POST" action="{{ url_for('releases_deploy') }}" onsubmit="return confirm('{{ 'Deploy' if build.place in ('newer', 'newest') else 'Roll back to' }} {{ build.short }} on the live site?{{ ' Auto-deploy will pause until you resume it.' if build.place == 'older' or (build.place == 'newer' and not loop.first) else '' }}{{ ' WARNING: its tests failed.' if build.tests == 'failed' else '' }}');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="sha" value="{{ build.sha }}">
             {% if build.place in ('newer', 'newest') %}<button class="btn btn-primary btn-small">Deploy</button>{% else %}<button class="btn btn-secondary btn-small">Roll back to this</button>{% endif %}
           </form>
@@ -111,8 +113,8 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label>Repository<input name="repo" value="{{ repo or '19rhouseknecht/Powerhouse' }}" required placeholder="owner/name"></label>
     <label>Branch<input name="branch" value="{{ branch }}" required></label>
-    <label class="wide">GitHub token<input type="password" name="token" autocomplete="off" placeholder="{{ 'Saved (' ~ token_hint ~ ') — leave blank to keep it' if token_hint else 'github_pat_…' }}" {{ '' if token_hint else 'required' }}>
-      <small>A fine-grained token for this one repository: <strong>Contents: Read</strong> and <strong>Metadata: Read</strong>; add <strong>Webhooks: Read and write</strong> so builds go live the moment they land. Stored encrypted.</small></label>
+    <label class="wide">GitHub token<input type="password" name="token" autocomplete="off" placeholder="{{ 'Saved (' ~ token_hint ~ ') — leave blank to keep it' if token_hint else 'ghp_… or github_pat_…' }}" {{ '' if token_hint else 'required' }}>
+      <small>A classic token with the <strong>repo</strong> scope (add <strong>admin:repo_hook</strong> so builds go live the moment their tests pass), or a fine-grained token for this repository with <strong>Contents</strong>, <strong>Actions</strong> and <strong>Metadata: Read</strong> (and <strong>Webhooks: Read and write</strong>). Stored encrypted.</small></label>
     <div class="wide button-row release-connect-actions"><button class="btn btn-primary">{{ 'Save connection' if connected else 'Connect GitHub' }}</button></div>
   </form>
   <div class="release-facts">

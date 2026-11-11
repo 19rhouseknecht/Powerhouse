@@ -776,3 +776,8 @@ body:has(.client-presentation) .topbar, body:has(.client-presentation) .sidebar 
   .flow-scroll { height: 62vh; }
 }
 .flow-panel small.muted { font-size: 11px; line-height: 1.5; margin-top: -6px; }
+.release-tests { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.release-tests.tests-passed { color: #86efac; border-color: #14532d; background: rgba(20, 83, 45, .25); }
+.release-tests.tests-failed { color: #fca5a5; border-color: #7f1d1d; background: rgba(127, 29, 29, .25); }
+.release-tests.tests-running { color: #fcd34d; border-color: #713f12; }
+.release-waiting { color: #fcd34d; font-size: 13px; margin: 8px 0 0; }
