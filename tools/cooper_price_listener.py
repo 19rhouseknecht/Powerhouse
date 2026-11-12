@@ -43,7 +43,7 @@ import socket
 import time
 from getpass import getpass
 
-LISTENER_VERSION = "2.2"
+LISTENER_VERSION = "2.3"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -195,19 +195,83 @@ async def block_extras(route):
         await route.continue_()
 
 
+HUMAN_WORDS = ("verify you are human", "are you a robot", "are you human", "i am human", "i'm not a robot", "additional security check",
+               "pardon our interruption", "complete the security check", "press & hold", "press and hold", "request unsuccessful")
+SELF_CLEAR_SECONDS = 20          # Cooper's own browser check often finishes by itself; a person is asked only after this
+STILL_WAITING_SECONDS = 300      # while waiting for a person, the website hears "still waiting" this often (so the run never times out)
+NOTIFY = None                    # set per command: NOTIFY(message) puts a line in the website's live status
+HUMAN_LOCK = None                # one question to the person at a time, however many tabs hit the check
+PROMPT = input                   # tests replace this
+HEADLESS = False                 # set by each scan
+
+
 async def verification_page_is_present(page) -> bool:
-    return bool(await page.locator('script[src*="_Incapsula_Resource"]').count() or await page.locator("iframe#main-iframe").count())
+    """Cooper's bot check: the Incapsula page, a captcha frame, or words asking whether this is a person."""
+    if await page.locator('script[src*="_Incapsula_Resource"]').count() or await page.locator("iframe#main-iframe").count():
+        return True
+    if await page.locator('iframe[src*="captcha"], iframe[title*="challenge" i], iframe[src*="hcaptcha"], iframe[src*="recaptcha"], #px-captcha').count():
+        return True
+    try:
+        text = (await page.locator("body").inner_text(timeout=2_000))[:4000].lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return any(words in text for words in HUMAN_WORDS)
 
 
-async def wait_for_verification(page) -> None:
+def notify(message: str) -> None:
+    if NOTIFY:
+        try:
+            NOTIFY(message)
+        except Exception as error:  # noqa: BLE001  (the status line is a courtesy; the scan goes on)
+            log(f"Status not sent ({error}).")
+
+
+async def wait_for_verification(page, headless=None) -> None:
+    """Let Cooper's browser check finish by itself; when it asks for a person, pause until they finish it and press Enter."""
+    global HUMAN_LOCK
+    headless = HEADLESS if headless is None else headless
     if not await verification_page_is_present(page):
         return
-    log("Cooper displayed browser verification. Waiting for it to finish.")
-    for _ in range(60):
+    log("Cooper is checking the browser. Giving it a moment to finish by itself.")
+    for _ in range(SELF_CLEAR_SECONDS):
         await page.wait_for_timeout(1_000)
         if not await verification_page_is_present(page):
             return
-    log("Verification is still showing; continuing anyway.")
+    if headless:
+        raise RuntimeError("Cooper is asking whether this is a person. Run the listener without --headless so you can answer it in Chrome.")
+    HUMAN_LOCK = HUMAN_LOCK or asyncio.Lock()
+    async with HUMAN_LOCK:                     # another tab may have just answered it for everyone
+        if not await verification_page_is_present(page):
+            return
+        while await verification_page_is_present(page):
+            try:
+                await page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+            print("\a", end="", flush=True)
+            log("=" * 60)
+            log("COOPER IS ASKING IF YOU'RE HUMAN. The scan is paused.")
+            log("Finish the check in the Chrome window that just came to the front,")
+            log("then come back here and press Enter.")
+            log("=" * 60)
+            notify("Paused: Cooper is asking if this is a person. Finish the check in Chrome on the office computer, then press Enter in the listener.")
+            answer = asyncio.ensure_future(asyncio.to_thread(PROMPT, "Press Enter once Cooper's check is done... "))
+            while True:
+                done, _ = await asyncio.wait({answer}, timeout=STILL_WAITING_SECONDS)
+                if done:
+                    break
+                notify("Still paused: waiting for someone at the office computer to finish Cooper's check and press Enter.")
+            try:
+                answer.result()
+            except EOFError:                   # no keyboard (running as a service): watch the page instead
+                log("No keyboard to press Enter on; watching the page until the check is gone.")
+                while await verification_page_is_present(page):
+                    await page.wait_for_timeout(5_000)
+            await page.wait_for_timeout(1_500)
+            if await verification_page_is_present(page):
+                log("Cooper's check is still showing. Finish it in Chrome, then press Enter again.")
+        log("Thanks: carrying on.")
+        notify("Cooper's check is done; the scan carries on.")
 
 
 async def accept_cookies(page, wait_seconds: float = 0) -> bool:
@@ -344,6 +408,8 @@ async def fetch_picture(context, url: str, referer: str) -> bytes:
 async def scan_all_items(items: list, config: dict, progress=None, send_picture=None, tabs: int = 3, headless: bool = False) -> list:
     """Scan every item with up to `tabs` Cooper tabs at once. Results come back in the items' order."""
     from playwright.async_api import async_playwright
+    global HEADLESS, HUMAN_LOCK
+    HEADLESS, HUMAN_LOCK = headless, None
 
     results = [None] * len(items)
     done = 0
@@ -363,7 +429,7 @@ async def scan_all_items(items: list, config: dict, progress=None, send_picture=
             first = context.pages[0] if context.pages else await context.new_page()
             log(f"Opening {COOPER_HOME}")
             await first.goto(COOPER_HOME, wait_until="domcontentloaded", timeout=60_000)
-            await wait_for_verification(first)
+            await wait_for_verification(first, headless)
             await accept_cookies(first, wait_seconds=8)
             await login_to_cooper(first, config)
             await context.route("**/*", block_extras)       # after login, so the sign-in page loads normally
@@ -472,8 +538,12 @@ def card_to_product(card: dict, category: str):
 
 async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: int = 3, headless: bool = False) -> dict:
     """Walk Cooper's categories and send every product whose part number is not known yet.
-    send(products, categories_done, categories_total, message, finished) posts a batch to the website."""
+    send(products, categories_done, categories_total, message, finished) posts a batch to the website and returns its reply;
+    a reply with "stop" (this run's batch is full) ends the walk."""
     from playwright.async_api import async_playwright
+    global HEADLESS, HUMAN_LOCK
+    HEADLESS, HUMAN_LOCK = headless, None
+    stop = asyncio.Event()
 
     known = {re.sub(r"[^a-z0-9]", "", part.lower()) for part in known_parts}
     totals = {"seen": 0, "sent": 0, "empty": 0, "pages": 0, "categories": 0}
@@ -484,9 +554,14 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
         nonlocal pending, finished_categories
         products, done_now = pending, finished_categories
         pending, finished_categories = [], []
+        if stop.is_set() and not final:
+            return
         if products or done_now or final or message:
-            await asyncio.to_thread(send, products, done_now, total_categories, message, final)
+            reply = await asyncio.to_thread(send, products, done_now, total_categories, message, final)
             totals["sent"] += len(products)
+            if isinstance(reply, dict) and reply.get("stop") and not stop.is_set():
+                stop.set()
+                log(f"This run's batch is full ({reply.get('total_added', '?')} new items added). Stopping; the next run carries on.")
 
     async with async_playwright() as playwright:
         options = {"user_data_dir": str(PROFILE_DIRECTORY), "headless": headless, "no_viewport": not headless}
@@ -498,7 +573,7 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
         try:
             first = context.pages[0] if context.pages else await context.new_page()
             await first.goto(COOPER_HOME, wait_until="domcontentloaded", timeout=60_000)
-            await wait_for_verification(first)
+            await wait_for_verification(first, headless)
             await accept_cookies(first, wait_seconds=8)
             await login_to_cooper(first, config)
             links = await first.evaluate("() => Array.from(document.querySelectorAll('a[href*=\"/product/category/\"]')).map(a => a.href)")
@@ -516,7 +591,7 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
             pages = [first] + [await context.new_page() for _ in range(tab_count - 1)]
 
             async def worker(page, number):
-                while True:
+                while not stop.is_set():
                     try:
                         url = queue.get_nowait()
                     except asyncio.QueueEmpty:
@@ -525,10 +600,10 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
                     found = 0
                     visited, target = set(), url
                     try:
-                        while target and target not in visited and len(visited) < MAX_PAGES_PER_CATEGORY:
+                        while target and target not in visited and len(visited) < MAX_PAGES_PER_CATEGORY and not stop.is_set():
                             visited.add(target)
                             await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
-                            await wait_for_verification(page)
+                            await wait_for_verification(page, headless)
                             await accept_cookies(page)
                             cards = await read_category_page(page)
                             totals["pages"] += 1
@@ -548,6 +623,8 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
                     except Exception as error:  # noqa: BLE001 — one category's problem never stops the run
                         log(f"[tab {number}] {name}: {type(error).__name__}: {error}")
                         continue
+                    if stop.is_set():
+                        return                    # a category cut short is read again next run (known parts are skipped)
                     async with lock:
                         totals["categories"] += 1
                         totals["seen"] += found
@@ -565,7 +642,10 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
 
             await asyncio.gather(*(worker(page, number) for number, page in enumerate(pages, 1)))
             async with lock:
-                await flush(final=True, message=f"Read {totals['categories']} categories ({totals['pages']} pages, {totals['seen']} products seen).")
+                if stop.is_set():
+                    pending.clear()            # past the batch: found again next run
+                await flush(final=True, message=f"Read {totals['categories']} categories ({totals['pages']} pages, {totals['seen']} products seen)"
+                                                + (": stopped at this run's batch limit." if stop.is_set() else "."))
         finally:
             await context.close()
     return totals
@@ -573,6 +653,7 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
 
 # --------------------------------------------------------------------------- the loop
 def main() -> None:
+    global NOTIFY
     parser = argparse.ArgumentParser(description="Listen for Power House Flow Cooper price commands.")
     parser.add_argument("--reset-config", action="store_true", help="Forget the saved token and Cooper login.")
     parser.add_argument("--once", action="store_true", help="Process one command, or exit if none is queued.")
@@ -600,8 +681,11 @@ def main() -> None:
                 time.sleep(poll_seconds)
                 continue
             command_id = command["id"]
+
+            def NOTIFY(message, command_id=command_id):  # noqa: N802  (a line in the website's live status)
+                api_request(config, f"/api/local-cooper/commands/{command_id}/heartbeat", method="POST", payload={"message": message}, delays=(2, 5))
             if command.get("mode") == "catalog":
-                log(f"Received catalog run #{command_id}: adding Cooper items the Pricing Sheet does not have yet.")
+                log(f"Received catalog run #{command_id}: adding up to {command.get('limit') or 'all the'} Cooper items the Pricing Sheet does not have yet.")
 
                 def send_catalog(products, done, total, message, finished):
                     reply = api_request(config, f"/api/local-cooper/commands/{command_id}/catalog", method="POST",
@@ -609,6 +693,7 @@ def main() -> None:
                                                  "message": message, "finished": finished})
                     if products:
                         log(f"Sent {len(products)} new item(s); {reply.get('added', 0)} added ({reply.get('total_added', 0)} this run).")
+                    return reply
 
                 totals = asyncio.run(crawl_catalog(config, set(command.get("known_parts") or []), set(command.get("skip_categories") or []),
                                                    send_catalog, tabs=args.tabs, headless=args.headless))
