@@ -1131,3 +1131,38 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .price-source.src-missing { color:#fca5a5; }
 .confirm-item-form { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0 2px; }
 .confirm-item-form select { min-width:0; max-width:200px; font-size:12px; padding:5px 8px; }
+
+/* Quotes: lighting layouts and material pictures */
+.lighting-panel { margin:0 0 16px; padding:0; overflow:hidden; }
+.lighting-panel > summary { cursor:pointer; padding:14px 16px; display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline; }
+.lighting-panel > summary strong { font-size:14px; }
+.lighting-panel[open] > summary { border-bottom:1px solid var(--border); }
+.lighting-form { padding:14px 16px; display:grid; gap:12px; }
+.lighting-room { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px 12px; }
+.lighting-room label, .lights-missing-list label { display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; font-weight:600; min-width:0; }
+.lighting-room input, .lighting-room select, .lights-missing-list input { width:100%; min-width:0; }
+.lights-missing { display:grid; gap:6px; padding:10px 12px; border:1px dashed rgba(217,119,6,.55); border-radius:9px; }
+.lights-missing small { color:var(--muted); }
+.lights-missing-list { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:8px 12px; }
+.lights-missing-list span { color:#d6d3d1; font-weight:500; overflow-wrap:anywhere; }
+.lighting-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.lighting-plans td { vertical-align:middle; }
+.lighting-plans td:first-child { display:flex; align-items:center; gap:8px; min-width:200px; }
+.lighting-panel .item-table-wrap { padding:0 16px; }
+.lighting-note { padding:0 16px 14px; margin:6px 0 0; font-size:12px; }
+.lighting-panel .sizing-note { padding:0 16px 14px; }
+.light-3d { margin:10px 0; }
+.light-3d canvas { display:block; width:100%; height:210px; border-radius:9px; background:#0f0d0c; border:1px solid var(--border); touch-action:none; cursor:grab; }
+.light-3d canvas:active { cursor:grabbing; }
+.light-3d figcaption { margin-top:5px; color:var(--muted); font-size:11px; }
+.line-thumb { width:34px; height:34px; object-fit:contain; border-radius:6px; background:#fff; border:1px solid var(--border); flex:0 0 auto; }
+.draft-option details > div.has-thumb { display:grid; grid-template-columns:34px minmax(0,1fr) auto; column-gap:8px; align-items:center; }
+.draft-option details > div.has-thumb > small, .draft-option details > div.has-thumb > form { grid-column:2 / -1; }
+.proposal-pictures { display:grid; grid-template-columns:repeat(auto-fill, minmax(90px, 1fr)); gap:10px; margin-top:14px; }
+.proposal-pictures figure { margin:0; text-align:center; }
+.proposal-pictures img { width:100%; aspect-ratio:1; object-fit:contain; background:#fff; border-radius:8px; border:1px solid #e7e5e4; }
+.proposal-pictures figcaption { font-size:11px; line-height:1.3; margin-top:4px; color:#57534e; }
+.proposal-option .light-3d canvas { height:230px; }
+.draft-option details > div > .confirm-item-form { grid-column:1 / -1; }
+.inspection-context-notice a { color:var(--accent-hover); font-weight:600; text-decoration:none; white-space:nowrap; }
+.inspection-context-notice a:hover { text-decoration:underline; }
