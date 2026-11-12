@@ -41,5 +41,11 @@ schema reports (introspection), so add a wanted field there, not in a hand-writt
 the last pull (`updated_at > jobber_synced_at`) only gets blanks filled. Tests replace `jobber.TRANSPORT` and `jobber.SLEEP`.
 `tests/test_upgrade.py` boots the code on main, then this build on the same database: keep schema changes additive.
 
+## Cooper listener (`tools/cooper_price_listener.py`)
+Runs on the office computer, not the server; downloaded from Settings → Local Cooper Updater. Bump `LISTENER_VERSION` when it
+changes (the site shows when the office runs an older one). It never applies a price: results go through the review page;
+product pictures are saved at once but never over one uploaded by hand. `tests/test_cooper_listener.py` drives it against a
+pretend Cooper site (`COOPER_HOME`, `COOPER_BROWSER_CHANNEL`, `COOPER_BROWSER_PATH`).
+
 ## Never commit
 `instance/`, databases, uploads, keys or tokens (`.gitignore` covers the usual ones; look anyway).

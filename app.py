@@ -3,6 +3,7 @@ import secrets
 import calendar
 import json
 import base64
+import hashlib
 import re
 import stat
 import threading
@@ -137,6 +138,8 @@ class PriceItem(db.Model):
     cooper_part_number = db.Column(db.String(100), nullable=False, default="")
     notes = db.Column(db.String(255), nullable=False, default="")
     active = db.Column(db.Boolean, nullable=False, default=True, index=True)
+    image_path = db.Column(db.String(255), nullable=False, default="")       # under static/uploads/price-items/
+    image_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'cooper' (captured by the listener) · 'upload'
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     service_links = db.relationship("ServiceItemPricingLink", backref="price_item", cascade="all, delete-orphan")
     quote_lines = db.relationship("QuoteOptionService", back_populates="price_item")
@@ -193,7 +196,16 @@ class PriceSyncRun(db.Model):
     activity_log = db.Column(db.Text, nullable=False, default="[]")
     error_message = db.Column(db.String(255), nullable=False, default="")
     only_zero_prices = db.Column(db.Boolean, nullable=False, default=False)
+    item_ids_json = db.Column(db.Text, nullable=False, default="")          # "Get selected prices": just these items
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    @property
+    def item_ids(self):
+        try:
+            value = json.loads(self.item_ids_json or "[]")
+            return [int(v) for v in value if isinstance(v, int) or str(v).isdigit()]
+        except ValueError:
+            return []
 
 
 class PriceSyncRow(db.Model):
@@ -1378,11 +1390,11 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "download_cooper_listener"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
-        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing",
+        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
@@ -1645,6 +1657,8 @@ def test_cooper_account():
 def check_cooper_prices():
     check_csrf()
     only_zero_prices = request.form.get("scope") == "new"
+    only_selected = request.form.get("scope") == "selected"
+    selected_ids = sorted({int(v) for v in request.form.getlist("item_ids[]") + request.form.get("item_ids", "").split(",") if str(v).strip().isdigit()})
     expire_stale_cooper_runs()
     active = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).order_by(PriceSyncRun.updated_at.desc()).first()
     if active:
@@ -1652,16 +1666,22 @@ def check_cooper_prices():
     priced_query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.cooper_part_number != "")
     if only_zero_prices:
         priced_query = priced_query.filter(PriceItem.price <= 0)
+    if only_selected:
+        priced_query = priced_query.filter(PriceItem.id.in_(selected_ids or [0]))
     priced_items = priced_query.order_by(PriceItem.name).all()
     if not priced_items:
-        message = "No $0 Pricing Sheet items have a Cooper part number." if only_zero_prices else "No Pricing Sheet items have a Cooper part number yet."
+        message = ("None of the selected items has a Cooper part number." if only_selected else
+                   "No $0 Pricing Sheet items have a Cooper part number." if only_zero_prices else "No Pricing Sheet items have a Cooper part number yet.")
         if request.accept_mimetypes.best == "application/json":
             return jsonify({"error": message}), 400
         flash(message, "error"); return redirect(url_for("pricing_sheet"))
     batch = PriceSyncBatch(supplier="cooper", created_by=current_user)
     db.session.add(batch); db.session.flush()
-    scope_label = "$0/new items only" if only_zero_prices else "all Cooper items"
-    run = PriceSyncRun(batch=batch, total=len(priced_items), only_zero_prices=only_zero_prices, activity_log=json.dumps([f"Price check queued for {len(priced_items)} {scope_label}. Waiting for the office listener."]))
+    skipped = len(selected_ids) - len(priced_items) if only_selected else 0
+    scope_label = ("selected items" + (f" ({skipped} without a Cooper part number left out)" if skipped else "")) if only_selected else "$0/new items only" if only_zero_prices else "all Cooper items"
+    run = PriceSyncRun(batch=batch, total=len(priced_items), only_zero_prices=only_zero_prices,
+                       item_ids_json=json.dumps([item.id for item in priced_items]) if only_selected else "",
+                       activity_log=json.dumps([f"Price check queued for {len(priced_items)} {scope_label}. Waiting for the office listener."]))
     db.session.add(run); db.session.commit()
     return jsonify({"batch_id": batch.id, "status_url": url_for("cooper_sync_status", batch_id=batch.id), "preview_url": url_for("cooper_sync_preview", batch_id=batch.id)})
 
@@ -1747,6 +1767,11 @@ def edit_price_item(item_id):
     check_csrf()
     item = db.get_or_404(PriceItem, item_id)
     error, item = save_price_item_from_form(item)
+    if request.headers.get("X-Requested-With") == "fetch":
+        if error:
+            db.session.rollback()
+            item = db.session.get(PriceItem, item_id)
+        return jsonify({"ok": not error, "error": error or "", "row": render_template("_price_row.html", item=item)}), (400 if error else 200)
     flash(error or f'Updated "{item.name}" everywhere it is used.', "error" if error else "success")
     return redirect(url_for("pricing_sheet"))
 
@@ -1765,6 +1790,72 @@ def delete_price_item(item_id):
     item.active = False
     db.session.commit()
     flash(f'Removed "{name}" from the Pricing Sheet and {removed_lines} linked service material line(s). Confirmed quote history was preserved.', "success")
+    return redirect(url_for("pricing_sheet"))
+
+
+PRICE_IMAGE_DIR = os.path.join(basedir, "static", "uploads", "price-items")
+PRICE_IMAGE_TYPES = ((b"\xff\xd8\xff", "jpg"), (b"\x89PNG\r\n\x1a\n", "png"), (b"GIF87a", "gif"), (b"GIF89a", "gif"))
+PRICE_IMAGE_MAX = 3 * 1024 * 1024
+
+
+def image_kind(data):
+    """'jpg' · 'png' · 'gif' · 'webp' from the file's own bytes, or '' when it is not a picture we keep."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return next((kind for magic, kind in PRICE_IMAGE_TYPES if data.startswith(magic)), "")
+
+
+def save_price_item_image(item, data, source):
+    """Store a picture for a Pricing Sheet item. Returns an error sentence or ''."""
+    kind = image_kind(data or b"")
+    if not kind:
+        return "That file is not a JPEG, PNG, GIF or WebP picture."
+    if len(data) > PRICE_IMAGE_MAX:
+        return "That picture is larger than 3 MB."
+    os.makedirs(PRICE_IMAGE_DIR, exist_ok=True)
+    name = "%d-%s.%s" % (item.id, hashlib.sha256(data).hexdigest()[:12], kind)
+    with open(os.path.join(PRICE_IMAGE_DIR, name), "wb") as handle:
+        handle.write(data)
+    item.image_path = "uploads/price-items/" + name
+    item.image_source = source
+    return ""
+
+
+@app.route("/quoting/pricing/<int:item_id>/image", methods=["POST"])
+@login_required
+def upload_price_item_image(item_id):
+    check_csrf()
+    item = db.get_or_404(PriceItem, item_id)
+    upload = request.files.get("image")
+    error = save_price_item_image(item, upload.read() if upload else b"", "upload") if upload else "Choose a picture."
+    if not error:
+        db.session.commit()
+    if request.headers.get("X-Requested-With") == "fetch":
+        return jsonify({"ok": not error, "error": error, "row": render_template("_price_row.html", item=item)}), (400 if error else 200)
+    flash(error or f'Picture saved for "{item.name}".', "error" if error else "success")
+    return redirect(url_for("pricing_sheet"))
+
+
+@app.route("/quoting/pricing/remove-selected", methods=["POST"])
+@login_required
+def remove_selected_price_items():
+    check_csrf()
+    ids = {int(v) for v in request.form.getlist("item_ids[]") + request.form.get("item_ids", "").split(",") if str(v).strip().isdigit()}
+    removed, lines = [], 0
+    for item in PriceItem.query.filter(PriceItem.id.in_(ids or [0]), PriceItem.active.is_(True)).all():
+        for link in list(item.service_links):
+            if link.service_item:
+                db.session.delete(link.service_item)
+                lines += 1
+        item.active = False
+        removed.append(item.name)
+    db.session.commit()
+    if removed:
+        flash(f"Removed {len(removed)} item{'s' if len(removed) != 1 else ''} from the Pricing Sheet"
+              + (f" and {lines} linked service material line{'s' if lines != 1 else ''}" if lines else "")
+              + ". Confirmed quote history was preserved.", "success")
+    else:
+        flash("Select at least one item to remove.", "error")
     return redirect(url_for("pricing_sheet"))
 
 
@@ -3723,6 +3814,7 @@ def render_settings_page(new_local_cooper_token=None):
         local_cooper_token_active=token_setting is not None,
         new_local_cooper_token=new_local_cooper_token,
         jobber_connected=jobber_connected(), jobber_state=jobber_pull_state(), jobber_last_import=jobber_json("last_import"),
+        listener_latest=listener_latest_version(), listener_running=(db.session.get(CompanySetting, "cooper_listener_version").value if db.session.get(CompanySetting, "cooper_listener_version") else ""),
         dispatch_address=get_dispatch_address(),
         travel_road_factor=get_numeric_setting("travel_road_factor", 1.25),
         travel_average_speed=get_numeric_setting("travel_average_speed", 45),
@@ -3834,7 +3926,11 @@ def local_cooper_next_command():
     item_query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.cooper_part_number != "")
     if run.only_zero_prices:
         item_query = item_query.filter(PriceItem.price <= 0)
+    if run.item_ids_json:
+        item_query = item_query.filter(PriceItem.id.in_(run.item_ids or [0]))
     items = item_query.order_by(PriceItem.name).all()
+    version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
+    put_listener_version(version.group(1) if version else "1")
     return jsonify({"state":"running", "command":{"id":run.batch_id, "items":[{"id":item.id, "name":item.name, "part_number":item.cooper_part_number.strip(), "unit":item.unit, "current_price":item.price} for item in items]}})
 
 
@@ -3875,6 +3971,57 @@ def local_cooper_command_results(batch_id):
         return jsonify({"error":"Submit between 1 and 1,000 results."}), 400
     batch, matched, errors = store_local_cooper_results(submitted, batch)
     return jsonify({"batch_id":batch.id, "matched":matched, "errors":errors, "preview_url":url_for("cooper_sync_preview", batch_id=batch.id, _external=True)}), 201
+
+
+@app.route("/api/local-cooper/commands/<int:batch_id>/image", methods=["POST"])
+@local_cooper_api_required
+def local_cooper_command_image(batch_id):
+    """A product picture the listener captured while scanning. Saved at once (pictures need no price review),
+    never over a picture someone uploaded by hand."""
+    batch = db.get_or_404(PriceSyncBatch, batch_id)
+    if batch.run is None or batch.run.status not in ("queued", "running"):
+        return jsonify({"error": "This command is no longer active."}), 409
+    payload = request.get_json(silent=True) or {}
+    item = db.session.get(PriceItem, payload.get("item_id")) if isinstance(payload.get("item_id"), int) else None
+    if item is None or " ".join(str(payload.get("part_number") or "").casefold().split()) != " ".join(item.cooper_part_number.casefold().split()):
+        return jsonify({"error": "That picture does not match a Pricing Sheet item's Cooper part number."}), 400
+    if item.image_source == "upload":
+        return jsonify({"ok": True, "kept": "upload"})
+    try:
+        data = base64.b64decode(str(payload.get("data") or ""), validate=True)
+    except (ValueError, TypeError):
+        return jsonify({"error": "The picture was not valid base64."}), 400
+    error = save_price_item_image(item, data, "cooper")
+    if error:
+        return jsonify({"error": error}), 400
+    db.session.commit()
+    return jsonify({"ok": True, "image": item.image_path}), 201
+
+
+LISTENER_FILE = os.path.join(basedir, "tools", "cooper_price_listener.py")
+
+
+def listener_latest_version():
+    try:
+        with open(LISTENER_FILE, encoding="utf-8") as handle:
+            found = re.search(r'^LISTENER_VERSION = "([\d.]+)"', handle.read(), re.MULTILINE)
+            return found.group(1) if found else ""
+    except OSError:
+        return ""
+
+
+def put_listener_version(version):
+    row = db.session.get(CompanySetting, "cooper_listener_version") or CompanySetting(key="cooper_listener_version")
+    row.value = version
+    db.session.add(row)
+    db.session.commit()
+
+
+@app.route("/settings/local-cooper/listener.py")
+@login_required
+def download_cooper_listener():
+    return send_from_directory(os.path.join(basedir, "tools"), "cooper_price_listener.py", as_attachment=True,
+                               download_name="cooper_price_listener.py", mimetype="text/x-python")
 
 
 @app.route("/api/local-cooper/results", methods=["POST"])
@@ -6515,6 +6662,8 @@ with app.app_context():
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
         ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
+        ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
     ]:
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")
