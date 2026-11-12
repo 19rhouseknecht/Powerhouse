@@ -873,8 +873,41 @@ An administrator may explicitly supply a material price and labor estimate durin
 
 Only use direct pricing when the exact supporting user message is included as source_message and it states the material price. Never invent or estimate a price. If labor hours are stated, preserve them exactly; otherwise use zero labor hours and clearly retain only the supplied material price. Set create_in_price_sheet true only when the administrator explicitly asks to add, create, or save that item in the Pricing Sheet or catalog. A direct quote price alone must not silently change the central Pricing Sheet."""
 
-CADEN_PRESENTATION_WORDING_ADDENDUM = """CLIENT PRESENTATION WORDING:
+CADEN_PRESENTATION_WORDING_V1 = """CLIENT PRESENTATION WORDING:
 Every client-facing option bullet must be concise, professional, and easy for a homeowner to understand. Prefer short scope phrases such as “Premium installation of …”, “Premium replacement of …”, “Premium upgrade of …”, or “Professional inspection of …”. Describe what will be completed, not the internal estimating method. Do not write paragraphs, technical explanations, sales hype, or separate bullets for ordinary labor, setup, cleanup, travel, and disposal. Aim for one clear action per bullet and generally 4–12 words."""
+
+CADEN_CLIENT_WORDING_ADDENDUM = """CLIENT WORDING (plain language):
+Write for a homeowner, not an electrician. Titles, descriptions, bullets and the introduction must be short and plain.
+
+BULLETS — one bullet is one thing the client gets, 3–10 words, no period, no prices, part numbers, wire sizes or amperage (unless the client asked about them).
+Start a bullet with a scope phrase only where it reads naturally:
+- "Turnkey installation of …" — a complete new install we supply, wire and finish (an EV charger, a generator hookup, a new circuit, new fixtures).
+- "Premium installation of …" — the upgraded product or higher-quality version offered in a higher tier.
+- "Replacement of …" or "Premium replacement of …" — swapping something old for something new.
+- "Upgrade of …" — improving what is already there (a panel, a service).
+- "Safety inspection of …" — checking and testing.
+Never force one of these phrases where it reads wrong. Permits, add-ons and protections are named plainly: "Electrical permit and township inspection", "Surge protection for the whole home", "Child-safe receptacles throughout the kitchen".
+
+Name every part by what it does for the homeowner, never by a trade term or acronym:
+GFCI receptacle → water-protection receptacle · GFCI breaker → water-protection breaker · AFCI breaker → fire-protection breaker ·
+dual-function (AFCI/GFCI) breaker → fire- and water-protection breaker · SPD / surge protective device → whole-home surge protector ·
+tamper-resistant receptacle → child-safe receptacle · weather-resistant receptacle with in-use cover → weatherproof outdoor receptacle ·
+Romex / NM cable / 12-2 → new wiring · load center / panelboard → electrical panel · meter base / meter socket → electric meter housing ·
+service entrance cable (SER/SEU) → main power feed · generator interlock kit → generator safety switch · EV/AC disconnect → outdoor shut-off switch ·
+recessed cans / wafers → recessed ceiling lights / slim LED ceiling lights · smoke/CO detectors → smoke and carbon-monoxide alarms ·
+ground rods / grounding electrode / bonding → grounding system.
+For anything else ask: what would the homeowner call it, and what does it do for them?
+
+Never write bullets for labor, setup, cleanup, travel, disposal, "materials" or testing on its own; they are always included.
+When a higher tier upgrades something a lower tier also has, word it to show the upgrade ("Premium installation of designer LED fixtures" above "Turnkey installation of LED fixtures").
+
+TITLES AND TEXT
+- Option title: 2–5 words naming the outcome ("Essential outlet repair", "Kitchen safety upgrade", "Complete panel upgrade"). Not the tier name, not a sentence.
+- Option description: one sentence under 25 words saying what the homeowner ends up with.
+- Introduction: one or two short, friendly sentences. No jargon, no pressure.
+- The message to the office: brief; say what you assumed and anything you could not price.
+
+Before you answer, reread every bullet as the homeowner: no acronyms or trade names left, no scope phrase where it reads wrong, no bullet for labor or cleanup, and each higher tier clearly better than the one below."""
 
 ONSITE_CHECKLIST = [
     ("Attic / Crawl Space", [
@@ -1236,30 +1269,80 @@ def map_tools(items):
     return [{"id": item.id, "name": item.name, "tool_type": item.tool_type, "rental_cost": item.rental_cost, "notes": item.notes} for item in items]
 
 
+# Client wording: trade terms become what the part does for the homeowner. Applied to everything a client reads,
+# whatever wrote it (Caden, a manual edit, an older quote). Order matters: the most specific phrases first.
+CLIENT_TERMS = [
+    (r"\b(?:dual[- ]function|AFCI\s*/\s*GFCI|GFCI\s*/\s*AFCI|combination AFCI/GFCI)\s+breakers?\b", "fire- and water-protection breaker", True),
+    (r"\b(?:GFCI|GFI|ground[- ]fault(?: circuit interrupter)?)\s+breakers?\b", "water-protection breaker", True),
+    (r"\b(?:AFCI|arc[- ]fault(?: circuit interrupter)?)\s+breakers?\b", "fire-protection breaker", True),
+    (r"\b(?:GFCI|GFI|ground[- ]fault(?: circuit interrupter)?)\s+(?:receptacles?|outlets?|plugs?|devices?)\b", "water-protection receptacle", True),
+    (r"\b(?:GFCI|GFI|ground[- ]fault)\s+protect(?:ion|ed)\b", "water protection", False),
+    (r"\b(?:AFCI|arc[- ]fault)\s+protect(?:ion|ed)\b", "fire protection", False),
+    (r"\b(?:GFCI|GFI)s?\b", "water-protection receptacle", True),
+    (r"\b(?:AFCI)s?\b", "fire-protection breaker", True),
+    (r"\b(?:whole[- ](?:home|house)\s+)?(?:surge protective devices?|SPDs?|type\s*[12]\s+surge (?:protectors?|devices?))\b", "whole-home surge protector", True),
+    (r"\b(?:TR|tamper[- ]resistant)\s+(?:receptacles?|outlets?)\b", "child-safe receptacle", True),
+    (r"\b(?:WR|weather[- ]resistant)\s+(?:receptacles?|outlets?)(?:\s+with\s+(?:an?\s+)?(?:in[- ]use|bubble)\s+covers?)?\b", "weatherproof outdoor receptacle", True),
+    (r"\b(?:in[- ]use|bubble)\s+covers?\b", "weatherproof cover", True),
+    (r"\b\d{1,2}\s*[/-]\s*\d\s*(?:w/?\s*g(?:round)?\s*)?(?:romex|nm-?b?|nm cable|cable|wire)\b", "new wiring", False),
+    (r"\b(?:romex|nm-?b cable|nm cable)\b", "wiring", False),
+    (r"\b(?:load\s*cent(?:er|re)s?|panelboards?|breaker box(?:es)?)\b", "electrical panel", True),
+    (r"\bmeter (?:base|socket|can)s?\b", "electric meter housing", True),
+    (r"\b(?:service entrance cable|SER cable|SEU cable|SER|SEU)\b", "main power feed", False),
+    (r"\b(?:generator\s+)?interlock(?:\s+kit)?s?\b", "generator safety switch", True),
+    (r"\b(?:EV|AC|A/C|fused|non[- ]fused|outdoor)\s+disconnects?\b", "outdoor shut-off switch", True),
+    (r"\brecessed cans?\b|\bcan lights?\b", "recessed ceiling lights", False),
+    (r"\b(?:LED\s+)?wafer lights?\b|\bwafers\b", "slim LED ceiling lights", False),
+    (r"\bsmoke/CO detectors?\b|\bsmoke and CO detectors?\b", "smoke and carbon-monoxide alarms", False),
+    (r"\bCO detectors?\b", "carbon-monoxide alarm", True),
+    (r"\bsmoke detectors?\b", "smoke alarm", True),
+    (r"\b(?:ground(?:ing)? rods?|grounding electrodes?(?: system)?)\b", "grounding system", False),
+    (r"\bEMT\b", "metal conduit", False),
+]
+_CLIENT_TERMS = [(re.compile(pattern, re.IGNORECASE), words, plural) for pattern, words, plural in CLIENT_TERMS]
+
+
+def plain_terms(text):
+    """Replace trade terms with plain words. Keeps plurals plural ("GFCI outlets" → "water-protection receptacles")."""
+    text = str(text or "")
+    for pattern, words, can_be_plural in _CLIENT_TERMS:
+        def swap(match, words=words, can_be_plural=can_be_plural):
+            found = match.group(0)
+            plural = can_be_plural and re.search(r"(?:s|es)$", found.split()[-1], re.IGNORECASE) and not found.lower().endswith(("ss", "us"))
+            result = words + ("s" if plural and not words.endswith("s") else "")
+            return result[0].upper() + result[1:] if found[:1].isupper() and match.start() == 0 else result
+        text = pattern.sub(swap, text)
+    text = re.sub(r"\b(new )new\b", r"\1", text, flags=re.IGNORECASE)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
+SCOPE_VERBS = (
+    (r"^(?:install(?:ation)?(?:\s+of)?|installing)\s+", "Turnkey installation of "),
+    (r"^(?:replace(?:ment)?(?:\s+of)?|replacing|swap(?:\s+out)?)\s+", "Replacement of "),
+    (r"^(?:upgrade(?:\s+of)?|upgrading)\s+", "Upgrade of "),
+    (r"^(?:inspect(?:ion)?(?:\s+of)?|check(?:ing)?|test(?:ing)?)\s+", "Safety inspection of "),
+    (r"^(?:provide|supply|furnish|add|run|wire)\s+", "Turnkey installation of "),
+)
+
+
 def professionalize_scope_bullet(value):
-    """Return a concise, consistent homeowner-facing scope line."""
+    """A short, plain, homeowner-facing scope line. A bullet that starts with an action ("Install …", "Replace …")
+    becomes a scope phrase ("Turnkey installation of …", "Replacement of …"); Caden chooses "Premium …" himself for
+    an upgraded product. Anything else (a permit, a protection, an add-on) is
+    left as it is. Trade terms become plain words."""
     scope = re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n-•.;:")
     if not scope:
-        return "Premium installation"
-    scope = re.sub(r"^(?:we\s+will|our\s+team\s+will)\s+", "", scope, flags=re.IGNORECASE)
+        return ""
+    scope = re.sub(r"^(?:we\s+will|we'll|our\s+team\s+will|power\s*house\s+will)\s+", "", scope, flags=re.IGNORECASE)
     scope = re.split(r"[;]|(?<=[.!?])\s+", scope, maxsplit=1)[0].strip(" .")
-    patterns = (
-        (r"^(?:install(?:ation)?(?:\s+of)?|installing)\s+", "Premium installation of "),
-        (r"^(?:replace(?:ment)?(?:\s+of)?|replacing)\s+", "Premium replacement of "),
-        (r"^(?:upgrade(?:\s+of)?|upgrading)\s+", "Premium upgrade of "),
-        (r"^(?:inspect(?:ion)?(?:\s+of)?|checking|check)\s+", "Professional inspection of "),
-        (r"^(?:provide|supply|furnish|add)\s+", "Premium installation of "),
-    )
-    if re.match(r"^(?:premium|professional)\b", scope, flags=re.IGNORECASE):
-        result = scope[0].upper() + scope[1:]
-    else:
-        result = ""
-        for pattern, prefix in patterns:
+    if not re.match(r"^(?:premium|turnkey|professional|safety|replacement\s+of|upgrade\s+of)\b", scope, flags=re.IGNORECASE):
+        for pattern, prefix in SCOPE_VERBS:
             if re.match(pattern, scope, flags=re.IGNORECASE):
-                result = prefix + re.sub(pattern, "", scope, count=1, flags=re.IGNORECASE).strip()
+                scope = prefix + re.sub(pattern, "", scope, count=1, flags=re.IGNORECASE).strip()
                 break
-        if not result:
-            result = "Premium installation of " + scope
+    result = plain_terms(scope)
+    result = re.sub(r"\b(installation|replacement|upgrade|inspection) of (?:the |a |an )?new\b", r"\1 of new", result, flags=re.IGNORECASE)
+    result = result[:1].upper() + result[1:]
     if len(result) > 125:
         shortened = result[:125].rsplit(" ", 1)[0].rstrip(" ,.-")
         result = shortened if shortened else result[:125]
@@ -1267,6 +1350,7 @@ def professionalize_scope_bullet(value):
 
 
 app.jinja_env.filters["presentation_scope"] = professionalize_scope_bullet
+app.jinja_env.filters["plain_terms"] = plain_terms
 
 
 # ---------------- Setup gate ----------------
@@ -1816,8 +1900,17 @@ def delete_service(service_id):
 @app.route("/quoting/generate")
 @login_required
 def generate_quote():
-    job_list = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).all()
-    return render_template("quote_job_select.html", jobs=job_list, quick_quotes=QuickQuote.query.filter_by(assigned_job_id=None).order_by(QuickQuote.created_at.desc()).all())
+    search = request.args.get("q", "").strip()
+    query = Job.query.join(Client).filter(~Job.status.in_(["completed", "declined"])).options(db.selectinload(Job.quotes), db.selectinload(Job.material_order))
+    if search:
+        like = f"%{search}%"
+        terms = [Job.title.ilike(like), Job.description.ilike(like), Client.first_name.ilike(like), Client.last_name.ilike(like),
+                 Client.company_name.ilike(like), Job.address_line1.ilike(like), Job.city.ilike(like)]
+        if search.lstrip("#").isdigit():
+            terms.append(Job.job_number == int(search.lstrip("#")))
+        query = query.filter(db.or_(*terms))
+    job_list = [job for job in query.order_by(Job.updated_at.desc()).all() if job.bucket == "in_works"]   # only jobs before a quote
+    return render_template("quote_job_select.html", jobs=job_list, search=search, quick_quotes=QuickQuote.query.filter_by(assigned_job_id=None).order_by(QuickQuote.created_at.desc()).all())
 
 
 @app.route("/quoting/quick", methods=["POST"])
@@ -1861,7 +1954,7 @@ def assign_quick_quote(quick_id):
     draft.messages.append(QuoteMessage(role="user", content=lead.description))
     result = lead.ai_result
     if result.get("ready") and len(result.get("options", [])) == draft.option_count:
-        apply_ai_quote_options(draft, result["options"]); draft.title = result.get("quote_title") or draft.title; draft.introduction = result.get("introduction", "")
+        apply_ai_quote_options(draft, result["options"]); draft.title = plain_terms(result.get("quote_title")) or draft.title; draft.introduction = plain_terms(result.get("introduction", ""))
         if not draft.ai_snapshot_json: draft.ai_snapshot_json = serialize_quote_snapshot(draft)
         draft.messages.append(QuoteMessage(role="assistant", content=lead.ai_message or f"I prepared {draft.option_count} options from the quick quote."))
     db.session.commit(); flash("Quick quote assigned to the job with its draft preserved.", "success")
@@ -1925,8 +2018,8 @@ def quote_assistant(job_id):
                     missing = sorted({name.strip() for option in result.get("options", []) for name in option.get("missing_services", []) if name.strip()})
                     if missing:
                         quote.messages.append(QuoteMessage(role="assistant", content=f"I completed all {quote.option_count} options, but these services are missing from the library and remain unpriced:\n\n" + "\n".join(f"• {name}" for name in missing) + "\n\nAdd or repair these services to fill in their pricing."))
-                    quote.title = result.get("quote_title", "").strip() or f"{job.title} — Service Options"
-                    quote.introduction = result.get("introduction", "").strip()
+                    quote.title = plain_terms(result.get("quote_title", "")) or f"{job.title} — Service Options"
+                    quote.introduction = plain_terms(result.get("introduction", ""))
                 db.session.commit()
             except Exception as exc:
                 app.logger.exception("Quote assistant failed")
@@ -2411,8 +2504,8 @@ def rework_quote(quote_id):
             if not quote.ai_snapshot_json:
                 quote.ai_snapshot_json = serialize_quote_snapshot(quote)
             restore_manual_quote_edits(quote, manual_snapshots)
-            quote.title = result.get("quote_title", "").strip() or quote.title
-            quote.introduction = result.get("introduction", "").strip()
+            quote.title = plain_terms(result.get("quote_title", "")) or quote.title
+            quote.introduction = plain_terms(result.get("introduction", ""))
             db.session.commit()
             flash(f"Caden reworked all {quote.option_count} options with the updated pricing context.", "success")
         else:
@@ -2539,7 +2632,7 @@ def edit_saved_quote(quote_id):
                 option.title = option_title
                 option.description = request.form.get(f"option_description_{option.id}", "").strip()
                 bullet_values = request.form.getlist(f"option_bullets_{option.id}[]")
-                bullets = [professionalize_scope_bullet(line) for line in bullet_values if line.strip(" •-\t")]
+                bullets = [line for line in (professionalize_scope_bullet(value) for value in bullet_values) if line]
                 option.bullets_json = json.dumps(bullets)
                 option.manual_total_override = final_price
                 option.manually_edited = True
@@ -4840,8 +4933,8 @@ def apply_ai_quote_options(quote, option_data):
     created_catalog_items = {}
     quote.options.clear()
     for position, data in enumerate(option_data):
-        professional_bullets = [professionalize_scope_bullet(bullet) for bullet in data.get("bullets", []) if str(bullet).strip()]
-        option = QuoteOption(tier=data["tier"], title=data["title"].strip(), description=data["description"].strip(), bullets_json=json.dumps(professional_bullets), position=position)
+        professional_bullets = [line for line in (professionalize_scope_bullet(bullet) for bullet in data.get("bullets", [])) if line]
+        option = QuoteOption(tier=data["tier"], title=plain_terms(data["title"]), description=plain_terms(data["description"]), bullets_json=json.dumps(professional_bullets), position=position)
         for line_position, selection in enumerate(data.get("services", [])):
             service = service_lookup.get(selection.get("service_id"))
             multiplier = float(selection.get("multiplier", 0))
@@ -6314,8 +6407,11 @@ with app.app_context():
         caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_OPTION_STRATEGY_ADDENDUM
     if caden_agent and "DIRECT USER-SUPPLIED PRICING:" not in caden_agent.prompt:
         caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_DIRECT_PRICING_ADDENDUM
-    if caden_agent and "CLIENT PRESENTATION WORDING:" not in caden_agent.prompt:
-        caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_PRESENTATION_WORDING_ADDENDUM
+    if caden_agent and "CLIENT WORDING (plain language):" not in caden_agent.prompt:
+        if CADEN_PRESENTATION_WORDING_V1 in caden_agent.prompt:      # the old block, untouched: replace it
+            caden_agent.prompt = caden_agent.prompt.replace(CADEN_PRESENTATION_WORDING_V1, CADEN_CLIENT_WORDING_ADDENDUM)
+        else:                                                         # edited by hand, or never added: add the new one
+            caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_CLIENT_WORDING_ADDENDUM
     if caden_agent:
         caden_agent.prompt = caden_agent.prompt.replace(
             "Always create exactly six tiers in this order: Basic, Bronze, Silver, Gold, Diamond, Platinum.",

@@ -906,3 +906,29 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 /* Grid and flex columns may shrink below a wide table inside them (the table scrolls in its own box) */
 .detail-main, .detail-main > *, .job-detail-grid > *, .service-detail-grid > *, .training-detail-grid > *, .labor-calculator-grid > *, .agent-settings-grid > * { min-width: 0; }
 .material-remove label { position: relative; }
+
+/* Generate quote: the job list */
+.quote-job-heading { margin-bottom: 12px; }
+.quote-job-heading p { margin: 6px 0 0; }
+.quote-job-search { margin-bottom: 14px; }
+.quote-job-card { position: relative; display: flex; align-items: flex-start; gap: 15px; padding: 16px 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 11px; transition: border-color .15s; }
+.quote-job-card:hover { border-color: #78614a; }
+.quote-job-card .client-avatar { flex: 0 0 auto; }
+.quote-job-body { flex: 1 1 auto; min-width: 0; }
+.quote-job-body small { color: var(--accent-hover); text-transform: uppercase; letter-spacing: .06em; font-size: 10px; font-weight: 700; }
+.quote-job-title { color: var(--text); text-decoration: none; }
+.quote-job-title::after { content: ""; position: absolute; inset: 0; border-radius: 11px; }      /* the whole card opens the quote */
+.quote-job-title strong { display: block; margin: 4px 0 6px; font-size: 16px; }
+.quote-job-list .quote-job-description { margin: 0; color: #a8a29e; font-size: 13px; line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; text-overflow: clip;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.quote-job-list .quote-job-card.is-open .quote-job-description { -webkit-line-clamp: unset; display: block; }
+.quote-job-list .quote-job-description.muted-note { color: #78716c; font-style: italic; }
+.quote-job-more { position: relative; z-index: 1; margin-top: 4px; padding: 2px 0; background: none; border: 0; color: var(--accent-hover); font-size: 12px; font-weight: 600; cursor: pointer; }
+.quote-job-more:hover { text-decoration: underline; }
+.quote-job-side { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 10px; padding-top: 2px; }
+.quote-job-build { color: var(--accent-hover); font-size: 13px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+@media (max-width: 620px) {
+  .quote-job-card { flex-wrap: wrap; }
+  .quote-job-side { flex-direction: row; align-items: center; justify-content: space-between; width: 100%; padding-left: 51px; }
+  .quote-job-list .status-pill, .quote-job-list b { display: inline-block; }
+}

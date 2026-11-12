@@ -68,6 +68,11 @@ with appmod.app.app_context():
     check(old is not None and old.jobs[0].title == "Old job", "the records made by the live code are all still there")
     check(old.jobs[0].bucket == "active", "and read correctly")
     old_id, job_id = old.id, old.jobs[0].id
+    caden = appmod.AiAgent.query.filter(appmod.db.func.lower(appmod.AiAgent.name) == "caden").first()
+    if caden is not None and hasattr(appmod, "CADEN_CLIENT_WORDING_ADDENDUM"):
+        check(caden.prompt.count("CLIENT WORDING (plain language):") == 1, "Caden's saved prompt has the plain-language wording rules once")
+        if hasattr(appmod, "CADEN_PRESENTATION_WORDING_V1"):
+            check(appmod.CADEN_PRESENTATION_WORDING_V1 not in caden.prompt, "and the old wording block was replaced, not left beside it")
 client = sign_in(appmod)
 for url in ("/", "/jobs", "/clients", "/clients/%d" % old_id, "/jobs/%d" % job_id, "/settings"):
     check(client.get(url).status_code == 200, "%s opens on the upgraded database" % url)
