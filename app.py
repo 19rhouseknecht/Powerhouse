@@ -960,6 +960,14 @@ An administrator may explicitly supply a material price and labor estimate durin
 
 Only use direct pricing when the exact supporting user message is included as source_message and it states the material price. Never invent or estimate a price. If labor hours are stated, preserve them exactly; otherwise use zero labor hours and clearly retain only the supplied material price. Set create_in_price_sheet true only when the administrator explicitly asks to add, create, or save that item in the Pricing Sheet or catalog. A direct quote price alone must not silently change the central Pricing Sheet."""
 
+CADEN_SHEET_ONLY_ADDENDUM = """PRICES ONLY FROM THE PRICING SHEET:
+Every price on a quote comes from the Pricing Sheet (PRICE_LIBRARY, Unconfirmed items included) or a Service (SERVICE_LIBRARY).
+Never put a price on a quote yourself and never create a Pricing Sheet item. When an item is not in either library, put it in
+missing_services (its name, quantity and unit) and pricing_needed (with your best guess, which is shown only as a hint): it is
+listed at the top of the draft, where the office matches it to a Pricing Sheet item. If the office gives you a price in the chat
+for something not in the libraries, still list it in missing_services and say they can add it on the Pricing Sheet and match it.
+Leave direct_priced_items empty."""
+
 CADEN_PRESENTATION_WORDING_V1 = """CLIENT PRESENTATION WORDING:
 Every client-facing option bullet must be concise, professional, and easy for a homeowner to understand. Prefer short scope phrases such as “Premium installation of …”, “Premium replacement of …”, “Premium upgrade of …”, or “Professional inspection of …”. Describe what will be completed, not the internal estimating method. Do not write paragraphs, technical explanations, sales hype, or separate bullets for ordinary labor, setup, cleanup, travel, and disposal. Aim for one clear action per bullet and generally 4–12 words."""
 
@@ -1553,7 +1561,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "find_pricing_items":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -1934,6 +1942,9 @@ def create_price_item():
         flash(error, "error")
     else:
         flash(f'Added "{item.name}" to the pricing sheet.', "success")
+    back = request.form.get("next", "")
+    if back.startswith("/") and not back.startswith("//"):            # added for a quote: back to it, where it can be matched
+        return redirect(back)
     return redirect(url_for("pricing_sheet"))
 
 
@@ -2644,8 +2655,7 @@ def edit_quote_option(option_id):
             line.labor_rate_snapshot = get_labor_rate()
             line.unit_price = material + (hours * line.labor_rate_snapshot)
             line.manually_edited = True
-            if line.service_id is None and line.price_item_id is None and (material > 0 or hours > 0):
-                line.manual_priced = True
+            # a line with no Pricing Sheet item or Service stays "needs a price": typed figures never price it
             if line.price_item and not line.price_item.labor_hours_per_unit and hours > 0:
                 line.price_item.labor_hours_per_unit = hours
         new_name = request.form.get("new_line_name", "").strip()
@@ -2654,7 +2664,11 @@ def edit_quote_option(option_id):
             if new_quantity <= 0 or new_material < 0 or new_labor < 0:
                 raise ValueError
             rate = get_labor_rate()
-            option.lines.append(QuoteOptionService(service_name=new_name, example_quantity="Manual line", multiplier=new_quantity, material_unit_price=new_material, labor_hours_per_unit=new_labor, labor_rate_snapshot=rate, unit_price=new_material + (new_labor * rate), manual_priced=True, manually_edited=True, position=len(option.lines)))
+            line = QuoteOptionService(service_name=new_name, example_quantity="Pricing pending", multiplier=new_quantity, unit_price=0, manually_edited=True, position=len(option.lines))
+            option.lines.append(line)               # listed under Needs a price, to be matched to the Pricing Sheet
+            match = sheet_matches(new_name, limit=2)
+            if match and match[0][0] >= SHEET_AUTO_SCORE and not (len(match) > 1 and match[1][0] >= SHEET_AUTO_SCORE):
+                price_line_from_item(line, match[0][1])
     except (ValueError, IndexError):
         db.session.rollback()
         flash("Quantities must be greater than zero, and material prices and labor hours cannot be negative.", "error")
@@ -2707,6 +2721,9 @@ def repair_quote_missing(quote_id):
             line.material_unit_price = service.material_total; line.labor_hours_per_unit = service.estimated_labor_hours; line.labor_rate_snapshot = get_labor_rate()
         mapping_message = f'Pricing repair: "{original_name}" was mapped to service #{service.id} "{service.name}" at a {quantity:g}× multiplier. Respect this explicit mapping if the quote is reworked.'
         flash(f'Linked "{original_name}" to {quantity:g} × {service.name}.', "success")
+    elif strategy == "new_item":
+        flash("Add new items on the Pricing Sheet itself, then match them here. A quote never creates Pricing Sheet items.", "error")
+        return redirect(url_for("quote_assistant", job_id=quote.job_id, repair=missing_key))
     elif strategy in {"price_item", "new_item"}:
         if strategy == "price_item":
             price_item = db.session.get(PriceItem, request.form.get("price_item_id", type=int))
@@ -2760,6 +2777,8 @@ def use_sheet_item(quote_id):
         return redirect(url_for("quote_presentation", quote_id=quote.id))
     index, _, item_id = request.form.get("pick", "").partition(":")
     key = request.form.get(f"key_{index}", "").strip()
+    if item_id.startswith("s") and item_id[1:].isdigit():
+        return use_service_for_missing(quote, key, db.session.get(Service, int(item_id[1:])))
     item = db.session.get(PriceItem, int(item_id)) if item_id.isdigit() else None
     if not key or item is None or not item.active:
         flash("That Pricing Sheet item is no longer available.", "error")
@@ -2777,6 +2796,47 @@ def use_sheet_item(quote_id):
         flash(f"{asked} is priced from the Pricing Sheet ({item.name}).", "success")
     db.session.commit()
     return redirect(url_for("quote_assistant", job_id=quote.job_id) + ("#needs-price" if quote.has_missing_pricing else ""))
+
+
+def use_service_for_missing(quote, key, service):
+    """Match an item that needs a price to a whole Service (its price is built from Pricing Sheet items)."""
+    lines = [line for option in quote.options for line in option.lines if line.is_missing and
+             ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
+              (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88))]
+    if not key or service is None or not lines:
+        flash("That service or item is no longer available.", "error")
+        return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#needs-price")
+    asked = lines[0].service_name
+    rate = get_labor_rate()
+    for line in lines:
+        line.service = service; line.price_item = None; line.manual_priced = False; line.service_name = service.name
+        line.example_quantity = service.example_quantity; line.unit_price = service.example_total
+        line.material_unit_price = service.material_total; line.labor_hours_per_unit = service.estimated_labor_hours; line.labor_rate_snapshot = rate
+    quote.messages.append(QuoteMessage(role="assistant", content=f"Priced from the Services library: {asked} → {service.name}."))
+    db.session.commit()
+    flash(f"{asked} is priced from the service {service.name}.", "success")
+    return redirect(url_for("quote_assistant", job_id=quote.job_id) + ("#needs-price" if quote.has_missing_pricing else ""))
+
+
+@app.route("/quoting/pricing/find.json")
+@login_required
+def find_pricing_items():
+    """Pricing Sheet items (Unconfirmed included) and Services matching what was typed, for matching an item on a quote."""
+    words = [w for w in re.split(r"\s+", request.args.get("q", "").strip()) if w][:6]
+    if not words or not current_user.can("view_quoting"):
+        return jsonify({"results": []})
+    items = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
+    services = Service.query
+    for word in words:
+        like = f"%{word}%"
+        items = items.filter(db.or_(PriceItem.name.ilike(like), PriceItem.cooper_part_number.ilike(like), PriceItem.category.ilike(like)))
+        services = services.filter(db.or_(Service.name.ilike(like), Service.category.ilike(like)))
+    found = [{"id": f"s{s.id}", "name": s.name, "kind": "Service", "price": round(s.example_total, 2), "unit": s.example_quantity}
+             for s in services.order_by(Service.name).limit(5).all()]
+    found += [{"id": str(i.id), "name": i.name, "kind": "Pricing Sheet" + (" (Unconfirmed)" if i.category == UNCONFIRMED else ""),
+               "price": round(i.price, 2), "unit": i.unit, "part": i.cooper_part_number}
+              for i in items.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(20).all()]
+    return jsonify({"results": found})
 
 
 @app.route("/quoting/pricing/items/<int:item_id>/confirm", methods=["POST"])
@@ -2798,77 +2858,32 @@ def confirm_unconfirmed_item(item_id):
 @app.route("/quotes/<int:quote_id>/use-prices", methods=["POST"])
 @login_required
 def use_quote_prices(quote_id):
-    """The "Needs a price" panel: price every listed item at once, in this quote (and in the Pricing Sheet when ticked)."""
+    """The Needs a price panel's "Not needed": remove items the quote already covers. Prices are never typed here: an item
+    gets its price only from a Pricing Sheet item (or a Service) it is matched to (use_sheet_item)."""
     check_csrf()
     quote = db.get_or_404(Quote, quote_id)
     if quote.status != "draft":
-        flash("Only a draft quote can be priced here.", "error")
+        flash("Only a draft quote can be changed here.", "error")
         return redirect(url_for("quote_presentation", quote_id=quote.id))
-    caden = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden").first()
-    rate = get_labor_rate()
-    priced, skipped = [], []
     removed = []
     for index in range(int(request.form.get("count", "0") or 0)):
         key = request.form.get(f"key_{index}", "").strip()
-        price_text = request.form.get(f"price_{index}", "").strip()
-        if key and request.form.get(f"skip_{index}"):
-            for option in quote.options:
-                for line in list(option.lines):
-                    if line.is_missing and ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
-                                            (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88)):
-                        option.lines.remove(line)
-                        db.session.delete(line)
-            removed.append(request.form.get(f"name_{index}", "an item"))
+        if not key or not request.form.get(f"skip_{index}"):
             continue
-        if not key or price_text == "":
-            continue
-        try:
-            price = float(price_text.replace("$", "").replace(",", ""))
-            labor = float((request.form.get(f"labor_{index}", "") or "0").strip())
-        except ValueError:
-            skipped.append(request.form.get(f"name_{index}", "an item")); continue
-        if price < 0 or labor < 0:
-            skipped.append(request.form.get(f"name_{index}", "an item")); continue
-        unit = request.form.get(f"unit_{index}", "ea")
-        unit = unit if unit in {"ea", "ft", "roll", "box", "lb", "job"} else "ea"
-        lines = [line for option in quote.options for line in option.lines if line.is_missing and
-                 ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
-                  (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88))]
-        if not lines:
-            continue
-        name = lines[0].service_name
-        price_item = None
-        if request.form.get(f"save_{index}"):
-            price_item = find_duplicate_price_item(name, include_inactive=True)
-            if price_item is None:
-                price_item = PriceItem(name=name, lookup_key=normalize_item_name(name), category="Quote supplied", unit=unit, price=price,
-                                       labor_hours_per_unit=labor, notes=f"Priced on the quote for job #{quote.job.job_number}.", active=True)
-                db.session.add(price_item); db.session.flush()
-            else:
-                price_item.active = True; price_item.price = price; price_item.unit = unit; price_item.labor_hours_per_unit = labor
-        for line in lines:
-            line.service = None; line.price_item = price_item; line.manual_priced = price_item is None
-            line.example_quantity = f"1 {unit}"; line.material_unit_price = price; line.labor_hours_per_unit = labor
-            line.labor_rate_snapshot = rate; line.unit_price = price + labor * rate
-        remember_direct_pricing(caden, name, unit, price, labor, f"Priced on the quote: {name} ${price:,.2f}/{unit}, {labor:g} labor hours.")
-        priced.append(f"{name} at ${price:,.2f}/{unit}" + (f" + {labor:g} hr" if labor else "") + (" (saved to the Pricing Sheet)" if price_item else ""))
-    if priced or removed:
-        said = []
-        if priced:
-            said.append("Pricing confirmed on the quote: " + "; ".join(priced) + ".")
-        if removed:
-            said.append("Not needed (already covered), removed from the quote: " + "; ".join(removed) + ".")
-        quote.messages.append(QuoteMessage(role="user", content=" ".join(said) + " Keep these decisions if the quote is reworked."))
-    db.session.commit()
-    if priced:
-        flash("Priced " + ", ".join(priced) + ".", "success")
+        for option in quote.options:
+            for line in list(option.lines):
+                if line.is_missing and ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
+                                        (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88)):
+                    option.lines.remove(line)
+                    db.session.delete(line)
+        removed.append(request.form.get(f"name_{index}", "an item"))
     if removed:
-        flash("Removed as not needed: " + ", ".join(removed) + ".", "success")
-    if skipped:
-        flash("Check the price for " + ", ".join(skipped) + ": it must be a number.", "error")
-    if not priced and not skipped and not removed:
-        flash("Enter a price for at least one item, or tick Not needed.", "error")
-    return redirect(url_for("quote_assistant", job_id=quote.job_id))
+        quote.messages.append(QuoteMessage(role="assistant", content="Not needed (already covered), removed from the quote: " + "; ".join(removed) + "."))
+        flash("Removed: " + "; ".join(removed) + ".", "success")
+    else:
+        flash("Tick Not needed on the items the quote already covers, or match each item to a Pricing Sheet item.", "error")
+    db.session.commit()
+    return redirect(url_for("quote_assistant", job_id=quote.job_id) + ("#needs-price" if quote.has_missing_pricing else ""))
 
 
 def capture_manual_quote_edits(quote):
@@ -5583,8 +5598,9 @@ REQUIRED_TIERS_IN_ORDER: {json.dumps(tiers)}
 ALWAYS BUILD THE QUOTE:
 Never answer that a quote cannot be made. Either ask one short question (ready=false, one question) when a single missing fact changes the whole scope, or build every option now (ready=true) with clearly stated assumptions.
 missing_services is only for individual parts or services that truly need a price in that option. Never put a summary of the option's scope there (that is what bullets are for), never repeat something the option already prices with a service, item or direct price, and never list the same thing twice. Every missing_services entry must have a matching pricing_needed entry.
-Anything you cannot match to a Service or Pricing Sheet item, and whose price the administrator has not typed in this conversation, still goes into the option: put it in that option's missing_services with its quantity and unit, and add one entry to pricing_needed with a realistic suggested material price per unit and labor hours per unit (typical Pennsylvania supply-house pricing) and a short reason. These are suggestions for the administrator to confirm; they are never added to the quote's totals by you.
-Use direct_priced_items only when an administrator message in this conversation states that exact price; copy that message into source_message word for word.
+Anything you cannot match to a Service or Pricing Sheet item still goes into the option: put it in that option's missing_services with its quantity and unit, and add one entry to pricing_needed with a realistic suggested material price per unit and labor hours per unit (typical Pennsylvania supply-house pricing) and a short reason. These are suggestions for the administrator to confirm; they are never added to the quote's totals by you.
+Every price comes from the Pricing Sheet or a Service: leave direct_priced_items empty, even when a price is typed in this conversation.
+An item that is not in either library goes in missing_services, and the office matches it to a Pricing Sheet item.
 """
     schema = {
         "type": "object",
@@ -5864,37 +5880,18 @@ def apply_ai_quote_options(quote, option_data):
             rate = get_labor_rate()
             option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name, example_quantity=f"1 {price_item.unit}", multiplier=quantity, unit_price=price_item.price + (price_item.labor_hours_per_unit * rate), material_unit_price=price_item.price, labor_hours_per_unit=price_item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines)))
         for selection in data.get("direct_priced_items", []):
+            # Every price comes from the Pricing Sheet: an item with a price typed in the chat is listed to be matched to a
+            # Pricing Sheet item (and found there at once when it clearly is one). Its typed figure is only kept as a hint.
             unit = selection.get("unit") if selection.get("unit") in {"ea", "ft", "roll", "box", "lb", "job"} else "ea"
+            name = str(selection.get("name") or "Item to price").strip()
             try:
-                name, quantity, material_price, labor = validate_direct_priced_item(quote, selection)
-            except (ValueError, TypeError):
-                # a price nobody typed: never in the totals, but kept as Caden's suggestion to confirm
-                name = str(selection.get("name") or "Item to price").strip()
-                try:
-                    quantity = max(float(selection.get("quantity") or 1), 0.01)
-                    suggested = {"suggested_material_price": max(float(selection.get("material_unit_price") or 0), 0),
-                                 "suggested_labor_hours": max(float(selection.get("labor_hours_per_unit") or 0), 0)}
-                except (TypeError, ValueError):
-                    quantity, suggested = 1.0, None
-                if suggested is not None:
-                    suggested["reason"] = "Caden's estimate; confirm before sending."
-                pending(option, name, quantity, unit, suggested)
-                continue
-            source = " ".join(str(selection.get("source_message", "")).split())
-            price_item = None
-            if selection.get("create_in_price_sheet"):
-                key = canonical_item_name(name)
-                price_item = created_catalog_items.get(key) or find_duplicate_price_item(name)
-                if price_item is None:
-                    price_item = PriceItem(name=name, lookup_key=normalize_item_name(name), category="Quote supplied", unit=unit, price=material_price, labor_hours_per_unit=labor, notes="Created from an explicit Caden quote-chat instruction.", active=True)
-                    db.session.add(price_item); db.session.flush()
-                else:
-                    price_item.active = True; price_item.price = material_price; price_item.unit = unit
-                    if labor > 0: price_item.labor_hours_per_unit = labor
-                created_catalog_items[key] = price_item
-            remember_direct_pricing(caden, name, unit, material_price, labor, source)
-            rate = get_labor_rate()
-            option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name if price_item else name, example_quantity=f"1 {unit}", multiplier=quantity, unit_price=material_price + (labor * rate), material_unit_price=material_price, labor_hours_per_unit=labor, labor_rate_snapshot=rate, manual_priced=price_item is None, position=len(option.lines)))
+                quantity = max(float(selection.get("quantity") or 1), 0.01)
+                suggested = {"suggested_material_price": max(float(selection.get("material_unit_price") or 0), 0),
+                             "suggested_labor_hours": max(float(selection.get("labor_hours_per_unit") or 0), 0),
+                             "reason": "The figure given in the chat; match the item to the Pricing Sheet."}
+            except (TypeError, ValueError):
+                quantity, suggested = 1.0, None
+            pending(option, name, quantity, unit, suggested)
         for value in data.get("missing_services", []):
             name, quantity, unit = _missing_entry(value)
             if not name:
@@ -6127,7 +6124,7 @@ def quote_ready_summary(quote, notes=()):
         on_sheet = sum(1 for row in rows if row["candidates"])
         parts.append(f"All {quote.option_count} options are built. {len(rows)} item{'s are' if len(rows) != 1 else ' is'} not priced from the Pricing Sheet yet: {names}. "
                      + (f"{on_sheet} of them have a likely Pricing Sheet match at the top of the draft: press Use this. " if on_sheet else "")
-                     + "Any figure I gave is only my guess and is not used unless you type it.")
+                     + "Any figure I gave is only my guess, a hint: every price comes from the Pricing Sheet, so match each item there (or add it to the Pricing Sheet first).")
     for note in notes:
         parts.append("• " + note)
     return "\n\n".join(parts)
@@ -8117,8 +8114,11 @@ with app.app_context():
         caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_MANUAL_EDIT_ADDENDUM
     if caden_agent and "OPTION STRATEGY, INCLUDED LABOR, AND SALES OPPORTUNITIES:" not in caden_agent.prompt:
         caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_OPTION_STRATEGY_ADDENDUM
-    if caden_agent and "DIRECT USER-SUPPLIED PRICING:" not in caden_agent.prompt:
-        caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_DIRECT_PRICING_ADDENDUM
+    if caden_agent and "PRICES ONLY FROM THE PRICING SHEET:" not in caden_agent.prompt:
+        if CADEN_DIRECT_PRICING_ADDENDUM in caden_agent.prompt:          # the old "use the price typed in the chat" rule: replaced
+            caden_agent.prompt = caden_agent.prompt.replace(CADEN_DIRECT_PRICING_ADDENDUM, CADEN_SHEET_ONLY_ADDENDUM)
+        else:
+            caden_agent.prompt = caden_agent.prompt.rstrip() + "\n\n" + CADEN_SHEET_ONLY_ADDENDUM
     if caden_agent and "CLIENT WORDING (plain language):" not in caden_agent.prompt:
         if CADEN_PRESENTATION_WORDING_V1 in caden_agent.prompt:      # the old block, untouched: replace it
             caden_agent.prompt = caden_agent.prompt.replace(CADEN_PRESENTATION_WORDING_V1, CADEN_CLIENT_WORDING_ADDENDUM)

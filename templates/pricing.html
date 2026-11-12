@@ -34,11 +34,12 @@
     <button class="btn btn-primary" type="submit">Save labor rate</button>
   </form>
 </section>
-<details class="panel add-price-panel" open>
+<details class="panel add-price-panel" id="add-item" open>
   <summary>＋ Add pricing item</summary>
   <form method="POST" action="{{ url_for('create_price_item') }}" class="pricing-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label class="grow">Item name<input name="name" required placeholder="Weatherhead"></label>
+    {% set back = request.args.get('next', '') %}{% if back.startswith('/') and not back.startswith('//') %}<input type="hidden" name="next" value="{{ back }}">{% endif %}
+    <label class="grow">Item name<input name="name" required placeholder="Weatherhead" value="{{ request.args.get('add', '') }}" {{ 'autofocus' if request.args.get('add') }}></label>
     <label>Category<input name="category" placeholder="Service Materials"></label>
     <label>Supplier<input name="supplier_name[]" value="Cooper Electric" placeholder="Cooper, RAB, Lowe's…"></label><label>Supplier part #<input name="supplier_part_number[]" placeholder="Part number"></label>
     <label>Unit<select name="unit"><option value="ea">each</option><option value="ft">per foot</option><option value="roll">per roll</option><option value="box">per box</option><option value="lb">per pound</option><option value="job">per job</option></select></label>

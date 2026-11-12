@@ -91,26 +91,39 @@ check("not priced from the Pricing Sheet yet" in page, "the draft shows the Need
 check("Caden's guess: $18.50" in page and "Caden's guess: $64.00" in page and 'value="18.50"' not in page, "Caden's guesses are shown as guesses (18.50 and 64.00), never filled in")
 check("Typical supply-house price." in page, "and his reason")
 
-# 2. pricing them from the panel
+# 2. pricing them from the panel: only by matching to the Pricing Sheet. Typed prices and "Save" no longer do anything.
 with app.app_context():
     rows = m.pricing_needed_rows(db.session.get(m.Quote, quote_id))
 form = dict(CSRF, count=str(len(rows)))
 for i, row in enumerate(rows):
-    form.update({"key_%d" % i: row["key"], "name_%d" % i: row["name"], "price_%d" % i: "%.2f" % (row["material"] or 0), "labor_%d" % i: "%g" % (row["labor"] or 0), "unit_%d" % i: row["unit"]})
-    if "wraparound" in row["name"]:
-        form["save_%d" % i] = "1"
-page = client.post("/quotes/%d/use-prices" % quote_id, data=form, follow_redirects=True).get_data(as_text=True)
+    form.update({"key_%d" % i: row["key"], "name_%d" % i: row["name"], "price_%d" % i: "%.2f" % (row["material"] or 0), "labor_%d" % i: "%g" % (row["labor"] or 0),
+                 "unit_%d" % i: row["unit"], "save_%d" % i: "1"})
+client.post("/quotes/%d/use-prices" % quote_id, data=form)
 st = state()
-check(not st["missing"], "Use these prices prices every listed item")
-check("Confirm &amp; save" in page and "Needs a price" not in page, "the panel goes away and the quote can be confirmed")
+with app.app_context():
+    check(st["missing"] and m.PriceItem.query.filter(m.PriceItem.category.in_(["Quote supplied", "Quote repair"])).count() == 0,
+          "a typed price never prices an item, and never creates a Pricing Sheet item")
+page = client.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
+check('name="price_0"' not in page and "Use these prices" not in page and "Find it on the Pricing Sheet" in page and "Add it there" in page,
+      "the panel has no price boxes: match it (likely matches or a search), or add it on the Pricing Sheet")
+wrap = next(i for i, row in enumerate(rows) if "wraparound" in row["name"])
+r = client.post("/quoting/pricing/new", data=dict(CSRF, name="4 ft LED wraparound fixture", category="Lighting", unit="ea", price="64", labor_hours_per_unit=".75",
+                                                   next="/quoting/generate/%d#needs-price" % job_id))
+check(r.headers["Location"].endswith("/quoting/generate/%d#needs-price" % job_id), "adding it on the Pricing Sheet comes back to the quote")
+with app.app_context():
+    new_id = m.PriceItem.query.filter_by(name="4 ft LED wraparound fixture").one().id
+found = client.get("/quoting/pricing/find.json?q=wraparound").get_json()["results"]
+check(found and found[0]["id"] == str(new_id) and found[0]["kind"] == "Pricing Sheet", "the search finds it on the Pricing Sheet")
+for i, row in enumerate(rows):
+    form = dict(CSRF, **{"key_%d" % i: row["key"]}, pick="%d:%s" % (i, new_id if i == wrap else kit_id))
+    client.post("/quotes/%d/use-sheet-item" % quote_id, data=form)
+page = client.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
+st = state()
+check(not st["missing"] and "Confirm &amp; save" in page, "matched to Pricing Sheet items, every item is priced and the quote can be confirmed")
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
-    tube_line = next(l for o in q.options for l in o.lines if l.service_name.startswith("Fluorescent"))
-    rate = m.get_labor_rate()
-    check(abs(tube_line.unit_price - (18.5 + .25 * rate)) < .01 and tube_line.multiplier == 6, "the tube set is priced at $18.50 + 0.25 hr each, x6")
-    saved = m.PriceItem.query.filter_by(name="4 ft LED wraparound fixture").first()
-    check(saved is not None and saved.price == 64 and saved.labor_hours_per_unit == .75, "ticking Save added the fixture to the Pricing Sheet")
-    check(m.PriceItem.query.filter(m.PriceItem.name.like("Fluorescent%")).first() is None, "an unticked item stays on this quote only")
+    wrap_line = next(l for o in q.options for l in o.lines if l.price_item_id == new_id)
+    check(wrap_line.material_unit_price == 64 and wrap_line.source_label == "Pricing Sheet", "at the Pricing Sheet's price, and the line says so")
 
 # 3. a service that is gone, a missing tier, two identical tiers: built anyway, with notes
 broken = reply([
@@ -140,15 +153,19 @@ send("Rebuild for the back room")
 st = state()
 check(st["messages"][-1].endswith("1. Are the fixtures 4 ft or 8 ft?") and len(st["options"]) == 3, "Caden can still ask one question; the last draft stays")
 
-# 6. a price the user really typed is used straight away
+# 6. a price typed in the chat does not price anything: the item is listed to match to the Pricing Sheet
 typed = "Use 8 ft LED strips at $52.00 each with 0.5 hours each"
 SCRIPT.append(reply([
-    option(tiers[0], "A", ["Install LED strips"], direct=[{"name": "8 ft LED strip", "quantity": 4, "unit": "ea", "material_unit_price": 52, "labor_hours_per_unit": .5, "create_in_price_sheet": False, "source_message": typed}]),
-    option(tiers[1], "B", ["Install LED strips and kits"], items=[{"price_item_id": kit_id, "quantity": 2}], direct=[{"name": "8 ft LED strip", "quantity": 4, "unit": "ea", "material_unit_price": 52, "labor_hours_per_unit": .5, "create_in_price_sheet": False, "source_message": typed}]),
+    option(tiers[0], "A", ["Install LED strips"], direct=[{"name": "8 ft LED strip", "quantity": 4, "unit": "ea", "material_unit_price": 52, "labor_hours_per_unit": .5, "create_in_price_sheet": True, "source_message": typed}]),
+    option(tiers[1], "B", ["Install LED kits"], items=[{"price_item_id": kit_id, "quantity": 2}]),
     option(tiers[2], "C", ["Install LED kits throughout"], items=[{"price_item_id": kit_id, "quantity": 8}])]))
 send(typed)
 st = state()
-check(("8 ft LED strip", 4.0, False) in st["options"][0][1] and not st["missing"], "a price typed in the chat is priced directly")
+with app.app_context():
+    check(("8 ft LED strip", 4.0, True) in st["options"][0][1] and m.PriceItem.query.filter(m.PriceItem.name.like("8 ft LED strip%")).count() == 0,
+          "a price typed in the chat is not used: the item is listed to match, and no Pricing Sheet item is made")
+    check("PRICES ONLY FROM THE PRICING SHEET:" in m.AiAgent.query.filter_by(name="Caden").one().prompt and "leave direct_priced_items empty" in SEEN[-1]["instructions"],
+          "Caden is told every price comes from the Pricing Sheet")
 
 # 6b. a restatement of something the option already has is not listed as needing a price;
 #     an item the quote already covers can be marked "Not needed" and leaves the quote
@@ -163,10 +180,11 @@ send("Add dimmers")
 with app.app_context():
     rows = m.pricing_needed_rows(db.session.get(m.Quote, quote_id))
 names = [row["name"] for row in rows]
-check(names == ["LED-compatible dimmer switch (kitchen)", "Ceiling access panel"], "a restatement is not listed twice; Caden's priced suggestions come first: %s" % names)
-form = dict(CSRF, count="2", key_0=rows[0]["key"], name_0=rows[0]["name"], price_0="55", labor_0="0.25", unit_0="ea",
-            key_1=rows[1]["key"], name_1=rows[1]["name"], price_1="", labor_1="0", unit_1="ea", skip_1="1")
-client.post("/quotes/%d/use-prices" % quote_id, data=form)
+check(sorted(names) == ["Ceiling access panel", "LED-compatible dimmer switch (kitchen)"], "a restatement is not listed twice: %s" % names)
+dimmer = names.index("LED-compatible dimmer switch (kitchen)")
+client.post("/quotes/%d/use-sheet-item" % quote_id, data=dict(CSRF, **{"key_%d" % dimmer: rows[dimmer]["key"]}, pick="%d:%s" % (dimmer, kit_id)))
+panel = 1 - dimmer
+client.post("/quotes/%d/use-prices" % quote_id, data=dict(CSRF, count="2", **{"key_%d" % panel: rows[panel]["key"], "name_%d" % panel: rows[panel]["name"], "skip_%d" % panel: "1"}))
 st = state()
 check(not st["missing"] and not any(name == "Ceiling access panel" for _, lines in st["options"] for name, *_ in lines), "Not needed removes an item the quote already covers; the quote is ready")
 
