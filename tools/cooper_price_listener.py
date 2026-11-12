@@ -39,14 +39,13 @@ import base64
 import json
 import os
 import re
-import queue
 import socket
 import sys
-import threading
 import time
+import traceback
 from getpass import getpass
 
-LISTENER_VERSION = "2.5"
+LISTENER_VERSION = "2.6"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -206,45 +205,51 @@ SELF_CLEAR_SECONDS = 3           # a flash of Cooper's automatic browser check i
 STILL_WAITING_SECONDS = 300      # while waiting for a person, the website hears "still waiting" this often (so the run never times out)
 NOTIFY = None                    # set per command: NOTIFY(message) puts a line in the website's live status
 HUMAN_LOCK = None                # one question to the person at a time, however many tabs hit the check
-# The keyboard: one reader for the whole run. Enter while a scan is going pauses it before its next page; Enter while
-# the listener is waiting (Cooper's human check, or a pause) carries on.
-KEYBOARD_LINES = queue.Queue()
-KEYBOARD_WAITING = threading.Event()
-PAUSE_REQUESTED = threading.Event()
-KEYBOARD = None
+# The keyboard. Nothing holds it in the background (on Windows a thread waiting on the keyboard can stop Chrome from
+# starting): Enter is read only while the listener is waiting for a person, and between pages a key press already made is
+# picked up without waiting (msvcrt on Windows, select elsewhere) to pause the scan.
+class _Flag:
+    def __init__(self):
+        self.on = False
+
+    def set(self):
+        self.on = True
+
+    def clear(self):
+        self.on = False
+
+    def is_set(self):
+        return self.on
 
 
-def _read_keyboard() -> None:
-    for line in sys.stdin:
-        if KEYBOARD_WAITING.is_set():
-            KEYBOARD_LINES.put(line)
-        elif not PAUSE_REQUESTED.is_set():
-            PAUSE_REQUESTED.set()
-            log("Pause requested: the scan stops before its next page.")
-    KEYBOARD_LINES.put(None)                      # the keyboard went away (running as a service)
+PAUSE_REQUESTED = _Flag()
 
 
-def start_keyboard() -> None:
-    global KEYBOARD
-    if KEYBOARD is None and sys.stdin is not None:
-        KEYBOARD = threading.Thread(target=_read_keyboard, name="keyboard", daemon=True)
-        KEYBOARD.start()
+def enter_was_pressed() -> bool:
+    """True when Enter was pressed since the last look. Never waits."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            pressed = False
+            while msvcrt.kbhit():
+                pressed = msvcrt.getwch() in ("\r", "\n") or pressed
+            return pressed
+        import select
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            return True
+    except Exception:  # noqa: BLE001  (no keyboard: no manual pause)
+        return False
+    return False
 
 
 def wait_for_enter(prompt: str) -> str:
     """Block until the person presses Enter. EOFError when there is no keyboard."""
-    start_keyboard()
-    if KEYBOARD is None:
+    if sys.stdin is None:
         raise EOFError
-    print(prompt, end="", flush=True)
-    KEYBOARD_WAITING.set()
-    try:
-        line = KEYBOARD_LINES.get()
-    finally:
-        KEYBOARD_WAITING.clear()
-    if line is None:
-        raise EOFError
-    return line
+    return input(prompt)
 
 
 PROMPT = wait_for_enter          # tests replace this
@@ -309,6 +314,30 @@ async def paused_by_person(page) -> None:
         notify("Carrying on.")
 
 
+async def close_quietly(context) -> None:
+    """Close Chrome; a Chrome that never opened or already went away is not an error."""
+    if context is None:
+        return
+    try:
+        await context.close()
+    except Exception as error:  # noqa: BLE001
+        log(f"Chrome was already closed ({type(error).__name__}).")
+
+
+ERROR_LOG = Path(__file__).resolve().parent / "listener_error.log"
+
+
+def keep_error() -> str:
+    """Write the whole traceback beside the script, for whoever fixes it."""
+    details = traceback.format_exc()
+    try:
+        with ERROR_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} listener v{LISTENER_VERSION}\n{details}")
+    except OSError:
+        pass
+    return details
+
+
 def notify(message: str) -> None:
     if NOTIFY:
         try:
@@ -321,6 +350,9 @@ async def wait_for_verification(page, headless=None) -> None:
     """Let Cooper's browser check finish by itself; when it asks for a person, pause until they finish it and press Enter."""
     global HUMAN_LOCK
     headless = HEADLESS if headless is None else headless
+    if enter_was_pressed():
+        PAUSE_REQUESTED.set()
+        log("Pause requested.")
     if PAUSE_REQUESTED.is_set():
         await paused_by_person(page)
     if not await verification_page_is_present(page):
@@ -564,7 +596,7 @@ async def scan_all_items(items: list, config: dict, progress=None, send_picture=
             log(f"Scanned {total} item(s) in {seconds:,.0f}s ({seconds / max(total, 1):.1f}s per item).")
         finally:
             log("Scanning finished. Closing Chrome.")
-            await context.close()
+            await close_quietly(context)
     return results
 
 
@@ -740,7 +772,7 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
                 await flush(final=True, message=f"Read {totals['categories']} categories ({totals['pages']} pages, {totals['seen']} products seen)"
                                                 + (": stopped at this run's batch limit." if stop.is_set() else "."))
         finally:
-            await context.close()
+            await close_quietly(context)
     return totals
 
 
@@ -759,8 +791,7 @@ def main() -> None:
     poll_seconds = max(args.poll_seconds, 2)
     log(f"Listener v{LISTENER_VERSION} connected to {config['base_url']}. Checking for Update Prices commands every {poll_seconds} seconds.")
     log("If Cooper asks whether you're human, the scan pauses until you finish it in Chrome and press Enter here.")
-    log("Press Enter at any time to pause a scan yourself; press Enter again to carry on.")
-    start_keyboard()
+    log("Press Enter at any time to pause a scan yourself (it stops before its next page); press Enter again to carry on.")
     waiting = 0
     while True:
         command_id = None
@@ -846,7 +877,8 @@ def main() -> None:
             time.sleep(poll_seconds)
         except Exception as error:  # noqa: BLE001
             message = f"{type(error).__name__}: {error}"
-            log(f"Price check failed: {message}")
+            keep_error()
+            log(f"Price check failed: {message} (the full error is in {ERROR_LOG.name})")
             if command_id is not None:
                 try:
                     api_request(config, f"/api/local-cooper/commands/{command_id}/failed", method="POST", payload={"error": message})
@@ -863,6 +895,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log("Stopped by user.")
     except Exception as error:  # noqa: BLE001
-        log(f"Updater stopped: {type(error).__name__}: {error}")
+        keep_error()
+        log(f"Updater stopped: {type(error).__name__}: {error} (the full error is in {ERROR_LOG.name})")
         if "401" in str(error):
             print("Run again with --reset-config and enter a newly generated token.")
