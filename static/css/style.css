@@ -1062,3 +1062,43 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .caleb-foot { margin:0; padding:0 16px 14px; color:var(--muted); font-size:12px; line-height:1.5; }
 .caleb-foot a { color:var(--accent-hover); }
 @media (max-width:620px) { .caleb-messages { height:58vh; padding:14px 10px; } .caleb-message { max-width:94%; } .caleb-form { grid-template-columns:1fr; } .caleb-form .btn { width:100%; } }
+
+/* Generators -> Upgrading */
+.upgrade-form { margin-bottom: 16px; }
+.upgrade-pair { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:12px; align-items:end; margin-bottom:16px; }
+.upgrade-unit { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.upgrade-unit select { width:100%; min-width:0; font-size:15px; padding:10px; }
+.upgrade-arrow { font-size:24px; color:var(--accent-hover); padding-bottom:8px; }
+.upgrade-form .sizing-choices { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+.upgrade-more { margin-top:14px; border-top:1px solid var(--border); padding-top:12px; }
+.upgrade-more summary { cursor:pointer; color:var(--accent-hover); font-weight:600; font-size:13px; margin-bottom:10px; }
+.upgrade-more select, .upgrade-form .sizing-fields input { width:100%; min-width:0; }
+.upgrade-yesno { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:10px 14px; margin-bottom:12px; }
+.upgrade-yesno fieldset { border:0; padding:0; margin:0; min-width:0; }
+.upgrade-yesno legend { color:var(--muted); font-size:11px; font-weight:600; margin-bottom:6px; }
+.upgrade-yesno .flow-seg { display:flex !important; }
+.upgrade-results { display:grid; gap:16px; }
+.upgrade-results > .panel { margin:0; min-width:0; }
+.upgrade-table th { text-align:left; color:var(--muted); font-weight:600; white-space:nowrap; }
+.upgrade-table thead th strong { color:var(--text); font-size:14px; }
+.upgrade-table td small { color:#fde68a; margin-left:4px; }
+.upgrade-table .up-change { color:var(--accent-hover); font-weight:700; }
+.upgrade-wire-words { margin:12px 0 0; color:#d6d3d1; font-size:13px; line-height:1.5; }
+.upgrade-keep { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:10px; margin-top:10px; }
+.upgrade-keep > div { padding:12px 14px; border-radius:9px; border:1px solid var(--border); }
+.upgrade-keep p { margin:5px 0 0; color:#d6d3d1; font-size:13px; line-height:1.5; }
+.keep-ok { background:rgba(22,163,74,.1); border-color:rgba(22,163,74,.45) !important; }
+.keep-no { background:rgba(220,38,38,.1); border-color:rgba(220,38,38,.45) !important; }
+.upgrade-notes { list-style:none; margin:10px 0 0; padding:0; display:grid; gap:8px; }
+.upgrade-notes li { padding:10px 12px; border-radius:9px; background:var(--bg); border:1px solid var(--border); font-size:13px; line-height:1.55; color:#e7e5e4; }
+.upgrade-notes .note-warn { border-color:rgba(217,119,6,.55); background:rgba(217,119,6,.08); }
+.upgrade-ask { padding:0 !important; overflow:hidden; }
+.upgrade-ask .caleb-message { margin:14px 16px 0; max-width:none; }
+.upgrade-estimate td small { display:block; color:var(--muted); font-size:11px; }
+.upgrade-estimate .est-missing td:first-child small { color:#fca5a5; }
+.upgrade-estimate tfoot td { font-weight:600; }
+.upgrade-estimate tfoot td:last-child, .upgrade-estimate tbody td:last-child { text-align:right; white-space:nowrap; }
+.upgrade-estimate .est-total td { font-size:16px; color:var(--accent-hover); }
+.upgrade-sources { margin-top:16px; }
+@media (max-width:760px) { .upgrade-pair { grid-template-columns:1fr; } .upgrade-arrow { transform:rotate(90deg); justify-self:center; padding:0; } .upgrade-form .sizing-choices { grid-template-columns:1fr; } }
+.upgrade-table thead th strong { text-transform:none; letter-spacing:0; }

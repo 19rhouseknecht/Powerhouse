@@ -322,6 +322,27 @@ class CalebMessage(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
+class GeneratorUpgrade(db.Model):
+    """A generator upgrade saved to a job (Generators -> Upgrading). inputs_json reopens it on the page."""
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job.id"), nullable=False, index=True)
+    inputs_json = db.Column(db.Text, nullable=False, default="{}")
+    summary = db.Column(db.Text, nullable=False, default="")
+    total = db.Column(db.Float, nullable=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    job = db.relationship("Job", backref=db.backref("generator_upgrades", order_by="GeneratorUpgrade.created_at.desc()"))
+    created_by = db.relationship("User")
+
+    @property
+    def inputs(self):
+        try:
+            value = json.loads(self.inputs_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except ValueError:
+            return {}
+
+
 class GeneratorSizing(db.Model):
     """A generator sizing saved to a job (Generators -> Sizing)."""
     id = db.Column(db.Integer, primary_key=True)
@@ -2148,10 +2169,8 @@ def assign_quick_quote(quick_id):
     return redirect(url_for("quote_assistant", job_id=job.id))
 
 
-@app.route("/quoting/generate/<int:job_id>", methods=["GET", "POST"])
-@login_required
-def quote_assistant(job_id):
-    job = db.get_or_404(Job, job_id)
+def draft_quote_for(job):
+    """This person's draft quote on the job, made (with Caden's greeting) when there is none."""
     quote = Quote.query.filter_by(job_id=job.id, status="draft", created_by_user_id=current_user.id).order_by(Quote.created_at.desc()).first()
     if quote is None:
         revision = Quote.query.filter_by(job_id=job.id, status="confirmed").count() + 1
@@ -2161,6 +2180,51 @@ def quote_assistant(job_id):
         if job.status == "new_request":
             job.status = "working_quote"
         db.session.commit()
+
+    return quote
+
+
+def send_quote_message(job, quote, message):
+    """One message from the office to Caden on a draft quote, and Caden's reply (options when ready). Never raises."""
+    quote.messages.append(QuoteMessage(role="user", content=message))
+    db.session.commit()
+    if not os.environ.get("OPENAI_API_KEY"):
+        quote.messages.append(QuoteMessage(role="assistant", content="The OpenAI API key has not been connected yet. Add it on PythonAnywhere, reload the app, and send this message again."))
+        db.session.commit()
+    else:
+        try:
+            result = build_ai_quote_response(job, quote)
+            assistant_message = result.get("message", "I reviewed the request.").strip()
+            questions = [q.strip() for q in result.get("questions", []) if q.strip()]
+            if not result.get("ready"):
+                if questions:
+                    assistant_message += "\n\n" + "\n".join(f"{number}. {question}" for number, question in enumerate(questions, 1))
+                else:
+                    assistant_message = "Tell me a little more about the work, or say \"go ahead\" and I'll build the options with stated assumptions."
+            quote.messages.append(QuoteMessage(role="assistant", content=assistant_message))
+            if result.get("ready"):
+                notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
+                remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
+                db.session.flush()
+                if not quote.ai_snapshot_json:
+                    quote.ai_snapshot_json = serialize_quote_snapshot(quote)
+                summary = quote_ready_summary(quote, notes)
+                if summary:
+                    quote.messages.append(QuoteMessage(role="assistant", content=summary))
+                quote.title = plain_terms(result.get("quote_title", "")) or f"{job.title} — Service Options"
+                quote.introduction = plain_terms(result.get("introduction", ""))
+            db.session.commit()
+        except Exception as exc:
+            app.logger.exception("Quote assistant failed")
+            quote.messages.append(QuoteMessage(role="assistant", content=f"I couldn’t reach the AI service just now, so nothing changed. {describe_ai_error(exc)} Send your message again in a moment; your conversation and draft are saved."))
+            db.session.commit()
+
+
+@app.route("/quoting/generate/<int:job_id>", methods=["GET", "POST"])
+@login_required
+def quote_assistant(job_id):
+    job = db.get_or_404(Job, job_id)
+    quote = draft_quote_for(job)
 
     if quote.travel_destination_snapshot != job.job_address or not quote.travel_origin_snapshot:
         try:
@@ -2182,38 +2246,7 @@ def quote_assistant(job_id):
         if not message:
             flash("Enter a message for the quote assistant.", "error")
             return redirect(url_for("quote_assistant", job_id=job.id))
-        quote.messages.append(QuoteMessage(role="user", content=message))
-        db.session.commit()
-        if not os.environ.get("OPENAI_API_KEY"):
-            quote.messages.append(QuoteMessage(role="assistant", content="The OpenAI API key has not been connected yet. Add it on PythonAnywhere, reload the app, and send this message again."))
-            db.session.commit()
-        else:
-            try:
-                result = build_ai_quote_response(job, quote)
-                assistant_message = result.get("message", "I reviewed the request.").strip()
-                questions = [q.strip() for q in result.get("questions", []) if q.strip()]
-                if not result.get("ready"):
-                    if questions:
-                        assistant_message += "\n\n" + "\n".join(f"{number}. {question}" for number, question in enumerate(questions, 1))
-                    else:
-                        assistant_message = "Tell me a little more about the work, or say \"go ahead\" and I'll build the options with stated assumptions."
-                quote.messages.append(QuoteMessage(role="assistant", content=assistant_message))
-                if result.get("ready"):
-                    notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
-                    remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
-                    db.session.flush()
-                    if not quote.ai_snapshot_json:
-                        quote.ai_snapshot_json = serialize_quote_snapshot(quote)
-                    summary = quote_ready_summary(quote, notes)
-                    if summary:
-                        quote.messages.append(QuoteMessage(role="assistant", content=summary))
-                    quote.title = plain_terms(result.get("quote_title", "")) or f"{job.title} — Service Options"
-                    quote.introduction = plain_terms(result.get("introduction", ""))
-                db.session.commit()
-            except Exception as exc:
-                app.logger.exception("Quote assistant failed")
-                quote.messages.append(QuoteMessage(role="assistant", content=f"I couldn’t reach the AI service just now, so nothing changed. {describe_ai_error(exc)} Send your message again in a moment; your conversation and draft are saved."))
-                db.session.commit()
+        send_quote_message(job, quote, message)
         return redirect(url_for("quote_assistant", job_id=job.id))
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
@@ -6497,6 +6530,248 @@ def generator_sizing():
                            models=gen.KOHLER_MODELS, jobs=jobs, selected_job=request.args.get("job_id", type=int))
 
 
+# ---------------- Generators -> Upgrading ----------------
+# Old unit out, new unit in: the wiring and gas each one needs (generators.upgrade, pure), whether what is there can stay,
+# a priced estimate from the Pricing Sheet and the labor rate, questions to Caleb with the upgrade attached, and the whole
+# brief handed to Caden to build the quote on a job.
+UPGRADE_PRICE_FIELDS = {
+    # name: (label, default); a blank price is filled from the Pricing Sheet when an item matches
+    "unit_price": ("New generator (each)", None),
+    "switch_price": ("Transfer switch (each)", None),
+    "pad_price": ("Generator pad (each)", None),
+    "wire_price": ("Feeder wire ($/ft per conductor)", None),
+    "ground_price": ("Ground wire ($/ft)", None),
+    "conduit_price": ("Conduit ($/ft)", None),
+    "pipe_price": ("Gas pipe ($/ft)", None),
+    "disposal": ("Haul away and disposal ($)", 0),
+    "permit": ("Permits ($)", 0),
+    "remove_hours": ("Rip out the old unit (hours)", 3),
+    "install_hours": ("Set and connect the new unit (hours)", 6),
+    "switch_hours": ("Swap the transfer switch (hours)", 4),
+    "run_hours": ("Wire and gas runs (hours, blank = worked out)", None),
+}
+UPGRADE_YES_NO = {"replace_wire": "Replace the wiring", "replace_pipe": "Replace the gas line", "replace_switch": "Replace the transfer switch", "new_pad": "New pad"}
+
+
+def _price_number(values, name):
+    raw = str(values.get(name, "")).replace("$", "").replace(",", "").strip()
+    try:
+        return max(float(raw), 0.0) if raw else None
+    except ValueError:
+        return None
+
+
+def _size_pattern(size):
+    body = re.escape(size).replace(r"\-", "[- ]")
+    return rf"(?<![\d/-]){body}(?![\d/-])"
+
+
+def match_price_item(kind, size="", material="", conduit=""):
+    """The Pricing Sheet item for a part of the upgrade, or None. Read only; Unconfirmed items count only when quoting uses them."""
+    query = PriceItem.query.filter(PriceItem.active.is_(True))
+    if not caden_uses_unconfirmed():
+        query = query.filter(PriceItem.category != UNCONFIRMED)
+    if kind == "generator":
+        codes = [code for code in re.findall(r"\b(\d{4}|\d{2}RCL?A)\b", size)]
+        if not codes:
+            return None
+        rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{c}%") for c in codes], *[PriceItem.cooper_part_number.ilike(f"%{c}%") for c in codes])).limit(50).all()
+        return next(iter(sorted(rows, key=lambda r: r.price <= 0)), None)
+    words = {"wire": ["awg", "thhn", "thwn", "xhhw", "wire", "#", "cu", "alum", "str"], "pipe": ["pipe", "black", "csst", "gas"],
+             "conduit": [(conduit.split() or ["pvc"])[0].lower()]}[kind]
+    rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in words])).limit(800).all()
+    size_re = re.compile(_size_pattern(size), re.IGNORECASE)
+    picks = []
+    for row in rows:
+        name = row.name.lower()
+        if not size_re.search(row.name) or row.unit not in ("ft", "roll"):
+            continue
+        if kind == "wire":
+            aluminum = "alum" in name or re.search(r"\bal\b", name)
+            if (material == "aluminum") != bool(aluminum) or not re.search(r"(?:#\s?|\b)" + re.escape(size) + r"(?:\s?(?:awg|ga|thhn|thwn|xhhw|cu|al)\b|\b)", name):
+                continue
+        if kind == "pipe" and any(w in name for w in ("nipple", "elbow", "tee", "coupling", "union", "cap", "valve", "connector", "fitting")):
+            continue
+        picks.append(row)
+    picks.sort(key=lambda r: (r.unit != "ft", r.price <= 0))
+    return picks[0] if picks else None
+
+
+def upgrade_estimate(result, values):
+    """Priced lines for the upgrade: typed prices first, else the Pricing Sheet's, else listed as needing a price."""
+    i, new, wire, gas_new = result["inputs"], result["new"], result["wire_new"], result["gas_new"]
+    prices = {name: _price_number(values, name) for name in UPGRADE_PRICE_FIELDS}
+    hours = {name: (prices[name] if prices[name] is not None else UPGRADE_PRICE_FIELDS[name][1]) for name in ("remove_hours", "install_hours", "switch_hours")}
+    chosen = {}
+    for name, default in (("replace_wire", result["needs_new_wire"]), ("replace_pipe", result["needs_new_pipe"]),
+                          ("replace_switch", result["needs_new_switch"]), ("new_pad", result["new"]["lb"] - result["old"]["lb"] > 100 or result["new"]["cooling"] != result["old"]["cooling"])):
+        chosen[name] = values.get(name) == "yes" if values.get(name) in ("yes", "no") else bool(default)
+    found = {}
+
+    def price_of(field, kind, **match):
+        if prices[field] is not None:
+            return prices[field], "typed"
+        item = match_price_item(kind, **match)
+        if item is not None and item.price > 0:
+            found[field] = item
+            return float(item.price), item.name
+        return 0.0, ""
+
+    lines = []
+
+    def add(label, qty, unit, price, labor, source):
+        lines.append({"label": label, "qty": qty, "unit": unit, "price": price, "hours": labor, "source": source,
+                      "total": round(qty * price, 2), "missing": price <= 0 and source != "none"})
+
+    old = result["old"]
+    add(f"Rip out and haul away the existing {old['brand']} {old['model']}", 1, "job", prices["disposal"] or 0.0, hours["remove_hours"], "none")
+    price, source = price_of("unit_price", "generator", size=new["model"])
+    add(f"{new['brand']} {new['model']}, set and connected", 1, "ea", price, hours["install_hours"], source)
+    if chosen["new_pad"]:
+        price, source = (prices["pad_price"], "typed") if prices["pad_price"] is not None else (0.0, "")
+        add("New generator pad", 1, "ea", price, 1.0, source)
+    if chosen["replace_switch"]:
+        price, source = (prices["switch_price"], "typed") if prices["switch_price"] is not None else (0.0, "")
+        add(f"New {new['brand']} automatic transfer switch", 1, "ea", price, hours["switch_hours"], source)
+    run_hours = 0.0
+    if chosen["replace_wire"]:
+        feet = i["wire_feet"]
+        price, source = price_of("wire_price", "wire", size=wire["size"], material=wire["material"])
+        add(f"{wire['size']} AWG {wire['material']} feeder (3 conductors)", round(feet * 3), "ft", price, 0, source)
+        price, source = price_of("ground_price", "wire", size=wire["ground"], material=wire["material"])
+        add(f"{wire['ground']} AWG ground", round(feet), "ft", price, 0, source)
+        price, source = price_of("conduit_price", "conduit", size=wire["conduit"], conduit=wire["conduit_kind"])
+        add(f"{wire['conduit']} in {wire['conduit_kind']} conduit", round(feet), "ft", price, 0, source)
+        run_hours += 1.5 + feet / 30
+    if chosen["replace_pipe"] and gas_new["size"]:
+        price, source = price_of("pipe_price", "pipe", size=gas_new["size"])
+        add(f"{gas_new['size']} in gas pipe ({'propane' if i['fuel'] == 'lp' else 'natural gas'})", round(i["gas_feet"]), "ft", price, 0, source)
+        run_hours += 1.5 + i["gas_feet"] / 25
+    run_hours = prices["run_hours"] if prices["run_hours"] is not None else round(run_hours, 1)
+    if run_hours:
+        add("Wire and gas runs (labor)", 1, "job", 0.0, run_hours, "none")
+    if prices["permit"]:
+        add("Permits", 1, "job", prices["permit"], 0, "typed")
+    rate = get_labor_rate()
+    material = round(sum(line["total"] for line in lines), 2)
+    labor_hours = round(sum(line["hours"] for line in lines), 1)
+    labor = round(labor_hours * rate, 2)
+    return {"lines": lines, "material": material, "labor_hours": labor_hours, "labor_rate": rate, "labor": labor,
+            "total": round(material + labor, 2), "missing": [line["label"] for line in lines if line["missing"]],
+            "chosen": chosen, "found": found, "prices": prices, "hours": hours, "run_hours": run_hours}
+
+
+UPGRADE_STATE = list(gen.UPGRADE_FIELDS) + ["old", "new"] + list(gen.UPGRADE_CHOICES) + list(UPGRADE_PRICE_FIELDS) + list(UPGRADE_YES_NO)
+
+
+def upgrade_state(values):
+    """The page's inputs, to carry in hidden fields and links (nothing else)."""
+    return {name: values.get(name) for name in UPGRADE_STATE if values.get(name) not in (None, "")}
+
+
+@app.route("/generators/upgrade")
+@login_required
+def generator_upgrade():
+    values = request.args
+    result = gen.upgrade(values) if values.get("calculate") else None
+    estimate = upgrade_estimate(result, values) if result and current_user.can("view_quoting") else None
+    state = upgrade_state(values)
+    answer = None
+    asked = request.args.get("asked", type=int)
+    if asked:
+        row = db.session.get(CalebMessage, asked)
+        answer = row if row and row.user_id == current_user.id and row.role == "assistant" else None
+    groups = {}
+    for row in gen.UPGRADE_MODELS:
+        groups.setdefault(row["brand"], []).append(row)
+    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all() if current_user.can("view_jobs") else []
+    return render_template("generator_upgrade.html", result=result, estimate=estimate, inputs=gen.read_upgrade(values), groups=groups,
+                           fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES, price_fields=UPGRADE_PRICE_FIELDS, yes_no=UPGRADE_YES_NO,
+                           state=state, answer=answer, jobs=jobs, selected_job=request.args.get("job_id", type=int),
+                           brief=gen.upgrade_brief(result, estimate) if result else "", caleb_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
+
+
+def _upgrade_summary(result, estimate):
+    old, new = result["old"], result["new"]
+    words = (f"{old['brand']} {old['model']} to {new['brand']} {new['model']}: {result['wire_new']['size']} AWG {result['wire_new']['material']}, "
+             f"{result['gas_new']['size'] or 'over 2'} in gas ({'LP' if result['inputs']['fuel'] == 'lp' else 'NG'}).")
+    if estimate:
+        words += f" Estimate ${estimate['total']:,.2f}" + (" (some prices missing)" if estimate["missing"] else "") + "."
+    return words
+
+
+@app.route("/generators/upgrade/save", methods=["POST"])
+@login_required
+def generator_upgrade_save():
+    check_csrf()
+    job = db.session.get(Job, request.form.get("job_id", type=int) or 0)
+    state = upgrade_state(request.form)
+    if job is None or not current_user.can("view_jobs"):
+        flash("Choose the job to save this upgrade to.", "error")
+        return redirect(url_for("generator_upgrade", calculate=1, **state))
+    result = gen.upgrade(request.form)
+    estimate = upgrade_estimate(result, request.form) if current_user.can("view_quoting") else None
+    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(state), summary=_upgrade_summary(result, estimate),
+                                    total=estimate["total"] if estimate else None, created_by=current_user))
+    db.session.commit()
+    flash(f"Saved the upgrade to job #{job.job_number} {job.title}.", "success")
+    return redirect(url_for("job_detail", job_id=job.id) + "#generator-upgrade")
+
+
+@app.route("/generators/upgrade/quote", methods=["POST"])
+@login_required
+def generator_upgrade_quote():
+    """Save the upgrade to the job and hand Caden the brief: the quote assistant receives it as the office's message."""
+    check_csrf()
+    job = db.session.get(Job, request.form.get("job_id", type=int) or 0)
+    if job is None or not current_user.can("view_quoting"):
+        flash("Choose the job to quote this upgrade on.", "error")
+        return redirect(url_for("generator_upgrade", calculate=1, **upgrade_state(request.form)))
+    result = gen.upgrade(request.form)
+    estimate = upgrade_estimate(result, request.form)
+    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form)), summary=_upgrade_summary(result, estimate),
+                                    total=estimate["total"], created_by=current_user))
+    db.session.commit()
+    message = ("Quote this generator upgrade. Price the generator, transfer switch, pad, wire, conduit and gas pipe from the Pricing Sheet "
+               "and include the time to rip out the old unit.\n\n" + gen.upgrade_brief(result, estimate))
+    quote = draft_quote_for(job)
+    try:
+        refresh_quote_travel(quote)
+        db.session.commit()
+    except Exception:  # noqa: BLE001  (travel is added later on the quote page; the upgrade still goes to Caden)
+        db.session.commit()
+    send_quote_message(job, quote, message)            # exactly as if it were typed on the quote page
+    return redirect(url_for("quote_assistant", job_id=job.id))
+
+
+@app.route("/generators/upgrade/ask", methods=["POST"])
+@login_required
+def generator_upgrade_ask():
+    check_csrf()
+    state = upgrade_state(request.form)
+    question = request.form.get("question", "").strip()[:2000]
+    if not question:
+        return redirect(url_for("generator_upgrade", calculate=1, **state) + "#ask")
+    result = gen.upgrade(request.form)
+    label = f"{result['old']['brand']} {result['old']['model']} to {result['new']['brand']} {result['new']['model']}"
+    db.session.add(CalebMessage(user_id=current_user.id, role="user", content=f"{question}\n(About the generator upgrade: {label})")); db.session.commit()
+    agent = caleb_agent()
+    looked = []
+    if agent is None or not agent.active or OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        answer = "I'm not connected right now, so call Caleb for this one. Your question was saved."
+    else:
+        try:
+            answer, looked = ask_caleb(current_user, [{"role": "user", "content": "About this generator upgrade (worked out by the Upgrading page):\n"
+                                                       + gen.upgrade_brief(result) + "\n\nQuestion: " + question}])
+            answer = answer or "I couldn't put an answer together. Try asking another way, or call Caleb."
+        except Exception as error:  # noqa: BLE001
+            app.logger.exception("Caleb upgrade question failed")
+            answer = f"I couldn't answer that just now. {describe_ai_error(error)}"
+    row = CalebMessage(user_id=current_user.id, role="assistant", content=answer, looked_up="\n".join(looked))
+    db.session.add(row); db.session.commit()
+    return redirect(url_for("generator_upgrade", calculate=1, asked=row.id, **state) + "#ask")
+
+
 # ---------------- Ask Caleb ----------------
 # The team's first stop for help, before calling Caleb himself: electrical work and the code Pennsylvania enforces
 # (2020 NEC), Kohler generators, and everything in this software about clients, jobs, quotes, services and prices.
@@ -6555,7 +6830,7 @@ def caleb_company_facts(user):
         "KOHLER AIR-COOLED MODELS ON THE SIZING PAGE (kW on LP / natural gas)",
     ]
     lines += ["- %s: %g / %g kW (%s)" % (model, lp, ng, description) for model, lp, ng, description in gen.KOHLER_MODELS]
-    lines.append("Above the largest of these: load management or a Kohler liquid-cooled unit (30 kW and up), sized with Kohler or the distributor.")
+    lines.append("Above the largest of these: load management or a Kohler liquid-cooled unit (the 24RCLA and up), sized with Kohler or the distributor.")
     if user.can("view_pricing"):
         lines += ["", "Company labor rate: $%.2f per hour." % get_labor_rate()]
     return "\n".join(lines)

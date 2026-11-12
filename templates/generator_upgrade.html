@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Generator upgrade — Power House{% endblock %}
+{% macro hidden_state() %}{% for name, value in state.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}{% endmacro %}
+{% macro model_select(name) %}<select name="{{ name }}" id="up-{{ name }}">{% for brand, rows in groups.items() %}<optgroup label="{{ brand }}">{% for row in rows %}<option value="{{ row.key }}" {{ 'selected' if inputs[name] == row.key }}>{{ brand }} {{ row.model }}</option>{% endfor %}</optgroup>{% endfor %}</select>{% endmacro %}
+{% macro seg(name, legend) %}<fieldset><legend>{{ legend }}</legend><div class="flow-seg">{% for value, label in choices[name] %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if inputs[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endmacro %}
+{% block content %}
+<div class="page-heading"><span class="eyebrow">Generators</span><h1>Generator upgrade</h1><p>Pick the generator that's there and the one going in. You get the wiring and gas line each one needs, whether what's there can stay, what else to plan for, and a priced estimate you can hand to Caden as a quote.</p></div>
+
+<form method="GET" class="panel section-panel upgrade-form" id="upgrade-form">
+  <input type="hidden" name="calculate" value="1">
+  {% if selected_job %}<input type="hidden" name="job_id" value="{{ selected_job }}">{% endif %}
+  <div class="upgrade-pair">
+    <label class="upgrade-unit"><span class="eyebrow">There now</span>{{ model_select('old') }}</label>
+    <span class="upgrade-arrow" aria-hidden="true">→</span>
+    <label class="upgrade-unit"><span class="eyebrow">Going in</span>{{ model_select('new') }}</label>
+  </div>
+  <div class="sizing-choices">{{ seg('fuel', 'Fuel') }}{{ seg('material', 'New wire') }}{{ seg('conduit', 'Conduit') }}</div>
+  <div class="sizing-fields">
+    {% for name, (label, default, low, high) in fields.items() %}{% if not (name in ('other_btu', 'meter_cfh') and inputs.fuel == 'lp') and not (name == 'tank_gallons' and inputs.fuel == 'ng') %}<label><span>{{ label }}</span><input type="number" name="{{ name }}" value="{{ '%g'|format(inputs[name]) }}" min="{{ low }}" max="{{ high }}" step="any" inputmode="decimal"></label>{% endif %}{% endfor %}
+  </div>
+  <details class="upgrade-more" {{ 'open' if inputs.existing_wire or inputs.existing_pipe }}>
+    <summary>What's actually there (optional): checks whether it can stay</summary>
+    <div class="sizing-fields">
+      <label><span>Existing feeder wire</span><select name="existing_wire">{% for value, label in choices.existing_wire %}<option value="{{ value }}" {{ 'selected' if inputs.existing_wire == value }}>{{ label }}</option>{% endfor %}</select></label>
+      <label><span>Existing wire is</span><select name="existing_material">{% for value, label in choices.existing_material %}<option value="{{ value }}" {{ 'selected' if inputs.existing_material == value }}>{{ label }}</option>{% endfor %}</select></label>
+      <label><span>Existing gas pipe</span><select name="existing_pipe">{% for value, label in choices.existing_pipe %}<option value="{{ value }}" {{ 'selected' if inputs.existing_pipe == value }}>{{ label }}</option>{% endfor %}</select></label>
+    </div>
+  </details>
+  {% if can('view_quoting') %}
+  <details class="upgrade-more" {{ 'open' if estimate and estimate.missing }}>
+    <summary>Pricing: leave a price blank to use the Pricing Sheet</summary>
+    <div class="upgrade-yesno">{% for name, label in yes_no.items() %}<fieldset><legend>{{ label }}</legend><div class="flow-seg">{% for value, word in (('yes', 'Yes'), ('no', 'No')) %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if estimate and (estimate.chosen[name] == (value == 'yes')) }}><span>{{ word }}</span></label>{% endfor %}</div></fieldset>{% endfor %}</div>
+    <div class="sizing-fields">
+      {% for name, (label, default) in price_fields.items() %}<label><span>{{ label }}</span><input type="number" name="{{ name }}" value="{{ state.get(name, '') }}" min="0" step="any" inputmode="decimal" placeholder="{% if estimate and name in estimate.found %}${{ '%.2f'|format(estimate.found[name].price) }} from the sheet{% elif name == 'run_hours' and estimate %}{{ '%g'|format(estimate.run_hours) }}{% elif default is not none %}{{ '%g'|format(default) }}{% else %}not priced{% endif %}"></label>{% endfor %}
+    </div>
+  </details>
+  {% endif %}
+  <div class="form-actions"><button class="btn btn-primary">Work out the upgrade</button></div>
+</form>
+
+{% if result %}{% set o, n = result.old, result.new %}
+<div class="upgrade-results">
+<section class="panel section-panel upgrade-compare">
+  <span class="eyebrow">Side by side</span>
+  <div class="item-table-wrap"><table class="item-table upgrade-table">
+    <thead><tr><th></th><th>There now<br><strong>{{ o.brand }} {{ o.model }}</strong></th><th>Going in<br><strong>{{ n.brand }} {{ n.model }}</strong></th></tr></thead>
+    <tbody>
+      <tr><th>Output (LP / NG)</th><td>{{ '%g'|format(o.kw_lp) }} / {{ '%g'|format(o.kw_ng) }} kW</td><td>{{ '%g'|format(n.kw_lp) }} / {{ '%g'|format(n.kw_ng) }} kW</td></tr>
+      <tr><th>Rated current at 240 V</th><td>{{ o.amps }} A</td><td>{{ n.amps }} A</td></tr>
+      <tr><th>Generator breaker</th><td>{{ o.breaker }} A</td><td class="{{ 'up-change' if n.breaker != o.breaker }}">{{ n.breaker }} A{% if n.breaker_checked is sameas false %} <small>check nameplate</small>{% endif %}</td></tr>
+      <tr><th>Feeder ({{ '%g'|format(result.inputs.wire_feet) }} ft, {{ result.inputs.material }})</th><td>{{ result.wire_old.size }} AWG × 3</td><td class="{{ 'up-change' if result.wire_new.size != result.wire_old.size }}">{{ result.wire_new.size }} AWG × 3</td></tr>
+      <tr><th>Ground</th><td>{{ result.wire_old.ground }} AWG</td><td class="{{ 'up-change' if result.wire_new.ground != result.wire_old.ground }}">{{ result.wire_new.ground }} AWG</td></tr>
+      <tr><th>Conduit ({{ result.inputs.conduit }})</th><td>{{ result.wire_old.conduit }} in</td><td class="{{ 'up-change' if result.wire_new.conduit != result.wire_old.conduit }}">{{ result.wire_new.conduit }} in</td></tr>
+      <tr><th>Voltage drop, full load</th><td>{{ result.wire_old.drop_pct }}%</td><td>{{ result.wire_new.drop_pct }}%</td></tr>
+      <tr><th>Fuel at full load</th><td>{{ result.gas_old.cfh }} cfh · {{ '{:,.0f}'.format(result.gas_old.btu) }} Btu/h</td><td>{{ result.gas_new.cfh }} cfh · {{ '{:,.0f}'.format(result.gas_new.btu) }} Btu/h</td></tr>
+      {% if result.inputs.fuel == 'lp' %}<tr><th>Propane, full load</th><td>{{ result.gas_old.gph }} gal/h</td><td>{{ result.gas_new.gph }} gal/h</td></tr>{% endif %}
+      <tr><th>Gas pipe ({{ '%g'|format(result.inputs.gas_feet) }} ft, Sch 40)</th><td>{{ result.gas_old.size or 'over 2' }} in</td><td class="{{ 'up-change' if result.gas_new.size != result.gas_old.size }}">{{ result.gas_new.size or 'over 2' }} in</td></tr>
+      <tr><th>Fuel inlet</th><td>{{ o.inlet }}</td><td>{{ n.inlet }}</td></tr>
+      <tr><th>Inlet pressure</th>{% for m in (o, n) %}{% set wc = m.lp_wc if result.inputs.fuel == 'lp' else m.ng_wc %}<td>{{ '%g'|format(wc[0]) }}–{{ '%g'|format(wc[1]) }} in. w.c.</td>{% endfor %}</tr>
+      <tr><th>Weight</th><td>{{ o.lb }} lb</td><td class="{{ 'up-change' if n.lb - o.lb > 100 }}">{{ n.lb }} lb{% if n.cooling == 'liquid' %} · liquid-cooled{% endif %}</td></tr>
+    </tbody>
+  </table></div>
+  <p class="upgrade-wire-words"><strong>New feeder:</strong> {{ result.wire_new.text }}, in {{ result.wire_new.conduit }} in {{ result.wire_new.conduit_kind }}, plus the control/communication cable.</p>
+</section>
+
+{% if result.keep %}<section class="panel section-panel">
+  <span class="eyebrow">Can what's there stay?</span>
+  <div class="upgrade-keep">
+    {% if result.keep.wire %}{% set k = result.keep.wire %}<div class="{{ 'keep-ok' if k.ok else 'keep-no' }}"><strong>{{ k.size }} AWG {{ k.material }} feeder: {{ 'it can stay' if k.ok else 'replace it' }}</strong><p>{{ k.why[:1]|upper }}{{ k.why[1:] }}.</p></div>{% endif %}
+    {% if result.keep.pipe %}{% set k = result.keep.pipe %}<div class="{{ 'keep-ok' if k.ok else 'keep-no' }}"><strong>{{ k.size }} in gas line: {{ 'it can stay' if k.ok else 'undersized for the new unit' }}</strong><p>{{ k.why[:1]|upper }}{{ k.why[1:] }}{% if not k.ok %} (it delivers about {{ '{:,.0f}'.format(k.capacity) }} Btu/h; the new unit needs {{ '{:,.0f}'.format(result.gas_new.btu) }}){% endif %}.</p></div>{% endif %}
+  </div>
+</section>{% endif %}
+
+<section class="panel section-panel">
+  <span class="eyebrow">Plan for</span>
+  <ul class="upgrade-notes">{% for level, text in result.notes %}<li class="note-{{ level }}">{{ text }}</li>{% endfor %}</ul>
+</section>
+
+<section class="panel section-panel upgrade-ask" id="ask">
+  <div class="caleb-head"><div class="mike-avatar">C</div><div><strong>Ask Caleb about this upgrade</strong><small>He gets everything above with your question.</small></div></div>
+  {% if answer %}<div class="caleb-message assistant"><span>Caleb</span><div class="caleb-text">{{ answer.content|caleb_links }}</div></div>{% endif %}
+  <form method="POST" action="{{ url_for('generator_upgrade_ask') }}" class="caleb-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{{ hidden_state() }}
+    <textarea name="question" rows="2" required maxlength="2000" placeholder="The gas line is 3/4 in. Is it okay to keep it, and what are the drawbacks?"></textarea>
+    <button class="btn btn-primary" {{ 'disabled' if not caleb_ready }}>Ask</button>
+  </form>
+  {% if not caleb_ready %}<p class="caleb-foot">Caleb isn't connected (no AI key), so call Caleb for this one.</p>{% endif %}
+</section>
+
+{% if estimate %}<section class="panel section-panel upgrade-estimate">
+  <span class="eyebrow">Estimate</span>
+  <div class="item-table-wrap"><table class="item-table">
+    <thead><tr><th>Item</th><th>Qty</th><th>Price</th><th>Labor h</th><th>Total</th></tr></thead>
+    <tbody>{% for line in estimate.lines %}<tr class="{{ 'est-missing' if line.missing }}"><td>{{ line.label }}{% if line.source and line.source not in ('typed', 'none') %}<small>Pricing Sheet: {{ line.source }}</small>{% elif line.missing %}<small>needs a price</small>{% endif %}</td><td>{{ '%g'|format(line.qty) }} {{ line.unit }}</td><td>{{ '${:,.2f}'.format(line.price) if line.price else '—' }}</td><td>{{ '%g'|format(line.hours) if line.hours else '—' }}</td><td>{{ '${:,.2f}'.format(line.total) if line.total else '—' }}</td></tr>{% endfor %}</tbody>
+    <tfoot>
+      <tr><td colspan="4">Materials and equipment</td><td>${{ '{:,.2f}'.format(estimate.material) }}</td></tr>
+      <tr><td colspan="4">Labor: {{ '%g'|format(estimate.labor_hours) }} h × ${{ '{:,.2f}'.format(estimate.labor_rate) }}</td><td>${{ '{:,.2f}'.format(estimate.labor) }}</td></tr>
+      <tr class="est-total"><td colspan="4">Estimate</td><td>${{ '{:,.2f}'.format(estimate.total) }}</td></tr>
+    </tfoot>
+  </table></div>
+  {% if estimate.missing %}<p class="sizing-note">Still needs a price: {{ estimate.missing|join(', ') }}. Type it under Pricing above, or let Caden flag it on the quote.</p>{% endif %}
+  {% if jobs %}<div class="upgrade-actions">
+    <form method="POST" action="{{ url_for('generator_upgrade_quote') }}" class="sizing-save">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{{ hidden_state() }}
+      <label><span>Job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if selected_job == job.id }}>#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>
+      <button class="btn btn-primary" name="go" value="quote">Build the quote with Caden</button>
+      <button class="btn btn-secondary" formaction="{{ url_for('generator_upgrade_save') }}">Just save it to the job</button>
+    </form>
+  </div>{% endif %}
+</section>{% endif %}
+</div>
+{% endif %}
+
+<section class="panel section-panel sizing-models upgrade-sources">
+  <span class="eyebrow">Where the numbers come from</span>
+  <p class="muted">Each model's output, current, line breaker, full-load fuel use, inlet and pressure are from the maker's spec sheet. Wire: NEC 310.16 (75 °C), 240.4(B), 250.122 and Chapter 9 conduit fill, voltage drop held to 3% at rated current. Gas: Schedule 40 steel capacity tables (IFGC 402.4 / NFPA 54), natural gas at low pressure with a 0.5 in. w.c. drop, propane at 11 in. w.c. with a 0.5 in. drop. Read the nameplate and the install manual before ordering; the inspector and the gas utility have the final word.</p>
+</section>
+{% endblock %}
