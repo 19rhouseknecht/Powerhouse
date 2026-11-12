@@ -70,7 +70,7 @@ os.environ["OPENAI_API_KEY"] = "test-key-not-used"
 owner.get("/quoting/generate/%d" % job_id)
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Quote the generator swap."))
 words = SEEN[-1]["instructions"]
-block = words[words.index("GENERATOR_WORK"):words.index("SERVICE_LIBRARY")]
+block = words[words.index("GENERATOR_WORK"):words.index("SERVICE_LIBRARY:", words.index("GENERATOR_WORK"))]
 check("GENERATOR SIZING" in block and "NEC 220.82" in block and "calculated load" in block, "Caden gets the saved sizing and its calculation")
 check("GENERATOR UPGRADE" in block and "26RCA" in block and "2 AWG copper" in block and "1-1/4 in" in block and "haul-away of the old unit" in block,
       "and the saved upgrade: new model, wire, gas pipe and the rip-out")

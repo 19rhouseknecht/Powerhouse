@@ -8,7 +8,7 @@ import sys
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import CSRF, check, done, make_site, sign_in  # noqa: E402
+from harness import CSRF, check, done, make_site, sign_in, skip  # noqa: E402
 
 m = make_site()
 os.environ["OPENAI_API_KEY"] = "test-key-not-used"
@@ -75,10 +75,10 @@ check(any("Found on the Pricing Sheet and priced from it" in msg and "Unconfirme
 check(any("not priced from the Pricing Sheet yet" in msg and "only my guess" in msg for msg in msgs), "and that his own figures are only guesses")
 
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
-check("2 items are not priced from the Pricing Sheet yet" in page, "the panel counts only what is not priced from the sheet")
+check("2 items need a price from the Pricing Sheet" in page, "the panel counts only what is not priced from the sheet")
 check("GFCI receptacle 15A white weather resistant" in page and "Use this" in page, "the close match is offered with Use this")
 check("Caden's guess: $250.00" in page and 'value="250' not in page, "Caden's guess is a hint, never filled in")
-check("20A GFCI receptacle, white" not in page.split("needs-price-table")[1].split("</form>")[0], "the item already priced from the sheet is not in the panel")
+check("20A GFCI receptacle, white" not in page.split("needs-price-list")[1].split("</form>")[0], "the item already priced from the sheet is not in the panel")
 check(page.count('class="price-source src-unconfirmed"') >= 3 and "Confirm it" in page, "each line shows its source; Unconfirmed lines have Confirm it")
 
 # Use this: only that item is priced, and only from the sheet
@@ -116,4 +116,38 @@ crew = sign_in(m, "crew", admin=False)
 with app.app_context():
     role = m.User.query.filter_by(username="crew").first().role; role.view_pricing = False; role.view_quoting = True; db.session.commit()
 check(crew.post("/quoting/pricing/items/%d/confirm" % gfci15_id, data=dict(CSRF, category="Devices")).status_code == 403, "confirming needs Pricing Sheet access")
+
+# in a browser: search the Pricing Sheet from the panel and Use this
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    skip("Playwright is not installed (browser half)"); done()
+import logging  # noqa: E402
+import threading  # noqa: E402
+from werkzeug.serving import make_server  # noqa: E402
+with app.app_context():
+    db.session.add(m.PriceItem(name="Eaton whole-home surge protector CHSPT2ULTRA", lookup_key="spd", category="Panels", unit="ea", price=139, cooper_part_number="CHSPT2ULTRA"))
+    db.session.commit()
+app.config["TESTING"] = False
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+server = make_server("127.0.0.1", 0, app, threaded=True); threading.Thread(target=server.serve_forever, daemon=True).start()
+base = "http://127.0.0.1:%d" % server.server_port
+with sync_playwright() as pw:
+    try:
+        browser = pw.chromium.launch(executable_path=os.environ.get("PW_CHROMIUM") or None)
+    except Exception as exc:  # noqa: BLE001
+        skip("no browser (%s)" % str(exc).splitlines()[0][:100]); done()
+    page = browser.new_page()
+    page.goto(base + "/login"); page.fill("input[name=username]", "owner"); page.fill("input[name=password]", "a-long-password-1"); page.click("form button")
+    page.goto(base + "/quoting/generate/%d" % job_id)
+    card = page.locator(".needs-price-card", has_text="Whole-home surge protector")
+    card.locator("[data-sheet-search] input").fill("CHSPT2")
+    card.locator("[data-results] button", has_text="Use this").first.click()
+    page.wait_for_load_state()
+    check("Whole-home surge protector is priced from the Pricing Sheet" in page.content() or "is priced from the Pricing Sheet (Eaton" in page.content(),
+          "searching by part number and pressing Use this prices it from the Pricing Sheet")
+    browser.close()
+with app.app_context():
+    q = db.session.get(m.Quote, quote_id)
+    check(not q.has_missing_pricing, "and nothing is left to price")
 done()

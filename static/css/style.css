@@ -1258,3 +1258,14 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .pp-lumens label { flex:1 1 260px; display:flex; flex-direction:column; gap:5px; color:var(--muted); font-size:11px; }
 .pp-lumens input { width:100%; min-width:0; }
 @media (max-width:620px) { .pp-head { grid-template-columns:1fr; } .pp-facts { grid-template-columns:1fr; } }
+
+/* Needs a price: matched to the Pricing Sheet only */
+.needs-price-list { display:grid; gap:10px; }
+.needs-price-card { display:grid; gap:8px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
+.needs-price-top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.needs-price-top strong { display:block; }
+.needs-price-top small { color:var(--muted); font-size:11px; }
+.sheet-search input { width:100%; min-width:0; }
+.sheet-results { display:grid; gap:6px; margin-top:6px; }
+.needs-price-foot { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; align-items:center; }
+.needs-price-add { color:var(--accent-hover); font-size:12px; white-space:nowrap; }
