@@ -38,7 +38,7 @@ check('<option value="">No job (just working it out)</option>' in page and "Pick
 # 3. upgrading: linked at the top, kept through Ask Caleb, saved and reopened without losing it
 query = "calculate=1&job_id=%d&old=generac-20-7039&new=kohler-26rca&fuel=ng&gas_feet=50&wire_feet=30" % job_id
 page = owner.get("/generators/upgrade?" + query).get_data(as_text=True)
-check("Linked to" in page and "For <strong>job #950" in page and "Already saved on it: a sizing" in page, "Upgrading shows the linked job and what is already saved on it")
+check('value="#950 · Lee Ortiz · Standby generator"' in page, "Upgrading opened from a job has that job ready in Add to job")
 r = owner.post("/generators/upgrade/ask", data=dict(CSRF, job_id=job_id, old="generac-20-7039", new="kohler-26rca", question="Keep the pad?"))
 check("job_id=%d" % job_id in r.headers["Location"], "asking Caleb keeps the page linked to the job")
 r = owner.post("/generators/upgrade/save", data=dict(CSRF, job_id=job_id, old="generac-20-7039", new="kohler-26rca", fuel="ng", gas_feet="50", wire_feet="30"))
@@ -49,7 +49,7 @@ with app.app_context():
 page = owner.get("/jobs/%d" % job_id).get_data(as_text=True)
 check("Caden uses the newest sizing and upgrade below" in page and page.count("Open it") == 2, "the job page lists both, each reopenable")
 reopen = [p.split('"')[0] for p in page.split('href="') if p.startswith("/generators/upgrade?calculate=1")][0].replace("&amp;", "&")
-check(owner.get(reopen).status_code == 200 and "Linked to" in owner.get(reopen).get_data(as_text=True), "Open it comes back linked to the job")
+check(owner.get(reopen).status_code == 200 and 'value="#950 · Lee Ortiz · Standby generator"' in owner.get(reopen).get_data(as_text=True), "Open it comes back with the job ready")
 
 # 4. Caden reads the newest sizing and upgrade on that job (and nothing on a job without any)
 SEEN = []
@@ -71,10 +71,10 @@ owner.get("/quoting/generate/%d" % job_id)
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Quote the generator swap."))
 words = SEEN[-1]["instructions"]
 block = words[words.index("GENERATOR_WORK"):words.index("SERVICE_LIBRARY")]
-check("GENERATOR SIZING" in block and "Needs" in block and "whole home" in block, "Caden gets the saved sizing")
-check("GENERATOR UPGRADE" in block and "26RCA" in block and "2 AWG copper" in block and "1-1/4 in" in block and "Rip out" in block,
+check("GENERATOR SIZING" in block and "NEC 220.82" in block and "calculated load" in block, "Caden gets the saved sizing and its calculation")
+check("GENERATOR UPGRADE" in block and "26RCA" in block and "2 AWG copper" in block and "1-1/4 in" in block and "haul-away of the old unit" in block,
       "and the saved upgrade: new model, wire, gas pipe and the rip-out")
-check("estimate: $" in block and "build the generator scope from GENERATOR_WORK" in block, "with the upgrade's estimate, and the rule to use it when a generator is involved")
+check("Needs work:" in block and "build the generator scope from GENERATOR_WORK" in block, "with what needs work, and the rule to use it when a generator is involved")
 SEEN.clear()
 owner.get("/quoting/generate/%d" % other_id)
 owner.post("/quoting/generate/%d" % other_id, data=dict(CSRF, message="Two outlets."))
