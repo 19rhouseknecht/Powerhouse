@@ -1,5 +1,5 @@
 /* Pricing Sheet: every row saves itself, pictures upload on pick, and rows can be selected for
-   "Get Cooper prices for selected" or "Remove selected". */
+   "Update from Cooper" (price and picture) or "Remove selected". */
 (function () {
   'use strict';
   var table = document.querySelector('.pricing-table');

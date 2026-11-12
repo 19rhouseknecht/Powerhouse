@@ -15,8 +15,12 @@
       var rx = x * cy - y * sy, ry = x * sy + y * cy;
       return [rx, -(z * cp - ry * sp), ry * cp + z * sp];
     }
-    var corners = [], i;
-    for (i = 0; i < 8; i++) corners.push(rot(i & 1 ? L : 0, i & 2 ? W : 0, i & 4 ? H : 0));
+    /* the room's outline on the floor: a rectangle, or a circle drawn as a many-sided polygon */
+    var outline = [], i;
+    if (room.shape === 'circle') { for (i = 0; i < 48; i++) outline.push([L / 2 + L / 2 * Math.cos(i * Math.PI / 24), W / 2 + W / 2 * Math.sin(i * Math.PI / 24)]); }
+    else outline = [[0, 0], [L, 0], [L, W], [0, W]];
+    var corners = [];
+    outline.forEach(function (p) { corners.push(rot(p[0], p[1], 0)); corners.push(rot(p[0], p[1], H)); });
     var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     corners.forEach(function (c) { minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]); minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]); });
     var scale = Math.min((cssW - 24) / (maxX - minX), (cssH - 40) / (maxY - minY));
@@ -28,15 +32,14 @@
       if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
     }
     /* floor */
-    poly([P(0, 0, 0), P(L, 0, 0), P(L, W, 0), P(0, W, 0)], '#1f1b18', '#57534e');
-    /* the two walls farthest from the viewer, so the room reads as a box */
-    var walls = [
-      {pts: [P(0, 0, 0), P(L, 0, 0), P(L, 0, H), P(0, 0, H)], mid: rot(L / 2, 0, H / 2)[2]},
-      {pts: [P(L, 0, 0), P(L, W, 0), P(L, W, H), P(L, 0, H)], mid: rot(L, W / 2, H / 2)[2]},
-      {pts: [P(L, W, 0), P(0, W, 0), P(0, W, H), P(L, W, H)], mid: rot(L / 2, W, H / 2)[2]},
-      {pts: [P(0, W, 0), P(0, 0, 0), P(0, 0, H), P(0, W, H)], mid: rot(0, W / 2, H / 2)[2]}
-    ].sort(function (a, b) { return a.mid - b.mid; });
-    walls.slice(0, 2).forEach(function (w) { poly(w.pts, 'rgba(120,113,108,.18)', 'rgba(168,162,158,.45)'); });
+    poly(outline.map(function (p) { return P(p[0], p[1], 0); }), '#1f1b18', '#57534e');
+    /* walls: one per edge of the outline; the ones behind the room's middle are drawn, so it reads as a box or a drum */
+    var centre = rot(L / 2, W / 2, H / 2)[2], walls = outline.map(function (p, n) {
+      var q = outline[(n + 1) % outline.length];
+      return {pts: [P(p[0], p[1], 0), P(q[0], q[1], 0), P(q[0], q[1], H), P(p[0], p[1], H)], mid: rot((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, H / 2)[2]};
+    }).sort(function (a, b) { return a.mid - b.mid; });
+    var far = walls.filter(function (w) { return w.mid < centre; }), near = walls.filter(function (w) { return w.mid >= centre; });
+    far.forEach(function (w) { poly(w.pts, 'rgba(120,113,108,.18)', outline.length > 4 ? null : 'rgba(168,162,158,.45)'); });
     /* pools of light on the floor (added together, so overlaps brighten) */
     var reach = Math.max(data.spacing ? Math.max(data.spacing[0], data.spacing[1]) : 4, 2) * 0.8;
     ctx.save(); ctx.globalCompositeOperation = 'lighter';
@@ -59,11 +62,16 @@
       ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(top[0], top[1], 9, 0, Math.PI * 2); ctx.fill();
     });
     /* the ceiling's edge and the near walls, outlined only */
-    ctx.setLineDash([4, 4]); poly([P(0, 0, H), P(L, 0, H), P(L, W, H), P(0, W, H)], null, 'rgba(168,162,158,.55)'); ctx.setLineDash([]);
-    walls.slice(2).forEach(function (w) { [[0, 3], [1, 2]].forEach(function (e) { ctx.beginPath(); ctx.moveTo(w.pts[e[0]][0], w.pts[e[0]][1]); ctx.lineTo(w.pts[e[1]][0], w.pts[e[1]][1]); ctx.strokeStyle = 'rgba(168,162,158,.35)'; ctx.stroke(); }); });
+    ctx.setLineDash([4, 4]); poly(outline.map(function (p) { return P(p[0], p[1], H); }), null, 'rgba(168,162,158,.55)'); ctx.setLineDash([]);
+    if (outline.length === 4) near.forEach(function (w) { [[0, 3], [1, 2]].forEach(function (e) { ctx.beginPath(); ctx.moveTo(w.pts[e[0]][0], w.pts[e[0]][1]); ctx.lineTo(w.pts[e[1]][0], w.pts[e[1]][1]); ctx.strokeStyle = 'rgba(168,162,158,.35)'; ctx.stroke(); }); });
+    else {                                             /* a round room: its two side edges, where the near half meets the far half */
+      var xs = corners.map(function (c) { return c[0]; }), left = outline.reduce(function (best, p) { return rot(p[0], p[1], 0)[0] < rot(best[0], best[1], 0)[0] ? p : best; }),
+        rightP = outline.reduce(function (best, p) { return rot(p[0], p[1], 0)[0] > rot(best[0], best[1], 0)[0] ? p : best; });
+      [left, rightP].forEach(function (p) { var a = P(p[0], p[1], 0), b = P(p[0], p[1], H); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.strokeStyle = 'rgba(168,162,158,.45)'; ctx.stroke(); });
+    }
     /* words */
     ctx.fillStyle = '#d6d3d1'; ctx.font = '600 11px system-ui, sans-serif'; ctx.textBaseline = 'bottom';
-    ctx.fillText(L + ' × ' + W + ' ft · ' + H + ' ft ceiling', 8, cssH - 6);
+    ctx.fillText((room.shape === 'circle' ? L + ' ft round' : L + ' × ' + W + ' ft') + ' · ' + H + ' ft ceiling', 8, cssH - 6);
     var right = data.count + ' lights · ' + data.footcandles + ' fc (target ' + data.target + ')';
     ctx.fillText(right, cssW - 8 - ctx.measureText(right).width, cssH - 6);
   }
