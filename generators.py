@@ -258,7 +258,7 @@ UPGRADE_MODELS = [
     {"key": "kohler-20rca", "brand": "Kohler", "model": "20RCA (20 kW)", "kw_lp": 20, "kw_ng": 18, "amps": 84, "breaker": 100,
      "ng_cfh": 281, "lp_cfh": 136, "inlet": "1/2 in NPT", "ng_wc": (3.5, 11), "lp_wc": (7, 11), "lb": 555, "cooling": "air"},
     {"key": "kohler-26rca", "brand": "Kohler", "model": "26RCA (26 kW)", "kw_lp": 26, "kw_ng": 24, "amps": 109, "breaker": 125,
-     "ng_cfh": 290, "lp_cfh": 129, "inlet": "3/4 in NPT", "ng_wc": (3.5, 11), "lp_wc": (7, 11), "lb": 625, "cooling": "air"},
+     "ng_cfh": 290, "lp_cfh": 129, "inlet": "1/2 in NPT", "ng_wc": (3.5, 11), "lp_wc": (7, 11), "lb": 625, "cooling": "air"},
     {"key": "kohler-24rcla", "brand": "Kohler", "model": "24RCLA (24 kW, liquid-cooled)", "kw_lp": 24, "kw_ng": 21, "amps": 100, "breaker": 125,
      "breaker_checked": False, "ng_cfh": 301, "lp_cfh": 113, "inlet": "1 in NPT", "ng_wc": (5, 11), "lp_wc": (5, 11), "lb": 1260, "cooling": "liquid"},
 ]
@@ -337,10 +337,32 @@ LP_KBTU = {
     "2": [6790, 4660, 3750, 3210, 2840, 2570, 2200, 1950, 1730, 1570, 1340],
 }
 
+# The makers' own minimum gas pipe sizes (in. NPT), by total pipe length in feet, from the pressure regulator to the generator's
+# fuel inlet with 8 ft added for every 90-degree elbow. Kohler 14/20/26RCA(L) installation manual, Figure 10. Where a maker's
+# chart covers the run it is the requirement; past its last row (or for a model without one) the fuel-gas code tables are used.
+ELBOW_FEET = 8
+MAKER_PIPE_LENGTHS = [25, 50, 100, 150, 200]
+MAKER_PIPE = {
+    "kohler-14rca": {"ng": ["3/4", "1", "1", "1-1/4", "1-1/4"], "lp": ["3/4", "3/4", "1", "1", "1"]},
+    "kohler-20rca": {"ng": ["1", "1", "1-1/4", "1-1/4", "1-1/4"], "lp": ["3/4", "1", "1", "1-1/4", "1-1/4"]},
+    "kohler-26rca": {"ng": ["1", "1-1/4", "1-1/4", "1-1/4", "1-1/2"], "lp": ["3/4", "1", "1", "1", "1-1/4"]},
+}
+MAKER_PIPE_SOURCE = {"kohler-14rca": "Kohler's installation manual", "kohler-20rca": "Kohler's installation manual", "kohler-26rca": "Kohler's installation manual"}
+
+
+def maker_pipe(model, fuel, feet):
+    """The maker's minimum pipe size for this run, or None when its chart does not cover it."""
+    chart = MAKER_PIPE.get(model.get("key"), {}).get(fuel)
+    if not chart or feet > MAKER_PIPE_LENGTHS[-1]:
+        return None
+    return chart[next(i for i, length in enumerate(MAKER_PIPE_LENGTHS) if length >= feet)]
+
+
 UPGRADE_FIELDS = {
     # name: (label, default, minimum, maximum)
     "wire_feet": ("Wire run: generator to transfer switch (ft, one way)", 30, 1, 500),
-    "gas_feet": ("Gas run: meter / regulator or tank to generator (ft, with fittings)", 30, 1, 400),
+    "gas_feet": ("Gas run: pressure regulator to the generator's fuel inlet (ft)", 30, 1, 400),
+    "gas_elbows": ("90-degree elbows in the gas run (8 ft each)", 0, 0, 40),
     "other_btu": ("Other gas appliances on the same meter (Btu/h, total)", 0, 0, 2000000),
     "meter_cfh": ("Gas meter rating (cfh; 0 = not known)", 0, 0, 5000),
     "tank_gallons": ("Propane tank (gallons)", 500, 0, 5000),
@@ -454,17 +476,29 @@ def pipe_for(btu, fuel, feet):
 
 
 def gas(model, fuel, feet):
+    """Full-load fuel, and the pipe the run needs: the maker's chart when it covers the run, else the code tables."""
     btu, cfh = gas_demand(model, fuel)
-    size = pipe_for(btu, fuel, feet)
-    return {"btu": btu, "cfh": cfh, "size": size, "gph": round(model["lp_cfh"] / LP_CF_PER_GAL, 2),
+    maker = maker_pipe(model, fuel, feet)
+    size = maker or pipe_for(btu, fuel, feet)
+    source = MAKER_PIPE_SOURCE.get(model.get("key")) if maker else "fuel-gas code tables"
+    return {"btu": btu, "cfh": cfh, "size": size, "gph": round(model["lp_cfh"] / LP_CF_PER_GAL, 2), "source": source,
             "capacity": round(pipe_capacity(size, fuel, feet)) if size else 0,
-            "text": (f"{size} in Schedule 40 for {feet:g} ft" if size else "more than 2 in pipe: use elevated pressure (2 psi) or a closer source")}
+            "text": (f"{size} in for {feet:g} ft ({source})" if size else "more than 2 in pipe: use elevated pressure (2 psi) or a closer source")}
+
+
+def pipe_ok(existing, model, fuel, feet, btu):
+    """Whether a pipe already there is big enough: against the maker's chart where it covers the run, else by capacity."""
+    maker = maker_pipe(model, fuel, feet)
+    if maker:
+        return PIPE_SIZES.index(existing) >= PIPE_SIZES.index(maker)
+    return pipe_capacity(existing, fuel, feet) >= btu
 
 
 def upgrade(values):
     """Everything the Upgrading page shows."""
     inputs = read_upgrade(values)
-    fuel, feet_wire, feet_gas = inputs["fuel"], inputs["wire_feet"], inputs["gas_feet"]
+    fuel, feet_wire = inputs["fuel"], inputs["wire_feet"]
+    feet_gas = inputs["gas_feet"] + ELBOW_FEET * int(inputs["gas_elbows"])        # the total length the charts are read at
     old, new = (other_model(values, side, fuel) if inputs[side] == OTHER else MODEL_BY_KEY[inputs[side]] for side in ("old", "new"))
     wire_old = wiring(old, inputs["material"], feet_wire, inputs["conduit"])
     wire_new = wiring(new, inputs["material"], feet_wire, inputs["conduit"])
@@ -485,7 +519,7 @@ def upgrade(values):
     if inputs["existing_pipe"]:
         capacity = pipe_capacity(inputs["existing_pipe"], fuel, feet_gas)
         share = capacity / gas_new["btu"] * 100
-        keep["pipe"] = {"ok": capacity >= gas_new["btu"], "size": inputs["existing_pipe"], "capacity": round(capacity), "share": round(share),
+        keep["pipe"] = {"ok": pipe_ok(inputs["existing_pipe"], new, fuel, feet_gas, gas_new["btu"]), "size": inputs["existing_pipe"], "capacity": round(capacity), "share": round(share),
                         "why": ("it carries %d%% of what the new unit burns at full load over %g ft" % (round(share), feet_gas))}
 
     # the rest an installer has to think about
@@ -632,16 +666,21 @@ def upgrade_table(result):
     row("drop", "Voltage drop at full load", f"{result['wire_old']['drop_pct']}%", f"{drop:.2f}%", "ok" if drop <= VOLTAGE_DROP_LIMIT else "bad",
         f"Within {VOLTAGE_DROP_LIMIT:g}%" if drop <= VOLTAGE_DROP_LIMIT else f"Over {VOLTAGE_DROP_LIMIT:g}%")
 
-    row("gas_feet", "Gas run, meter or tank to generator", f"{i['gas_feet']:g} ft", f"{i['gas_feet']:g} ft", inputs=["gas_feet"])
-    row("fuel_use", "Fuel at full load", f"{result['gas_old']['cfh']:g} cfh · {result['gas_old']['btu']:,.0f} Btu/h",
+    elbows = int(i["gas_elbows"])
+    total_gas = i["gas_feet"] + ELBOW_FEET * elbows
+    row("gas_feet", "Gas run, regulator to fuel inlet", f"{i['gas_feet']:g} ft" + (f" + {elbows} elbow{'s' if elbows != 1 else ''}" if elbows else ""),
+        f"{total_gas:g} ft total", why=(f"{i['gas_feet']:g} ft + {elbows} x {ELBOW_FEET} ft for the 90-degree elbows" if elbows else "Add 8 ft for every 90-degree elbow"),
+        inputs=["gas_feet", "gas_elbows"])
+    row("fuel_use", "Fuel flow at full load (maximum)", f"{result['gas_old']['cfh']:g} cfh · {result['gas_old']['btu']:,.0f} Btu/h",
         f"{result['gas_new']['cfh']:g} cfh · {result['gas_new']['btu']:,.0f} Btu/h")
     pipe_now = i["existing_pipe"] or result["gas_old"]["size"] or "2"
-    capacity = pipe_capacity(pipe_now, fuel, i["gas_feet"])
-    pipe_good = capacity >= result["gas_new"]["btu"]
-    row("pipe", "Gas pipe (Schedule 40)", f"{pipe_now} in" + ("" if i["existing_pipe"] else " (assumed)"), f"{result['gas_new']['size'] or 'over 2'} in",
+    capacity = pipe_capacity(pipe_now, fuel, total_gas)
+    pipe_good = pipe_ok(pipe_now, new, fuel, total_gas, result["gas_new"]["btu"])
+    source = result["gas_new"].get("source", "fuel-gas code tables")
+    row("pipe", "Gas pipe", f"{pipe_now} in" + ("" if i["existing_pipe"] else " (assumed)"), f"{result['gas_new']['size'] or 'over 2'} in minimum",
         "ok" if pipe_good else "bad",
-        f"Carries {capacity:,.0f} Btu/h over {i['gas_feet']:g} ft" if pipe_good else
-        f"Carries only {capacity / result['gas_new']['btu'] * 100:.0f}% of full-load fuel over {i['gas_feet']:g} ft: see Food for thought",
+        (f"Meets {source} for {total_gas:g} ft" if pipe_good else f"Under {source} for {total_gas:g} ft"
+         + (f" (it carries about {capacity / result['gas_new']['btu'] * 100:.0f}% of full-load fuel): see Food for thought" if capacity < result["gas_new"]["btu"] else "")),
         inputs=["existing_pipe"])
     if fuel == "ng":
         total_cfh = result["gas_new"]["cfh"] + i["other_btu"] / NG_BTU_PER_CF
@@ -650,13 +689,15 @@ def upgrade_table(result):
             row("meter", "Gas meter", f"{i['meter_cfh']:g} cfh", f"{total_cfh:,.0f} cfh with everything running",
                 "ok" if total_cfh <= i["meter_cfh"] else "bad", "Big enough" if total_cfh <= i["meter_cfh"] else "Too small: call the gas utility", inputs=["meter_cfh"])
         else:
-            row("meter", "Gas meter", "not known", f"{total_cfh:,.0f} cfh with everything running", "info", "Check the meter's rating (many are 250 cfh)", inputs=["meter_cfh"])
+            row("meter", "Gas meter", "not known", f"{total_cfh:,.0f} cfh with everything running", "info",
+                "Check the meter's flow rating with the gas utility (many are 250 cfh); they upgrade it if needed", inputs=["meter_cfh"])
     else:
         big = result["gas_new"]["btu"] > 250000
         good = i["tank_gallons"] >= 500 or not big
         row("tank", "Propane tank", f"{i['tank_gallons']:g} gal" if i["tank_gallons"] else "not known", f"{result['gas_new']['gph']} gal/h at full load",
             "ok" if good and i["tank_gallons"] else "bad" if not good else "info",
-            "Big enough to vaporize in cold weather" if good and i["tank_gallons"] else "May not vaporize enough in cold weather: check with the supplier",
+            ("Big enough to vaporize in cold weather; confirm the regulator output with the LPG provider" if good and i["tank_gallons"]
+             else "May not vaporize enough in cold weather: contact the local LPG provider"),
             inputs=["tank_gallons"])
     low, high = new["lp_wc"] if fuel == "lp" else new["ng_wc"]
     if i["existing_pressure"]:
