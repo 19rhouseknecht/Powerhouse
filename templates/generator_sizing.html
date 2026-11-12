@@ -1,17 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Generator sizing — Power House{% endblock %}
+{% macro number(name) %}{% set label, default, low, high = fields[name] %}<label><span>{{ label }}</span><input type="number" name="{{ name }}" value="{{ '%g'|format(values[name]) }}" min="{{ low }}" max="{{ high }}" step="any" inputmode="decimal"></label>{% endmacro %}
+{% macro seg(name, legend) %}<fieldset><legend>{{ legend }}</legend><div class="flow-seg">{% for value, label in choices[name] %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if values[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endmacro %}
+{% macro managed(key) %}<label class="sz-managed" title="Kept off the generator by load management"><input type="checkbox" name="managed_{{ key }}" value="on" {{ 'checked' if key in values.managed }}><span>Managed</span></label>{% endmacro %}
 {% block content %}
-<div class="page-heading"><span class="eyebrow">Generators</span><h1>Generator sizing</h1><p>Enter what the home has. You get the running load, the starting load of the largest motor, and the Kohler air-cooled model that covers it, with and without load management.</p></div>
+<div class="page-heading"><span class="eyebrow">Generators</span><h1>Generator sizing</h1><p>The NEC 220.82 load calculation for a home, the way GenSizer and the inspector do it, then the Kohler air-cooled generator that carries it. Every step is shown below the answer.</p></div>
 <div class="sizing-layout">
 <form method="GET" class="panel section-panel sizing-form" id="sizing-form">
   <input type="hidden" name="calculate" value="1">
   {% if jobs %}{% include "_generator_job.html" %}{% endif %}
-  <div class="sizing-choices">
-    {% for name, options in choices.items() %}<fieldset><legend>{{ {'coverage': 'Coverage', 'fuel': 'Fuel', 'service_amps': 'Electric service', 'soft_start': 'A/C soft starter'}[name] }}</legend><div class="flow-seg">{% for value, label in options %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if values[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endfor %}
+  <div class="sizing-choices">{{ seg('fuel', 'Fuel') }}{{ seg('service_amps', 'Electric service') }}</div>
+  <h3 class="sz-head">1 · 2 · House and circuits</h3>
+  <div class="sizing-fields">{{ number('square_feet') }}{{ number('small_appliance_circuits') }}{{ number('laundry_circuits') }}</div>
+  <h3 class="sz-head">3 · Appliances fastened in place <small>count, and watts (VA) each from the nameplate</small></h3>
+  <div class="sz-appliances">
+    {% for key, (label, count, va, note) in appliances.items() %}<div class="sz-appliance">
+      <span class="sz-name">{{ label }}<small>{{ note }}</small></span>
+      <label><span class="sr-only">How many</span><input type="number" name="{{ key }}" value="{{ '%g'|format(values[key]) }}" min="0" max="12" step="1" inputmode="numeric" aria-label="How many: {{ label }}"></label>
+      <label class="sz-va"><input type="number" name="va_{{ key }}" value="{{ '%g'|format(values['va_' ~ key]) }}" min="0" step="1" inputmode="numeric" aria-label="VA each: {{ label }}"><span>VA</span></label>
+      {{ managed(key) }}
+    </div>{% endfor %}
+    <div class="sz-appliance"><span class="sz-name">Other loads fastened in place<small>total VA</small></span><span></span><label class="sz-va"><input type="number" name="other_va" value="{{ '%g'|format(values.other_va) }}" min="0" step="1" aria-label="Other loads VA"><span>VA</span></label>{{ managed('other_va') }}</div>
   </div>
-  <div class="sizing-fields">
-    {% for name, (label, default, low, high) in fields.items() %}<label><span>{{ label }}</span><input type="number" name="{{ name }}" value="{{ '%g'|format(values[name]) }}" min="{{ low }}" max="{{ high }}" step="any" inputmode="decimal"></label>{% endfor %}
-  </div>
+  <h3 class="sz-head">5 · Heating and cooling {{ managed('hvac') }}</h3>
+  <div class="sizing-fields">{{ number('ac_count') }}{{ number('ac_tons') }}{{ number('ac_amps') }}{{ number('ac_lra') }}{{ number('heat_pump_count') }}{{ number('heat_strip_kw') }}{{ number('heat_units') }}</div>
+  <div class="sizing-choices">{{ seg('soft_start', 'A/C soft starter') }}{{ seg('heat_interlock', 'Heat pump locked out while the strips run') }}</div>
   <div class="form-actions"><button class="btn btn-primary">Size the generator</button></div>
 </form>
 
@@ -22,35 +35,38 @@
     {% if result.model %}<h2>{{ result.model.model }}</h2><p class="sizing-big">{{ result.model.description }} · {{ '%g'|format(result.model.rated_kw) }} kW on {{ 'propane' if result.inputs.fuel == 'lp' else 'natural gas' }}</p>
     {% else %}<h2>Liquid-cooled range</h2><p class="sizing-big">More than the largest air-cooled model covers.</p>{% endif %}
     <dl class="sizing-numbers">
-      <div><dt>Needs</dt><dd>{{ '%g'|format(result.required_kw) }} kW</dd></div>
-      <div><dt>Running</dt><dd>{{ '%g'|format(result.running_kw) }} kW</dd></div>
-      <div><dt>Starting</dt><dd>{{ '%g'|format(result.starting_kw) }} kW</dd></div>
+      <div><dt>Generator needs</dt><dd>{{ '%g'|format(result.required_kw) }} kW</dd></div>
+      <div><dt>Calculated load</dt><dd>{{ '{:,}'.format(result.total_va) }} VA</dd></div>
+      <div><dt>At 240 V</dt><dd>{{ '%g'|format(result.total_amps) }} A</dd></div>
       <div><dt>Transfer switch</dt><dd>{{ result.transfer_switch_amps }} A</dd></div>
     </dl>
-    {% if result.sets_start %}<p class="muted">The starting load is set by the {{ result.sets_start|lower }} starting while everything else runs.</p>{% endif %}
-    {% if result.with_load_management.shed %}<div class="sizing-shed"><strong>With load management</strong> (shedding {{ result.with_load_management.shed|map('lower')|join(', ') }} while the generator runs): needs {{ '%g'|format(result.with_load_management.required_kw) }} kW{% if result.with_load_management.model %}, so a <strong>{{ result.with_load_management.model.model }}</strong> ({{ '%g'|format(result.with_load_management.model.rated_kw) }} kW) covers it{% endif %}.</div>{% endif %}
+    {% if result.inputs.managed %}<div class="sizing-shed"><strong>Load management</strong>: {{ result.with_load_management.shed|join(', ') }} kept off the generator, so it carries {{ '{:,}'.format(result.generator_va) }} VA instead of {{ '{:,}'.format(result.total_va) }} VA.</div>{% endif %}
     {% for note in result.notes %}<p class="sizing-note">{{ note }}</p>{% endfor %}
     {% if jobs %}<form method="POST" class="sizing-save">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      {% for name, value in result.inputs.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+      {% for name, value in result.inputs.items() %}{% if name != 'managed' %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endif %}{% endfor %}{% for key in result.inputs.managed %}<input type="hidden" name="managed_{{ key }}" value="on">{% endfor %}
       {% if linked_job %}<input type="hidden" name="job_id" value="{{ linked_job.id }}"><p class="gen-save-to">Save to <strong>job #{{ linked_job.job_number }} {{ linked_job.title }}</strong> for Caden to use on its quote.</p>
       {% else %}<label><span>Save to job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}">#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>{% endif %}
       <button class="btn btn-secondary">Save sizing{{ ' to this job' if linked_job }}</button>
     </form>{% endif %}
   </section>
   <section class="panel section-panel">
-    <span class="eyebrow">How it adds up</span>
-    <div class="item-table-wrap"><table class="item-table sizing-table"><thead><tr><th>Load</th><th>Running kW</th><th>Starting kW</th></tr></thead><tbody>
-      {% for name, running, starting, shed in result.rows %}<tr><td>{{ name }}{% if shed %} <small>can be load-managed</small>{% endif %}</td><td>{{ '%.2f'|format(running) }}</td><td>{{ '%.2f'|format(starting) if starting else '—' }}</td></tr>{% endfor %}
+    <span class="eyebrow">How it's calculated</span>
+    <p class="muted sz-method">NEC 220.82 optional calculation for a dwelling (the method GenSizer uses), then NEC 702.4(B): the generator must carry the calculated load, less anything load management keeps off it.</p>
+    <div class="item-table-wrap"><table class="item-table sz-steps"><thead><tr><th>Step</th><th>Load</th><th>How</th><th>VA</th></tr></thead><tbody>
+      {% for number, label, how, value, ref in result.steps %}<tr class="{{ 'sz-sub' if number in ('4', '6') else '' }}"><td>{{ number }}</td><td>{{ label }}<small>NEC {{ ref }}</small></td><td>{{ how }}</td><td>{{ '{:,.0f}'.format(value) }}</td></tr>{% endfor %}
+      <tr class="sz-sub"><td>6</td><td>In amps</td><td>{{ '{:,}'.format(result.total_va) }} VA ÷ 240 V</td><td>{{ '%g'|format(result.total_amps) }} A</td></tr>
+      {% if result.inputs.managed %}<tr class="sz-sub"><td>7</td><td>On the generator, managed loads left out<small>NEC 702.4(B)(2)</small></td><td>the same steps without: {{ result.with_load_management.shed|join(', ') }}</td><td>{{ '{:,}'.format(result.generator_va) }}</td></tr>{% endif %}
+      <tr class="sz-sub"><td>{{ '8' if result.inputs.managed else '7' }}</td><td>Generator size<small>power factor 1.0</small></td><td>{{ '{:,}'.format(result.generator_va) }} VA ÷ 1,000</td><td>{{ '%g'|format(result.required_kw) }} kW</td></tr>
     </tbody></table></div>
   </section>
 {% else %}
-  <section class="panel section-panel"><span class="eyebrow">How it works</span><h2>Enter the home, press Size</h2><p class="muted">Running load is everything on at once (lighting and receptacles from the square footage, NEC 220.12 and 220.42). Starting load is the largest motor starting while the rest runs; enter the A/C nameplate LRA for the real figure. The recommendation leaves 10 % headroom.</p></section>
+  <section class="panel section-panel"><span class="eyebrow">How it works</span><h2>Enter the home, press Size</h2><p class="muted">NEC 220.82: 3 VA per square foot, 1,500 VA for each small-appliance and laundry circuit, every appliance fastened in place at its nameplate; the first 10,000 VA counts in full and the rest at 40%; then the larger of the heating and the cooling. Tick Managed on the loads a load manager will shed. Every step is shown with the answer.</p></section>
 {% endif %}
   <section class="panel section-panel sizing-models">
     <span class="eyebrow">Models used</span>
     <ul>{% for model, lp, ng, description in models %}<li><strong>{{ model }}</strong> {{ '%g'|format(lp) }} kW LP / {{ '%g'|format(ng) }} kW NG</li>{% endfor %}</ul>
-    <small class="muted">From Kohler spec sheets and dealer listings. Confirm on the current spec sheet before ordering. Kohler's own sizing tool and distributor have the final word, especially for liquid-cooled units and anything with large motors.</small>
+    <small class="muted">From Kohler spec sheets. Appliance VA defaults are typical nameplates and NEC Table 430.248 motor currents; type the nameplate where you have it. Confirm the generator's motor-starting rating on its spec sheet for big A/C units.</small>
   </section>
 </aside>
 </div>

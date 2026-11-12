@@ -1,6 +1,7 @@
 """Generators -> Upgrading: the wiring and gas line for the generator that is there and the one going in, from the makers'
-spec sheets and the NEC / fuel-gas tables; whether what is there can stay; a priced estimate from the Pricing Sheet; saving
-to a job; Caden building the quote from it; Caleb answering with the upgrade attached. And the sidebar's Website section."""
+spec sheets and the NEC / fuel-gas tables; one table of what is there now against what the new one needs, green or red;
+Food for thought; adding it to a job (Caden quotes it from Generate Quote); Caleb answering with the upgrade attached. And the
+sidebar's Website section."""
 import json
 import os
 import sys
@@ -57,57 +58,56 @@ check(any("typed in" in t and "estimated" in t for _, t in typed["notes"]), "and
 check(gen.upgrade({"old": "other", "old_kw": "12", "old_cfh": "190", "new": "generac-22"})["old"]["ng_cfh"] == 190, "a typed fuel figure is used as typed")
 check(gen.upgrade({"old": "other", "old_kw": "9"})["old"]["breaker"] == 40, "no breaker typed: the next standard size above its current")
 
-# 4. the page, the sidebar
+# 4. the page: the two generators, the table lined up under them, green and red rows, Food for thought, a searchable job
 with app.app_context():
     person = m.Client(first_name="Pat", last_name="Reyes"); db.session.add(person); db.session.flush()
     job = m.Job(client=person, title="Generator swap", job_number=901); db.session.add(job)
-    db.session.add_all([m.PriceItem(name="2 AWG THHN copper wire", lookup_key="2awg", unit="ft", price=3.10, labor_hours_per_unit=0),
-                        m.PriceItem(name="#2/0 THHN copper wire", lookup_key="2/0", unit="ft", price=9.0),
-                        m.PriceItem(name="6 AWG bare copper ground", lookup_key="6g", unit="ft", price=1.2),
-                        m.PriceItem(name="1-1/4 in black iron gas pipe", lookup_key="pipe114", unit="ft", price=6.5),
-                        m.PriceItem(name="1-1/4 in black iron elbow", lookup_key="elb", unit="ft", price=1.0),
-                        m.PriceItem(name="Kohler 26RCA generator", lookup_key="26rca", unit="ea", price=7400)])
     db.session.commit(); job_id = job.id
 owner = sign_in(m)
 page = owner.get("/generators/upgrade").get_data(as_text=True)
 check(page.index(">⚙︎</span> Sizing") < page.index("Upgrading</a>") < page.index('Website</div>'), "Upgrading sits under Sizing in Generators")
 website = page[page.index('Website</div>'):page.index('</aside>')]
 check(all(x in website for x in ("Settings</a>", "Bug Reports</a>", "Releases</a>")), "Settings, Bug Reports and Releases sit under Website")
-query = "calculate=1&old=generac-20-7039&new=kohler-26rca&fuel=ng&wire_feet=30&gas_feet=50&existing_pipe=3/4"
+check('class="upgrade-grid"' in page and 'name="existing_wire"' in page and 'name="existing_pipe"' in page and "Calculate</button>" in page,
+      "the table is there to fill in before calculating")
+check('class="ug-ok"' not in page and 'class="ug-bad"' not in page and "Food for thought" not in page, "nothing is coloured until Calculate")
+check(page.index('id="up-old"') < page.index('id="up-new"') < page.index('data-row="feeder"'), "the two generators head the table's columns")
+query = "calculate=1&old=generac-20-7039&new=kohler-26rca&fuel=ng&wire_feet=30&gas_feet=45&existing_pipe=3/4&existing_wire=4&existing_material=copper"
 page = owner.get("/generators/upgrade?" + query).get_data(as_text=True)
-check("Side by side" in page and "125 A" in page and "1-1/4 in" in page, "the comparison shows the new breaker and pipe")
-check('value="generac-7-5240"' in page and "Guardian 7 kW" in page and 'value="other"' in page, "the 7 kW and 'Not on the list' are in both menus")
-page7 = owner.get("/generators/upgrade?calculate=1&old=other&old_kw=7&old_breaker=30&new=generac-22").get_data(as_text=True)
-check("generator, 7 kW (typed in)" in page7 and 'name="old_kw" value="7"' in page7 and 'id="up-new-other" hidden' in page7, "a typed-in unit works on the page and keeps its numbers")
-check("Pricing Sheet: 2 AWG THHN copper wire" in page and "#2/0" not in page.split("Estimate")[1], "2 AWG wire is priced from the sheet (2/0 is not mistaken for it)")
-check("Pricing Sheet: 1-1/4 in black iron gas pipe" in page and "Pricing Sheet: Kohler 26RCA generator" in page, "the pipe (not a fitting) and the generator too")
-check("needs a price" in page and "New Kohler automatic transfer switch" in page, "what has no price is marked")
-with app.app_context():
-    result = gen.upgrade({k: v for k, v in (p.split("=") for p in query.split("&"))})
-    with app.test_request_context():
-        from flask_login import login_user
-        login_user(m.User.query.filter_by(username="owner").first())
-        est = m.upgrade_estimate(result, {"switch_price": "1500", "pad_price": "250", "permit": "200", "conduit_price": "2.40"})
-check(not est["missing"] and est["total"] == round(est["material"] + est["labor_hours"] * est["labor_rate"], 2), "typed prices fill the rest; the total adds up")
-check(any(line["label"].startswith("Rip out") and line["hours"] == 3 for line in est["lines"]), "the rip-out time is in the estimate")
 
-crew = sign_in(m, "crew", admin=False)
-with app.app_context():
-    role = m.User.query.filter_by(username="crew").first().role; role.view_quoting = False; db.session.commit()
-crew_page = crew.get("/generators/upgrade?" + query).get_data(as_text=True)
-check("Side by side" in crew_page and "Upgrading</a>" in crew_page, "a crew member uses the upgrade page")
-check("Estimate</span>" not in crew_page and "Website</div>" not in crew_page, "without quoting they see no prices, and no Website section")
 
-# 5. save to a job, and reopen it from the job page
-r = owner.post("/generators/upgrade/save", data=dict(CSRF, job_id=job_id, old="generac-20-7039", new="kohler-26rca", fuel="ng", gas_feet="40"))
-check(r.status_code == 302 and "#generator-upgrade" in r.headers["Location"], "Save to job goes to the job's upgrade panel")
+def row_class(key):
+    return page.split('data-row="%s"' % key)[0].rsplit("<tr", 1)[1]
+
+
+check('ug-bad' in row_class("feeder") and "85 A wire on a 125 A breaker" in page, "the 4 AWG feeder is red: 85 A wire on the new 125 A breaker")
+check('ug-bad' in row_class("pipe") and "Carries only 52%" in page, "the 3/4 in gas line is red: it carries 52% of the new unit's fuel")
+check('ug-ok' in row_class("drop"), "voltage drop is green")
+check('ug-bad' in row_class("switch") and "Different maker" in page, "Generac to Kohler: the transfer switch is red")
+check("Food for thought" in page and "Plan for" not in page, "the notes are Food for thought")
+check("Estimate</span>" not in page and "Build the quote" not in page and "Pricing:" not in page, "no pricing or quoting on this page")
+check('list="upgrade-jobs"' in page and '<option value="#901 · Pat Reyes · Generator swap">' in page, "Add to job is a searchable list of jobs")
+ok = owner.get("/generators/upgrade?calculate=1&old=generac-20-7040&new=generac-22-7043&existing_wire=3&existing_pipe=1-1/4&existing_switch=200&existing_ground=8&existing_conduit=1-1/4").get_data(as_text=True)
+check('ug-ok' in ok.split('data-row="feeder"')[0].rsplit("<tr", 1)[1] and 'ug-ok' in ok.split('data-row="switch"')[0].rsplit("<tr", 1)[1],
+      "a same-maker swap with the right wire and a 200 A switch: those rows are green")
+assumed = owner.get("/generators/upgrade?calculate=1&old=generac-20-7039&new=generac-22").get_data(as_text=True)
+check("(assumed: what the old unit needed)" in assumed, "what is left as not known is assumed to be what the old unit needed, and says so")
+check(owner.get("/generators/upgrade?calculate=1&old=other&old_kw=7&old_breaker=30&new=generac-22").status_code == 200, "a typed-in unit works")
+
+# 5. add to a job by typing in the searchable box; the job page lists it; Caden reads the table
+r = owner.post("/generators/upgrade/save", data=dict(CSRF, job="#901 · Pat Reyes · Generator swap", old="generac-20-7039", new="kohler-26rca",
+                                                      fuel="ng", gas_feet="45", existing_pipe="3/4", existing_wire="4"))
+check(r.status_code == 302 and "#generator-upgrade" in r.headers["Location"], "Add to job saves it to the job typed")
+r = owner.post("/generators/upgrade/save", data=dict(CSRF, job="nothing like a job", old="generac-20-7039", new="kohler-26rca"))
+check("#save" in r.headers["Location"], "a job that cannot be found is asked for again")
 job_page = owner.get("/jobs/%d" % job_id).get_data(as_text=True)
-check("Generator work" in job_page and "id=\"generator-upgrade\"" in job_page and "26RCA" in job_page and "Open it" in job_page, "the job page lists the upgrade")
+check("Generator work" in job_page and "Needs work: Feeder wire (x 3), Ground wire, Conduit (PVC 40), Gas pipe" in job_page, "the job page lists it with what needs work")
 with app.app_context():
-    saved = m.GeneratorUpgrade.query.first()
-    check(saved.inputs["new"] == "kohler-26rca" and "Estimate $" in saved.summary, "it keeps the inputs and the estimate")
+    words = m.generator_context(db.session.get(m.Job, job_id))
+check("Needs work:" in words and "Gas pipe (Schedule 40): now 3/4 in" in words and "removal and haul-away of the old unit" in words,
+      "Caden gets the red rows to quote and the rip-out")
+check(owner.post("/generators/upgrade/quote", data=dict(CSRF, job_id=job_id)).status_code == 404, "the old Build the quote is gone (quoting is Generate Quote's)")
 
-# 6. Build the quote: Caden receives the upgrade as the office's message
 SEEN = []
 
 
@@ -117,22 +117,11 @@ class FakeOpenAI:
 
     def create(self, **kwargs):
         SEEN.append(kwargs)
-        if "tools" in kwargs:
-            return SimpleNamespace(output=[], output_text="Keeping 3/4 in will starve it at full load; run 1-1/4 in.")
-        return SimpleNamespace(output_text=json.dumps({"ready": False, "message": "One question.", "questions": ["Is the pad level?"], "quote_title": "",
-                                                       "introduction": "", "mike_question": "", "options": [], "pricing_needed": []}))
+        return SimpleNamespace(output=[], output_text="Keeping 3/4 in will starve it at full load; run 1-1/4 in.")
 
 
 m.OpenAI = FakeOpenAI
 os.environ["OPENAI_API_KEY"] = "test-key-not-used"
-r = owner.post("/generators/upgrade/quote", data=dict(CSRF, job_id=job_id, old="generac-20-7039", new="kohler-26rca", fuel="ng", gas_feet="40",
-                                                       existing_pipe="3/4", switch_price="1500"), follow_redirects=True)
-check(r.status_code == 200, "Build the quote lands on the job's quote")
-with app.app_context():
-    quote = m.Quote.query.filter_by(job_id=job_id).first()
-    asked = [msg.content for msg in quote.messages if msg.role == "user"]
-check(asked and "Generator upgrade on natural gas" in asked[-1] and "Rip out" in asked[-1] and "1-1/4 in" in asked[-1], "Caden gets the whole brief: old, new, wire, gas, rip-out")
-check(any("Generator upgrade" in json.dumps(call.get("input"), default=str) for call in SEEN), "and builds from it")
 
 # 7. Ask Caleb about the upgrade
 SEEN.clear()
@@ -141,7 +130,7 @@ r = owner.post("/generators/upgrade/ask", data=dict(CSRF, old="generac-20-7039",
 page = r.get_data(as_text=True)
 check("Keeping 3/4 in will starve it" in page, "Caleb's answer shows on the upgrade page")
 sent = SEEN[0]["input"][-1]["content"]
-check("Generator upgrade on natural gas" in sent and "Is it okay to keep the 3/4 in line?" in sent, "he gets the upgrade with the question")
+check("Generator upgrade on natural gas" in sent and "Needs work:" in sent and "Is it okay to keep the 3/4 in line?" in sent, "he gets the upgrade, its red rows, and the question")
 with app.app_context():
     check(m.CalebMessage.query.filter(m.CalebMessage.content.like("%About the generator upgrade%")).count() == 1, "and it is kept in the person's Caleb conversation")
 check(owner.post("/generators/upgrade/ask", data={"question": "x"}).status_code == 400, "asking needs the CSRF token")

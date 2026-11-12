@@ -1,134 +1,156 @@
-"""Generator sizing: what a home needs, worked out the way installers do, and which Kohler air-cooled
-model covers it. Pure functions (no Flask, no database) so the numbers can be tested on their own.
+"""Generator sizing, the way GenSizer (gensizer.assurancepower.com) and the inspector do it: the NEC 220.82 optional load
+calculation for a dwelling, then a generator big enough for that load (NEC 702.4(B): a standby generator with automatic
+transfer must carry the load calculated under Article 220, less what an automatic load management system keeps off it).
+Pure functions (no Flask, no database) so every number can be tested and shown step by step.
 
-The method:
-    running load   = everything chosen, running at once (general lighting and receptacles from square footage,
-                     NEC 220.12 at 3 VA/sq ft with the 220.42 demand factors: first 3,000 VA at 100 %, the rest at 35 %)
-    starting load  = the largest motor starting (from the nameplate LRA when given) + everything else running
-    required       = the larger of running x 1.1 (10 % headroom) and the starting load
-    recommendation = the smallest model in KOHLER_MODELS whose rating on the chosen fuel covers "required"
+    1  general lighting and receptacles     3 VA per square foot                                220.82(B)(1)
+    2  small-appliance and laundry circuits  1,500 VA each (at least two small-appliance)        220.82(B)(2)
+    3  appliances fastened in place          their nameplate VA (motors at their full-load amps)  220.82(B)(3), (4)
+    4  general load                          first 10,000 VA at 100 %, the rest at 40 %           220.82(B)
+    5  heating or cooling                    the largest of the 220.82(C) choices, at its demand  220.82(C)
+    6  total                                 4 + 5, in VA and amps at 240 V
+    7  generator                             total less managed loads, in kW (power factor 1.0)  702.4(B)
 
-Model ratings are kW on LP / natural gas from Kohler spec sheets and dealer listings. Check the current spec sheet
-before ordering; edit KOHLER_MODELS when Kohler changes its lineup.
+Model ratings are kW on LP / natural gas from Kohler spec sheets. Check the current spec sheet before ordering.
 """
 
-# (model, kW on LP, kW on natural gas, description)
+# (model, kW on LP, kW on natural gas, description): Kohler's air-cooled home standby line
 KOHLER_MODELS = [
     ("14RCA", 14.0, 12.0, "Kohler 14 kW air-cooled home standby"),
     ("20RCA", 20.0, 18.0, "Kohler 20 kW air-cooled home standby"),
     ("26RCA", 26.0, 24.0, "Kohler 26 kW air-cooled home standby"),
 ]
-HEADROOM = 1.10
 VOLTS = 240.0
-
-# typical figures used when the nameplate is not entered (kW running, starting multiple)
-AC_KW_PER_TON = 1.15          # a modern split system, running
-AC_START_MULTIPLE = 3.0       # without a soft starter
+GENERAL_FULL = 10000          # 220.82(B): the first 10 kVA of the general load at 100 %
+GENERAL_REST = 0.40           # the remainder at 40 %
+CIRCUIT_VA = 1500             # each small-appliance and laundry circuit
+AC_VA_PER_TON = 1300          # a typical condenser's compressor (about 5.4 A per ton at 240 V); type nameplate amps for the real figure
+CONDENSER_FAN_VA = 240        # its outdoor fan motor (about 1 A at 240 V)
 SOFT_START_FACTOR = 0.4       # a soft starter cuts the inrush to about 40 %
-MOTOR_KW_PER_HP = 1.0         # small single-phase motors (pumps), running
-MOTOR_START_MULTIPLE = 3.0
 
+# Appliances fastened in place (key: label, default count, VA each, where the VA comes from). Every VA can be changed on the page.
+APPLIANCES = {
+    "dishwasher": ("Dishwasher", 1, 1200, "typical nameplate"),
+    "disposal": ("Garbage disposal", 1, 900, "1/2 HP, 120 V, 7.2 A (typical nameplate)"),
+    "microwave": ("Built-in microwave / hood", 1, 1500, "typical nameplate"),
+    "range": ("Electric range", 0, 12000, "nameplate (12 kW typical)"),
+    "cooktop": ("Electric cooktop", 0, 7600, "typical nameplate"),
+    "oven": ("Wall oven", 0, 4800, "typical nameplate"),
+    "dryer": ("Electric dryer", 1, 5000, "nameplate (5 kW typical)"),
+    "water_heater": ("Electric water heater", 1, 4500, "4,500 W element"),
+    "tankless": ("Electric tankless water heater", 0, 27000, "nameplate (27 kW typical)"),
+    "furnace_blower": ("Furnace / air-handler blower", 1, 1176, "1/2 HP, 120 V, 9.8 A (NEC Table 430.248)"),
+    "well_pump": ("Well pump", 0, 1920, "1 HP, 240 V, 8 A (NEC Table 430.248)"),
+    "sump_pump": ("Sump pump", 1, 1176, "1/2 HP, 120 V, 9.8 A (NEC Table 430.248)"),
+    "ev_charger": ("EV charger", 0, 7680, "32 A charger at 240 V"),
+    "hot_tub": ("Hot tub", 0, 7500, "typical nameplate"),
+    "pool_pump": ("Pool pump", 0, 1920, "1 HP, 240 V, 8 A (NEC Table 430.248)"),
+    "freezer": ("Extra refrigerator / freezer", 0, 600, "typical nameplate"),
+    "central_vac": ("Central vacuum", 0, 1500, "typical nameplate"),
+    "garage_door": ("Garage door opener", 0, 696, "1/3 HP, 120 V, 5.8 A (NEC Table 430.248)"),
+}
 FIELDS = {
     # name: (label, default, minimum, maximum)
-    "square_feet": ("Heated square footage", 2000, 0, 20000),
+    "square_feet": ("Living area (sq ft)", 2000, 0, 20000),
+    "small_appliance_circuits": ("Small-appliance circuits (kitchen, dining: 2 or more)", 2, 0, 12),
+    "laundry_circuits": ("Laundry circuits", 1, 0, 4),
+    **{key: (label, count, 0, 12) for key, (label, count, va, note) in APPLIANCES.items()},
+    "other_va": ("Other loads fastened in place (VA total)", 0, 0, 100000),
     "ac_count": ("Central A/C units", 1, 0, 4),
     "ac_tons": ("Tons per A/C unit", 3.0, 0, 6),
-    "ac_lra": ("A/C nameplate LRA (largest unit)", 0, 0, 300),
-    "heat_pump_count": ("Heat pumps", 0, 0, 4),
-    "heat_pump_tons": ("Tons per heat pump", 3.0, 0, 6),
-    "heat_strip_kw": ("Electric heat / heat strips (kW total)", 0, 0, 30),
-    "furnace_blowers": ("Gas furnace blowers", 1, 0, 4),
-    "water_heater_kw": ("Electric water heater (kW)", 4.5, 0, 18),
-    "well_pump_hp": ("Well pump (HP)", 0, 0, 5),
-    "sump_pump_hp": ("Sump pump (HP)", 0.5, 0, 2),
-    "range_kw": ("Electric range / oven (nameplate kW)", 0, 0, 20),
-    "dryer_kw": ("Electric dryer (kW)", 5.0, 0, 8),
-    "refrigerators": ("Refrigerators and freezers", 2, 0, 6),
-    "ev_kw": ("EV charger (kW)", 0, 0, 19.2),
-    "pool_pump_hp": ("Pool pump (HP)", 0, 0, 3),
-    "hot_tub_kw": ("Hot tub (kW)", 0, 0, 12),
-    "other_kw": ("Other loads, running (kW)", 0, 0, 50),
+    "ac_amps": ("A/C nameplate amps per unit (RLA + fan; blank = typical)", 0, 0, 80),
+    "ac_lra": ("Largest A/C nameplate LRA (for the starting check)", 0, 0, 300),
+    "heat_pump_count": ("Heat pumps (count; their compressors are the A/C above)", 0, 0, 4),
+    "heat_strip_kw": ("Electric heat / heat strips (kW total)", 0, 0, 60),
+    "heat_units": ("Separately controlled electric heating units", 1, 1, 20),
 }
 CHOICES = {
-    "coverage": (("whole", "Whole home"), ("essentials", "Essential circuits only")),
     "fuel": (("ng", "Natural gas"), ("lp", "Propane (LP)")),
     "service_amps": (("100", "100 A"), ("150", "150 A"), ("200", "200 A"), ("320", "320 A"), ("400", "400 A")),
     "soft_start": (("no", "No"), ("yes", "Yes")),
+    "heat_interlock": (("no", "No"), ("yes", "Yes")),
 }
-DEFAULT_CHOICES = {"coverage": "whole", "fuel": "ng", "service_amps": "200", "soft_start": "no"}
-SHEDDABLE = ("water_heater_kw", "dryer_kw", "ev_kw", "hot_tub_kw", "pool_pump_hp", "heat_strip_kw", "range_kw")
+DEFAULT_CHOICES = {"fuel": "ng", "service_amps": "200", "soft_start": "no", "heat_interlock": "no"}
+MANAGEABLE = list(APPLIANCES) + ["other_va", "hvac"]           # loads a load-management system can keep off the generator
+
+
+def _num(raw, default, low, high):
+    try:
+        number = float(str(raw).replace(",", "")) if str(raw).strip() != "" else float(default)
+    except ValueError:
+        number = float(default)
+    return min(max(number, low), high)
 
 
 def read_inputs(values):
-    """Clean form values into numbers and choices (anything odd becomes its default, then is clamped)."""
-    inputs = {}
-    for name, (label, default, low, high) in FIELDS.items():
-        raw = values.get(name, "")
-        try:
-            number = float(str(raw).replace(",", "")) if str(raw).strip() != "" else float(default)
-        except ValueError:
-            number = float(default)
-        inputs[name] = min(max(number, low), high)
+    """Clean form values: counts, each appliance's VA (va_<key>), managed loads (managed_<key>), choices."""
+    inputs = {name: _num(values.get(name, ""), default, low, high) for name, (label, default, low, high) in FIELDS.items()}
+    for key, (label, count, va, note) in APPLIANCES.items():
+        inputs["va_" + key] = _num(values.get("va_" + key, ""), va, 0, 60000)
     for name, options in CHOICES.items():
         allowed = {value for value, _ in options}
         inputs[name] = values.get(name) if values.get(name) in allowed else DEFAULT_CHOICES[name]
+    inputs["managed"] = sorted(key for key in MANAGEABLE if str(values.get("managed_" + key, "")).lower() in ("1", "on", "yes", "true"))
     return inputs
 
 
-def general_lighting_kw(square_feet):
-    """NEC 220.12 (3 VA/sq ft) with the 220.42 dwelling demand factors, in kW."""
-    va = 3.0 * square_feet
-    return (min(va, 3000) + max(va - 3000, 0) * 0.35) / 1000
+def ac_unit_va(inputs):
+    """One A/C condenser: its nameplate amps x 240 V when typed, else tons x 1,300 VA + its fan."""
+    if inputs["ac_amps"]:
+        return inputs["ac_amps"] * VOLTS, f"{inputs['ac_amps']:g} A nameplate x 240 V"
+    return inputs["ac_tons"] * AC_VA_PER_TON + CONDENSER_FAN_VA, f"{inputs['ac_tons']:g} ton x {AC_VA_PER_TON:,} VA + {CONDENSER_FAN_VA} VA fan (typical)"
 
 
-def loads(inputs):
-    """[(name, running kW, starting kW, sheddable)] for everything chosen."""
-    rows = []
-    soft = SOFT_START_FACTOR if inputs["soft_start"] == "yes" else 1.0
-    if inputs["coverage"] == "whole":
-        rows.append(("Lighting and receptacles (%d sq ft)" % inputs["square_feet"], general_lighting_kw(inputs["square_feet"]), 0.0, False))
-    else:
-        rows.append(("Essential lighting and receptacles", 2.0, 0.0, False))
-    for index in range(int(inputs["ac_count"])):
-        running = inputs["ac_tons"] * AC_KW_PER_TON
-        lra_start = inputs["ac_lra"] * VOLTS / 1000 if inputs["ac_lra"] and index == 0 else 0
-        start = (lra_start or running * AC_START_MULTIPLE) * soft
-        rows.append(("Central A/C %d (%g ton%s)" % (index + 1, inputs["ac_tons"], "" if inputs["ac_tons"] == 1 else "s"), running, start, False))
-    for index in range(int(inputs["heat_pump_count"])):
-        running = inputs["heat_pump_tons"] * AC_KW_PER_TON
-        rows.append(("Heat pump %d (%g tons)" % (index + 1, inputs["heat_pump_tons"]), running, running * AC_START_MULTIPLE * soft, False))
-    if inputs["heat_strip_kw"]:
-        rows.append(("Electric heat / heat strips", inputs["heat_strip_kw"], 0.0, True))
-    for index in range(int(inputs["furnace_blowers"])):
-        rows.append(("Furnace blower %d" % (index + 1), 0.8, 2.4, False))
-    if inputs["water_heater_kw"]:
-        rows.append(("Electric water heater", inputs["water_heater_kw"], 0.0, True))
-    for name, label in (("well_pump_hp", "Well pump"), ("sump_pump_hp", "Sump pump"), ("pool_pump_hp", "Pool pump")):
-        if inputs[name]:
-            running = inputs[name] * MOTOR_KW_PER_HP
-            rows.append(("%s (%g HP)" % (label, inputs[name]), running, running * MOTOR_START_MULTIPLE, name in SHEDDABLE))
-    if inputs["range_kw"]:
-        rows.append(("Electric range (demand)", min(inputs["range_kw"], 8.0), 0.0, True))      # NEC 220.55 Column C: 8 kW for one range up to 12 kW
-    if inputs["dryer_kw"]:
-        rows.append(("Electric dryer", max(inputs["dryer_kw"], 5.0), 0.0, True))
-    if inputs["refrigerators"]:
-        rows.append(("Refrigerators / freezers (%d)" % inputs["refrigerators"], 0.2 * inputs["refrigerators"], 1.2, False))
-    if inputs["ev_kw"]:
-        rows.append(("EV charger", inputs["ev_kw"], 0.0, True))
-    if inputs["hot_tub_kw"]:
-        rows.append(("Hot tub", inputs["hot_tub_kw"], 0.0, True))
-    if inputs["other_kw"]:
-        rows.append(("Other loads", inputs["other_kw"], 0.0, False))
-    return rows
+def calculate(inputs, leave_out=()):
+    """The 220.82 calculation. leave_out: loads kept off the generator by load management. Returns (steps, totals)."""
+    steps = []
+    lighting = 3 * inputs["square_feet"]
+    steps.append(("1", "General lighting and receptacles", f"{inputs['square_feet']:,.0f} sq ft x 3 VA", lighting, "220.82(B)(1)"))
+    circuits = int(inputs["small_appliance_circuits"]) + int(inputs["laundry_circuits"])
+    steps.append(("2", "Small-appliance and laundry circuits", f"{circuits} x {CIRCUIT_VA:,} VA", circuits * CIRCUIT_VA, "220.82(B)(2)"))
+    appliances = 0.0
+    for key, (label, count, va, note) in APPLIANCES.items():
+        qty = int(inputs[key])
+        if qty and key not in leave_out:
+            value = qty * inputs["va_" + key]
+            appliances += value
+            steps.append(("3", label, f"{qty} x {inputs['va_' + key]:,.0f} VA ({note})", value, "220.82(B)(3)"))
+    if inputs["other_va"] and "other_va" not in leave_out:
+        appliances += inputs["other_va"]
+        steps.append(("3", "Other loads fastened in place", "as entered", inputs["other_va"], "220.82(B)(3)"))
+    general = lighting + circuits * CIRCUIT_VA + appliances
+    steps.append(("4", "General load", "steps 1 to 3", general, "220.82(B)"))
+    first, rest = min(general, GENERAL_FULL), max(general - GENERAL_FULL, 0)
+    general_demand = first + rest * GENERAL_REST
+    steps.append(("4", "General load after demand", f"first {first:,.0f} VA at 100% + {rest:,.0f} VA x 40%", general_demand, "220.82(B)"))
 
-
-def requirement(rows):
-    """(running kW, starting kW, required kW, the motor that sets the start) for a list of loads."""
-    running = sum(row[1] for row in rows)
-    motors = [row for row in rows if row[2] > row[1]]
-    largest = max(motors, key=lambda row: row[2] - row[1], default=None)
-    starting = running - largest[1] + largest[2] if largest else running
-    return round(running, 2), round(starting, 2), round(max(running * HEADROOM, starting), 2), (largest[0] if largest else "")
+    unit_va, unit_how = ac_unit_va(inputs)
+    cooling = inputs["ac_count"] * unit_va
+    strips = inputs["heat_strip_kw"] * 1000
+    compressors = inputs["heat_pump_count"] * unit_va
+    choices = [("A/C at 100%", f"{inputs['ac_count']:g} x {unit_how}", cooling, "220.82(C)(1)")]
+    if compressors and not strips:
+        choices.append(("Heat pump at 100% (no electric heat)", f"{inputs['heat_pump_count']:g} x {unit_how}", compressors, "220.82(C)(2)"))
+    if compressors and strips:
+        if inputs["heat_interlock"] == "yes":
+            choices.append(("Heat strips at 65% (compressor locked out while they run)", f"{strips:,.0f} VA x 65%", strips * 0.65, "220.82(C)(3)"))
+        else:
+            choices.append(("Heat pump at 100% + heat strips at 65%", f"{compressors:,.0f} VA + {strips:,.0f} VA x 65%", compressors + strips * 0.65, "220.82(C)(3)"))
+    if strips and not compressors:
+        if inputs["heat_units"] >= 4:
+            choices.append(("Electric heat at 40% (4 or more separately controlled units)", f"{strips:,.0f} VA x 40%", strips * 0.40, "220.82(C)(5)"))
+        else:
+            choices.append(("Electric heat at 65% (fewer than 4 separately controlled units)", f"{strips:,.0f} VA x 65%", strips * 0.65, "220.82(C)(4)"))
+    hvac_choice = max(choices, key=lambda c: c[2])
+    hvac = 0.0 if "hvac" in leave_out else hvac_choice[2]
+    for label, how, value, ref in choices:
+        steps.append(("5", label + (" (the largest: used)" if (label, how, value, ref) == hvac_choice and "hvac" not in leave_out else ""), how, value, ref))
+    if "hvac" in leave_out:
+        steps.append(("5", "Heating and cooling kept off the generator by load management", "", 0.0, "702.4(B)"))
+    total = general_demand + hvac
+    steps.append(("6", "Total calculated load", "step 4 after demand + step 5", total, "220.82"))
+    return steps, {"general": general, "general_demand": general_demand, "hvac": hvac, "hvac_choice": hvac_choice, "total": total,
+                   "amps": total / VOLTS, "cooling_unit_va": unit_va}
 
 
 def pick_model(required_kw, fuel):
@@ -142,24 +164,39 @@ def pick_model(required_kw, fuel):
 def size(values):
     """Everything the sizing page shows, from the form's values."""
     inputs = read_inputs(values)
-    rows = loads(inputs)
-    running, starting, required, sets_start = requirement(rows)
-    shed_rows = [row for row in rows if not row[3]]
-    shed_running, shed_starting, shed_required, _ = requirement(shed_rows)
-    model = pick_model(required, inputs["fuel"])
-    shed_model = pick_model(shed_required, inputs["fuel"])
+    steps, totals = calculate(inputs)
+    managed = inputs["managed"]
+    gen_steps, gen_totals = calculate(inputs, leave_out=managed) if managed else (steps, totals)
+    required_kw = round(gen_totals["total"] / 1000, 2)
+    model = pick_model(required_kw, inputs["fuel"])
+    # the starting check: the largest motor starting (from its LRA when typed)
+    unit_va = totals["cooling_unit_va"]
+    lra_kva = inputs["ac_lra"] * VOLTS / 1000 if inputs["ac_lra"] else unit_va * 3 / 1000
+    soft = SOFT_START_FACTOR if inputs["soft_start"] == "yes" else 1.0
+    starting_kva = round(lra_kva * soft, 2) if inputs["ac_count"] or inputs["heat_pump_count"] else 0.0
     notes = []
     if model is None:
-        notes.append("More than the largest air-cooled model covers. Use load management (see below) or size one of Kohler's "
-                     "liquid-cooled generators (the 24RCLA and up) with Kohler's own tool or your Kohler distributor.")
-    if inputs["ac_count"] and not inputs["ac_lra"]:
-        notes.append("A/C starting load is estimated (3 x running%s). Enter the nameplate LRA for the real figure." % (", reduced by the soft starter" if inputs["soft_start"] == "yes" else ""))
+        notes.append("More than the largest air-cooled model covers. Use load management (tick Managed on the big loads) or size a "
+                     "Kohler liquid-cooled generator (the 24RCLA and up) with Kohler's own tool or your Kohler distributor.")
+    if starting_kva:
+        notes.append(f"Starting check: the A/C compressor draws about {starting_kva:g} kVA for a moment as it starts"
+                     + (f" (its LRA {inputs['ac_lra']:g} A x 240 V" if inputs["ac_lra"] else " (3 x its running load; type the nameplate LRA for the real figure")
+                     + (", cut to 40% by the soft starter)." if soft < 1 else ").")
+                     + " Confirm the generator's motor-starting rating on its spec sheet, or add a soft starter.")
     if int(inputs["service_amps"]) >= 300:
-        notes.append("A %s A service needs a transfer switch rated for it (or two 200 A switches)." % inputs["service_amps"])
+        notes.append(f"A {inputs['service_amps']} A service needs a transfer switch rated for it (or two 200 A switches).")
+    if managed:
+        notes.append("Load management: the loads marked Managed are kept off the generator (NEC 702.4(B)(2)), so the generator is sized for "
+                     "the calculation without them. Install a load manager or a transfer switch that sheds them.")
     return {
-        "inputs": inputs, "rows": rows, "running_kw": running, "starting_kw": starting, "required_kw": required, "sets_start": sets_start,
-        "model": model, "with_load_management": {"required_kw": shed_required, "model": shed_model, "shed": [row[0] for row in rows if row[3]]},
+        "inputs": inputs, "steps": steps, "totals": totals, "generator_steps": gen_steps if managed else [],
+        "total_va": round(totals["total"]), "total_amps": round(totals["amps"], 1),
+        "generator_va": round(gen_totals["total"]), "required_kw": required_kw, "running_kw": round(totals["total"] / 1000, 2),
+        "starting_kw": starting_kva, "sets_start": "the A/C compressor" if starting_kva else "", "model": model,
+        "with_load_management": {"required_kw": required_kw, "model": model, "shed": [APPLIANCES[k][0] if k in APPLIANCES else
+                                 ("Heating and cooling" if k == "hvac" else "Other loads") for k in managed]},
         "transfer_switch_amps": int(inputs["service_amps"]), "notes": notes,
+        "rows": [(label, value / 1000, 0.0, False) for number, label, how, value, ref in steps],
     }
 
 
@@ -307,6 +344,7 @@ UPGRADE_FIELDS = {
     "other_btu": ("Other gas appliances on the same meter (Btu/h, total)", 0, 0, 2000000),
     "meter_cfh": ("Gas meter rating (cfh; 0 = not known)", 0, 0, 5000),
     "tank_gallons": ("Propane tank (gallons)", 500, 0, 5000),
+    "existing_pressure": ("Measured inlet pressure under load (in. w.c.; 0 = not measured)", 0, 0, 30),
 }
 UPGRADE_CHOICES = {
     "fuel": (("ng", "Natural gas"), ("lp", "Propane (LP)")),
@@ -315,9 +353,13 @@ UPGRADE_CHOICES = {
     "existing_material": (("", "Not known"), ("copper", "Copper"), ("aluminum", "Aluminum")),
     "existing_wire": tuple([("", "Not known")] + [(size, f"{size} AWG") for size in WIRE_SIZES[2:]]),
     "existing_pipe": tuple([("", "Not known")] + [(size, f"{size} in") for size in PIPE_SIZES]),
+    "existing_ground": tuple([("", "Not known")] + [(size, f"{size} AWG") for size in WIRE_SIZES[1:]]),
+    "existing_conduit": tuple([("", "Not known")] + [(trade, f"{trade} in") for trade, _ in CONDUIT_FILL["PVC 40"]]),
+    "existing_switch": (("", "Not known"), ("100", "100 A"), ("150", "150 A"), ("200", "200 A"), ("400", "400 A")),
 }
 UPGRADE_DEFAULTS = {"old": "generac-20-7039", "new": "generac-26", "fuel": "ng", "material": "copper", "conduit": "PVC 40",
-                    "existing_material": "", "existing_wire": "", "existing_pipe": ""}
+                    "existing_material": "", "existing_wire": "", "existing_pipe": "", "existing_ground": "", "existing_conduit": "",
+                    "existing_switch": ""}
 
 
 def _number(values, name):
@@ -527,6 +569,117 @@ def upgrade_brief(result, estimate=None):
         k = result["keep"]["pipe"]
         lines.append(f"Existing gas pipe is {k['size']} in: {'can stay' if k['ok'] else 'undersized'} ({k['why']}).")
     lines += [f"- {text}" for level, text in result["notes"] if level == "warn"]
-    if estimate:
-        lines.append("Scope to quote: " + "; ".join(f"{line['label']} ({line['qty']:g} {line['unit']})" for line in estimate["lines"]) + ".")
+    rows = upgrade_table(result)
+    work = [f"{row['label']}: now {row['now']}, needs {row['needs']} ({row['why']})" for row in rows if row["status"] == "bad"]
+    fine = [row["label"] for row in rows if row["status"] == "ok"]
+    if work:
+        lines.append("Needs work: " + "; ".join(work) + ".")
+    if fine:
+        lines.append("Can stay as it is: " + ", ".join(fine) + ".")
     return "\n".join(lines)
+
+
+def _ground_ok(existing, material, breaker):
+    need = ground_for(breaker, material)
+    return CIRCULAR_MILS[existing] >= CIRCULAR_MILS[need], need
+
+
+def upgrade_table(result):
+    """The Upgrading page's table: one row per thing on the job. Each row: what is there now (typed, or assumed to be what the
+    old unit needed), what the new unit needs, and ok (green) / bad (red, work to do) / info. Built from upgrade()'s result."""
+    i, old, new = result["inputs"], result["old"], result["new"]
+    fuel = i["fuel"]
+    rows = []
+
+    def row(key, label, now, needs, status="info", why="", inputs=()):
+        rows.append({"key": key, "label": label, "now": now, "needs": needs, "status": status, "why": why, "inputs": list(inputs)})
+
+    row("fuel", "Fuel", "Propane (LP)" if fuel == "lp" else "Natural gas", "Propane (LP)" if fuel == "lp" else "Natural gas", inputs=["fuel"])
+    row("output", "Output (LP / NG)", f"{old['kw_lp']:g} / {old['kw_ng']:g} kW", f"{new['kw_lp']:g} / {new['kw_ng']:g} kW")
+    row("breaker", "Generator breaker", f"{old['breaker']} A", f"{new['breaker']} A" + (" (check the nameplate)" if new.get("breaker_checked") is False else ""))
+    row("wire_feet", "Wire run, generator to transfer switch", f"{i['wire_feet']:g} ft", f"{i['wire_feet']:g} ft", inputs=["wire_feet"])
+
+    material = i["existing_material"] or i["material"]
+    wire_now = i["existing_wire"] or result["wire_old"]["size"]
+    assumed = "" if i["existing_wire"] else " (assumed: what the old unit needed)"
+    fits = wire_ok(wire_now, material, new["breaker"]) if wire_now in AMPACITY[material] else False
+    drop_now = voltage_drop(wire_now, material, new["amps"], i["wire_feet"]) if wire_now in CIRCULAR_MILS else 99
+    ok = fits and drop_now <= VOLTAGE_DROP_LIMIT
+    row("feeder", "Feeder wire (x 3)", f"{wire_now} AWG {material}{assumed}", f"{result['wire_new']['size']} AWG {result['wire_new']['material']}",
+        "ok" if ok else "bad",
+        "Good for the new breaker" if ok else (f"{AMPACITY[material].get(wire_now, 0)} A wire on a {new['breaker']} A breaker (NEC 240.4): replace it" if not fits
+                                               else f"{drop_now:.1f}% voltage drop at full load: upsize it"),
+        inputs=["existing_wire", "existing_material"])
+
+    ground_now = i["existing_ground"] or result["wire_old"]["ground"]
+    ground_good, ground_need = _ground_ok(ground_now, material, new["breaker"])
+    if ok and not i["existing_wire"] or not ok:
+        ground_need = result["wire_new"]["ground"] if not ok else ground_need
+    row("ground", "Ground wire", f"{ground_now} AWG" + ("" if i["existing_ground"] else " (assumed)"), f"{ground_need} AWG",
+        "ok" if ground_good else "bad", "Big enough (NEC 250.122)" if ground_good else "Too small for the new breaker (NEC 250.122)", inputs=["existing_ground"])
+
+    conduit_now = i["existing_conduit"] or result["wire_old"]["conduit"]
+    sizes = [trade for trade, _ in CONDUIT_FILL[i["conduit"]]]
+    feeder_in = wire_now if ok else result["wire_new"]["size"]
+    conduit_need = conduit_for([feeder_in] * 3 + [ground_need], i["conduit"])
+    conduit_good = conduit_now in sizes and conduit_need in sizes and sizes.index(conduit_now) >= sizes.index(conduit_need)
+    row("conduit", f"Conduit ({i['conduit']})", f"{conduit_now} in" + ("" if i["existing_conduit"] else " (assumed)"), f"{conduit_need} in",
+        "ok" if conduit_good else "bad", "Room for the wires (NEC Chapter 9, 40% fill)" if conduit_good else "Too small for the new wires: replace it",
+        inputs=["existing_conduit", "conduit"])
+
+    in_place = wire_now if ok else result["wire_new"]["size"]
+    drop = voltage_drop(in_place, material if ok else result["wire_new"]["material"], new["amps"], i["wire_feet"])
+    row("drop", "Voltage drop at full load", f"{result['wire_old']['drop_pct']}%", f"{drop:.2f}%", "ok" if drop <= VOLTAGE_DROP_LIMIT else "bad",
+        f"Within {VOLTAGE_DROP_LIMIT:g}%" if drop <= VOLTAGE_DROP_LIMIT else f"Over {VOLTAGE_DROP_LIMIT:g}%")
+
+    row("gas_feet", "Gas run, meter or tank to generator", f"{i['gas_feet']:g} ft", f"{i['gas_feet']:g} ft", inputs=["gas_feet"])
+    row("fuel_use", "Fuel at full load", f"{result['gas_old']['cfh']:g} cfh · {result['gas_old']['btu']:,.0f} Btu/h",
+        f"{result['gas_new']['cfh']:g} cfh · {result['gas_new']['btu']:,.0f} Btu/h")
+    pipe_now = i["existing_pipe"] or result["gas_old"]["size"] or "2"
+    capacity = pipe_capacity(pipe_now, fuel, i["gas_feet"])
+    pipe_good = capacity >= result["gas_new"]["btu"]
+    row("pipe", "Gas pipe (Schedule 40)", f"{pipe_now} in" + ("" if i["existing_pipe"] else " (assumed)"), f"{result['gas_new']['size'] or 'over 2'} in",
+        "ok" if pipe_good else "bad",
+        f"Carries {capacity:,.0f} Btu/h over {i['gas_feet']:g} ft" if pipe_good else
+        f"Carries only {capacity / result['gas_new']['btu'] * 100:.0f}% of full-load fuel over {i['gas_feet']:g} ft: see Food for thought",
+        inputs=["existing_pipe"])
+    if fuel == "ng":
+        total_cfh = result["gas_new"]["cfh"] + i["other_btu"] / NG_BTU_PER_CF
+        row("other_btu", "Other gas appliances on the meter", f"{i['other_btu']:,.0f} Btu/h", f"{i['other_btu']:,.0f} Btu/h", inputs=["other_btu"])
+        if i["meter_cfh"]:
+            row("meter", "Gas meter", f"{i['meter_cfh']:g} cfh", f"{total_cfh:,.0f} cfh with everything running",
+                "ok" if total_cfh <= i["meter_cfh"] else "bad", "Big enough" if total_cfh <= i["meter_cfh"] else "Too small: call the gas utility", inputs=["meter_cfh"])
+        else:
+            row("meter", "Gas meter", "not known", f"{total_cfh:,.0f} cfh with everything running", "info", "Check the meter's rating (many are 250 cfh)", inputs=["meter_cfh"])
+    else:
+        big = result["gas_new"]["btu"] > 250000
+        good = i["tank_gallons"] >= 500 or not big
+        row("tank", "Propane tank", f"{i['tank_gallons']:g} gal" if i["tank_gallons"] else "not known", f"{result['gas_new']['gph']} gal/h at full load",
+            "ok" if good and i["tank_gallons"] else "bad" if not good else "info",
+            "Big enough to vaporize in cold weather" if good and i["tank_gallons"] else "May not vaporize enough in cold weather: check with the supplier",
+            inputs=["tank_gallons"])
+    low, high = new["lp_wc"] if fuel == "lp" else new["ng_wc"]
+    if i["existing_pressure"]:
+        good = low <= i["existing_pressure"] <= high
+        row("pressure", "Inlet pressure under load", f"{i['existing_pressure']:g} in. w.c.", f"{low:g}–{high:g} in. w.c.", "ok" if good else "bad",
+            "Within the new unit's range" if good else "Outside the new unit's range: adjust the regulator", inputs=["existing_pressure"])
+    else:
+        row("pressure", "Inlet pressure under load", "not measured", f"{low:g}–{high:g} in. w.c.", "info", "Measure it at full load after the install", inputs=["existing_pressure"])
+    row("inlet", "Fuel inlet", old["inlet"], new["inlet"], "info")
+    same_brand = old["brand"] == new["brand"] and "Other" not in (old["brand"], new["brand"])
+    switch = int(i["existing_switch"] or 0)
+    if not same_brand:
+        row("switch", "Transfer switch", f"{old['brand']}" + (f", {switch} A" if switch else ""), f"{new['brand']}, at least {new['breaker']} A", "bad",
+            "Different maker: the controls don't talk to each other. New transfer switch.", inputs=["existing_switch"])
+    else:
+        good = not switch or switch >= new["breaker"]
+        row("switch", "Transfer switch", f"{old['brand']}" + (f", {switch} A" if switch else ", amps not known"), f"{new['brand']}, at least {new['breaker']} A",
+            "ok" if good and switch else "bad" if not good else "info",
+            "Same maker and rated for it: check the new controller works with it" if good and switch else
+            "Too small for the new generator" if not good else "Same maker: check its rating and that the new controller works with it", inputs=["existing_switch"])
+    heavier = new["lb"] and old["lb"] and (new["lb"] - old["lb"] > 100 or new["cooling"] != old["cooling"])
+    row("pad", "Weight / pad", f"{old['lb']:g} lb" if old["lb"] else "see the nameplate", (f"{new['lb']:g} lb" if new["lb"] else "see the nameplate")
+        + (", liquid-cooled" if new["cooling"] == "liquid" else ""), "bad" if heavier else "ok" if new["lb"] and old["lb"] else "info",
+        "Much heavier or a different kind of unit: plan a new pad" if heavier else "The old pad should do (check its size)" if new["lb"] and old["lb"] else "")
+    return rows
+

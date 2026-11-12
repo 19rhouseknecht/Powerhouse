@@ -62,7 +62,7 @@
     {% if can('view_expenses') %}<a href="{{ url_for('expenses') }}" class="side-link {{ 'active' if request.endpoint in ['expenses','create_expense'] else '' }}"><span>▧</span> Expenses</a>{% endif %}
     <div class="side-section">Generators</div>
     <a href="{{ url_for('generator_sizing') }}" class="side-link {{ 'active' if request.endpoint == 'generator_sizing' else '' }}"><span>⚙︎</span> Sizing</a>
-    <a href="{{ url_for('generator_upgrade') }}" class="side-link {{ 'active' if request.endpoint in ['generator_upgrade', 'generator_upgrade_save', 'generator_upgrade_ask', 'generator_upgrade_quote'] else '' }}"><span>⇧</span> Upgrading</a>
+    <a href="{{ url_for('generator_upgrade') }}" class="side-link {{ 'active' if request.endpoint in ['generator_upgrade', 'generator_upgrade_save', 'generator_upgrade_ask'] else '' }}"><span>⇧</span> Upgrading</a>
     <div class="side-spacer"></div>
     {% if current_user.role and current_user.role.is_admin %}
     <div class="side-section">Website</div>

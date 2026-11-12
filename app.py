@@ -6871,11 +6871,13 @@ def generator_sizing():
             flash("Choose the job to save this sizing to.", "error")
         else:
             model = result["model"]["model"] if result["model"] else ""
-            summary = (f"Needs {result['required_kw']:g} kW (running {result['running_kw']:g} kW, starting {result['starting_kw']:g} kW). "
+            summary = (f"Needs {result['required_kw']:g} kW: NEC 220.82 calculated load {result['total_va']:,} VA ({result['total_amps']:g} A at 240 V)"
+                       + (f", {result['generator_va']:,} VA on the generator with load management" if result["inputs"]["managed"] else "") + ". "
                        + (f"Recommended: {result['model']['description']} ({model}, {result['model']['rated_kw']:g} kW on "
-                          f"{'propane' if result['inputs']['fuel'] == 'lp' else 'natural gas'})." if model else "Larger than the air-cooled range.")
-                       + (f" With load management: {result['with_load_management']['required_kw']:g} kW." if result["with_load_management"]["shed"] else ""))
-            db.session.add(GeneratorSizing(job=job, inputs_json=json.dumps(result["inputs"]), required_kw=result["required_kw"], model=model,
+                          f"{'propane' if result['inputs']['fuel'] == 'lp' else 'natural gas'})." if model else "Larger than the air-cooled range."))
+            saved = {key: value for key, value in result["inputs"].items() if key != "managed"}
+            saved.update({f"managed_{key}": "on" for key in result["inputs"]["managed"]})      # reopens with the same boxes ticked
+            db.session.add(GeneratorSizing(job=job, inputs_json=json.dumps(saved), required_kw=result["required_kw"], model=model,
                                            summary=summary, created_by=current_user))
             db.session.commit()
             flash(f"Saved the sizing to job #{job.job_number} {job.title}.", "success")
@@ -6883,7 +6885,7 @@ def generator_sizing():
     jobs, linked = generator_jobs(values)
     defaults = gen.read_inputs(values)
     return render_template("generator_sizing.html", result=result, fields=gen.FIELDS, choices=gen.CHOICES, values=defaults,
-                           models=gen.KOHLER_MODELS, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None)
+                           appliances=gen.APPLIANCES, models=gen.KOHLER_MODELS, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None)
 
 
 def generator_context(job):
@@ -6894,19 +6896,16 @@ def generator_context(job):
     sizing = job.generator_sizings[0] if job.generator_sizings else None
     if sizing:
         i = sizing.inputs
-        parts.append(f"GENERATOR SIZING (saved {sizing.created_at:%b %-d, %Y}): {sizing.summary} "
-                     f"Coverage: {'whole home' if i.get('coverage') != 'essentials' else 'essential circuits only'}; fuel: "
-                     f"{'propane' if i.get('fuel') == 'lp' else 'natural gas'}; electric service: {i.get('service_amps', '200')} A.")
+        parts.append(f"GENERATOR SIZING (saved {sizing.created_at:%b %-d, %Y}, NEC 220.82 load calculation): {sizing.summary} "
+                     f"Fuel: {'propane' if i.get('fuel') == 'lp' else 'natural gas'}; electric service: {i.get('service_amps', '200')} A.")
     upgrade = job.generator_upgrades[0] if job.generator_upgrades else None
     if upgrade:
         try:
             if not upgrade.inputs.get("old") or not upgrade.inputs.get("new"):
                 raise ValueError("the saved upgrade has no units")
             result = gen.upgrade(upgrade.inputs)
-            estimate = upgrade_estimate(result, upgrade.inputs)
-            parts.append(f"GENERATOR UPGRADE (saved {upgrade.created_at:%b %-d, %Y}):\n" + gen.upgrade_brief(result, estimate)
-                         + f"\nThe upgrade page's own estimate: ${estimate['total']:,.2f} ({estimate['labor_hours']:g} labor hours"
-                         + (", some prices missing" if estimate["missing"] else "") + ").")
+            parts.append(f"GENERATOR UPGRADE (saved {upgrade.created_at:%b %-d, %Y}):\n" + gen.upgrade_brief(result)
+                         + "\nQuote everything under Needs work, and always the removal and haul-away of the old unit.")
         except Exception:  # noqa: BLE001  (a saved upgrade that no longer reads still gives its summary)
             app.logger.warning("Generator upgrade %s could not be read for Caden; using its summary", upgrade.id)
             parts.append(f"GENERATOR UPGRADE (saved {upgrade.created_at:%b %-d, %Y}): {upgrade.summary}")
@@ -6926,138 +6925,12 @@ def generator_jobs(values):
 
 
 # ---------------- Generators -> Upgrading ----------------
-# Old unit out, new unit in: the wiring and gas each one needs (generators.upgrade, pure), whether what is there can stay,
-# a priced estimate from the Pricing Sheet and the labor rate, questions to Caleb with the upgrade attached, and the whole
-# brief handed to Caden to build the quote on a job.
-UPGRADE_PRICE_FIELDS = {
-    # name: (label, default); a blank price is filled from the Pricing Sheet when an item matches
-    "unit_price": ("New generator (each)", None),
-    "switch_price": ("Transfer switch (each)", None),
-    "pad_price": ("Generator pad (each)", None),
-    "wire_price": ("Feeder wire ($/ft per conductor)", None),
-    "ground_price": ("Ground wire ($/ft)", None),
-    "conduit_price": ("Conduit ($/ft)", None),
-    "pipe_price": ("Gas pipe ($/ft)", None),
-    "disposal": ("Haul away and disposal ($)", 0),
-    "permit": ("Permits ($)", 0),
-    "remove_hours": ("Rip out the old unit (hours)", 3),
-    "install_hours": ("Set and connect the new unit (hours)", 6),
-    "switch_hours": ("Swap the transfer switch (hours)", 4),
-    "run_hours": ("Wire and gas runs (hours, blank = worked out)", None),
-}
-UPGRADE_YES_NO = {"replace_wire": "Replace the wiring", "replace_pipe": "Replace the gas line", "replace_switch": "Replace the transfer switch", "new_pad": "New pad"}
-
-
-def _price_number(values, name):
-    raw = str(values.get(name, "")).replace("$", "").replace(",", "").strip()
-    try:
-        return max(float(raw), 0.0) if raw else None
-    except ValueError:
-        return None
-
-
-def _size_pattern(size):
-    body = re.escape(size).replace(r"\-", "[- ]")
-    return rf"(?<![\d/-]){body}(?![\d/-])"
-
-
-def match_price_item(kind, size="", material="", conduit=""):
-    """The Pricing Sheet item for a part of the upgrade, or None. Read only; Unconfirmed items count only when quoting uses them."""
-    query = PriceItem.query.filter(PriceItem.active.is_(True))
-    if not caden_uses_unconfirmed():
-        query = query.filter(PriceItem.category != UNCONFIRMED)
-    if kind == "generator":
-        codes = [code for code in re.findall(r"\b(\d{4}|\d{2}RCL?A)\b", size)]
-        if not codes:
-            return None
-        rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{c}%") for c in codes], *[PriceItem.cooper_part_number.ilike(f"%{c}%") for c in codes])).limit(50).all()
-        return next(iter(sorted(rows, key=lambda r: r.price <= 0)), None)
-    words = {"wire": ["awg", "thhn", "thwn", "xhhw", "wire", "#", "cu", "alum", "str"], "pipe": ["pipe", "black", "csst", "gas"],
-             "conduit": [(conduit.split() or ["pvc"])[0].lower()]}[kind]
-    rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in words])).limit(800).all()
-    size_re = re.compile(_size_pattern(size), re.IGNORECASE)
-    picks = []
-    for row in rows:
-        name = row.name.lower()
-        if not size_re.search(row.name) or row.unit not in ("ft", "roll"):
-            continue
-        if kind == "wire":
-            aluminum = "alum" in name or re.search(r"\bal\b", name)
-            if (material == "aluminum") != bool(aluminum) or not re.search(r"(?:#\s?|\b)" + re.escape(size) + r"(?:\s?(?:awg|ga|thhn|thwn|xhhw|cu|al)\b|\b)", name):
-                continue
-        if kind == "pipe" and any(w in name for w in ("nipple", "elbow", "tee", "coupling", "union", "cap", "valve", "connector", "fitting")):
-            continue
-        picks.append(row)
-    picks.sort(key=lambda r: (r.unit != "ft", r.price <= 0))
-    return picks[0] if picks else None
-
-
-def upgrade_estimate(result, values):
-    """Priced lines for the upgrade: typed prices first, else the Pricing Sheet's, else listed as needing a price."""
-    i, new, wire, gas_new = result["inputs"], result["new"], result["wire_new"], result["gas_new"]
-    prices = {name: _price_number(values, name) for name in UPGRADE_PRICE_FIELDS}
-    hours = {name: (prices[name] if prices[name] is not None else UPGRADE_PRICE_FIELDS[name][1]) for name in ("remove_hours", "install_hours", "switch_hours")}
-    chosen = {}
-    for name, default in (("replace_wire", result["needs_new_wire"]), ("replace_pipe", result["needs_new_pipe"]),
-                          ("replace_switch", result["needs_new_switch"]), ("new_pad", result["new"]["lb"] - result["old"]["lb"] > 100 or result["new"]["cooling"] != result["old"]["cooling"])):
-        chosen[name] = values.get(name) == "yes" if values.get(name) in ("yes", "no") else bool(default)
-    found = {}
-
-    def price_of(field, kind, **match):
-        if prices[field] is not None:
-            return prices[field], "typed"
-        item = match_price_item(kind, **match)
-        if item is not None and item.price > 0:
-            found[field] = item
-            return float(item.price), item.name
-        return 0.0, ""
-
-    lines = []
-
-    def add(label, qty, unit, price, labor, source):
-        lines.append({"label": label, "qty": qty, "unit": unit, "price": price, "hours": labor, "source": source,
-                      "total": round(qty * price, 2), "missing": price <= 0 and source != "none"})
-
-    old = result["old"]
-    add(f"Rip out and haul away the existing {old['brand']} {old['model']}", 1, "job", prices["disposal"] or 0.0, hours["remove_hours"], "none")
-    price, source = price_of("unit_price", "generator", size=new["model"])
-    add(f"{new['brand']} {new['model']}, set and connected", 1, "ea", price, hours["install_hours"], source)
-    if chosen["new_pad"]:
-        price, source = (prices["pad_price"], "typed") if prices["pad_price"] is not None else (0.0, "")
-        add("New generator pad", 1, "ea", price, 1.0, source)
-    if chosen["replace_switch"]:
-        price, source = (prices["switch_price"], "typed") if prices["switch_price"] is not None else (0.0, "")
-        add(f"New {new['brand']} automatic transfer switch", 1, "ea", price, hours["switch_hours"], source)
-    run_hours = 0.0
-    if chosen["replace_wire"]:
-        feet = i["wire_feet"]
-        price, source = price_of("wire_price", "wire", size=wire["size"], material=wire["material"])
-        add(f"{wire['size']} AWG {wire['material']} feeder (3 conductors)", round(feet * 3), "ft", price, 0, source)
-        price, source = price_of("ground_price", "wire", size=wire["ground"], material=wire["material"])
-        add(f"{wire['ground']} AWG ground", round(feet), "ft", price, 0, source)
-        price, source = price_of("conduit_price", "conduit", size=wire["conduit"], conduit=wire["conduit_kind"])
-        add(f"{wire['conduit']} in {wire['conduit_kind']} conduit", round(feet), "ft", price, 0, source)
-        run_hours += 1.5 + feet / 30
-    if chosen["replace_pipe"] and gas_new["size"]:
-        price, source = price_of("pipe_price", "pipe", size=gas_new["size"])
-        add(f"{gas_new['size']} in gas pipe ({'propane' if i['fuel'] == 'lp' else 'natural gas'})", round(i["gas_feet"]), "ft", price, 0, source)
-        run_hours += 1.5 + i["gas_feet"] / 25
-    run_hours = prices["run_hours"] if prices["run_hours"] is not None else round(run_hours, 1)
-    if run_hours:
-        add("Wire and gas runs (labor)", 1, "job", 0.0, run_hours, "none")
-    if prices["permit"]:
-        add("Permits", 1, "job", prices["permit"], 0, "typed")
-    rate = get_labor_rate()
-    material = round(sum(line["total"] for line in lines), 2)
-    labor_hours = round(sum(line["hours"] for line in lines), 1)
-    labor = round(labor_hours * rate, 2)
-    return {"lines": lines, "material": material, "labor_hours": labor_hours, "labor_rate": rate, "labor": labor,
-            "total": round(material + labor, 2), "missing": [line["label"] for line in lines if line["missing"]],
-            "chosen": chosen, "found": found, "prices": prices, "hours": hours, "run_hours": run_hours}
-
-
+# The generator there now and the one going in, then one table: each row is something on the job (wire, ground, conduit, gas
+# pipe, meter or tank, transfer switch, pad, ...), with what is there now (typed, or assumed to be what the old unit needed)
+# and what the new unit needs, green when it is fine and red when it needs work (generators.upgrade_table). Food for thought
+# below, Ask Caleb, and a searchable job to save it to. Quoting stays on Generate Quote, where Caden reads what was saved.
 UPGRADE_STATE = (list(gen.UPGRADE_FIELDS) + ["old", "new"] + [f"{side}_{suffix}" for side in ("old", "new") for suffix in gen.OTHER_FIELDS]
-                 + list(gen.UPGRADE_CHOICES) + list(UPGRADE_PRICE_FIELDS) + list(UPGRADE_YES_NO))
+                 + list(gen.UPGRADE_CHOICES))
 
 
 def upgrade_state(values, with_job=True):
@@ -7066,13 +6939,28 @@ def upgrade_state(values, with_job=True):
     return {name: values.get(name) for name in names if values.get(name) not in (None, "")}
 
 
+def job_label(job):
+    return f"#{job.job_number} · {job.client.full_name if job.client else ''} · {job.title}"
+
+
+def job_from_form(values):
+    """The job picked in a searchable job box: its id, or the "#number" at the start of what was typed."""
+    try:
+        job = db.session.get(Job, int(values.get("job_id") or 0))
+    except (TypeError, ValueError):
+        job = None
+    if job is None:
+        match = re.match(r"\s*#?(\d+)", str(values.get("job") or ""))
+        job = Job.query.filter_by(job_number=int(match.group(1))).first() if match else None
+    return job
+
+
 @app.route("/generators/upgrade")
 @login_required
 def generator_upgrade():
     values = request.args
-    result = gen.upgrade(values) if values.get("calculate") else None
-    estimate = upgrade_estimate(result, values) if result and current_user.can("view_quoting") else None
-    state = upgrade_state(values)
+    calculated = bool(values.get("calculate"))
+    result = gen.upgrade(values)                      # the rows are always there to fill in; their answers show once calculated
     answer = None
     asked = request.args.get("asked", type=int)
     if asked:
@@ -7082,63 +6970,34 @@ def generator_upgrade():
     for row in gen.UPGRADE_MODELS:
         groups.setdefault(row["brand"], []).append(row)
     jobs, linked = generator_jobs(values)
-    return render_template("generator_upgrade.html", result=result, estimate=estimate, inputs=gen.read_upgrade(values), groups=groups,
-                           fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES, price_fields=UPGRADE_PRICE_FIELDS, other_fields=gen.OTHER_FIELDS, yes_no=UPGRADE_YES_NO,
-                           state=state, answer=answer, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None,
-                           brief=gen.upgrade_brief(result, estimate) if result else "", caleb_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
+    return render_template("generator_upgrade.html", result=result, calculated=calculated, table=gen.upgrade_table(result),
+                           inputs=gen.read_upgrade(values), groups=groups, fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES,
+                           other_fields=gen.OTHER_FIELDS, state=upgrade_state(values), answer=answer, jobs=jobs, linked_job=linked,
+                           job_label=job_label, caleb_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
 
 
-def _upgrade_summary(result, estimate):
+def _upgrade_summary(result):
     old, new = result["old"], result["new"]
-    words = (f"{old['brand']} {old['model']} to {new['brand']} {new['model']}: {result['wire_new']['size']} AWG {result['wire_new']['material']}, "
-             f"{result['gas_new']['size'] or 'over 2'} in gas ({'LP' if result['inputs']['fuel'] == 'lp' else 'NG'}).")
-    if estimate:
-        words += f" Estimate ${estimate['total']:,.2f}" + (" (some prices missing)" if estimate["missing"] else "") + "."
-    return words
+    work = [row["label"] for row in gen.upgrade_table(result) if row["status"] == "bad"]
+    return (f"{old['brand']} {old['model']} to {new['brand']} {new['model']}: {result['wire_new']['size']} AWG {result['wire_new']['material']}, "
+            f"{result['gas_new']['size'] or 'over 2'} in gas ({'LP' if result['inputs']['fuel'] == 'lp' else 'NG'})."
+            + (f" Needs work: {', '.join(work)}." if work else " Everything there can stay."))
 
 
 @app.route("/generators/upgrade/save", methods=["POST"])
 @login_required
 def generator_upgrade_save():
     check_csrf()
-    job = db.session.get(Job, request.form.get("job_id", type=int) or 0)
-    state = upgrade_state(request.form)
+    job = job_from_form(request.form)
     if job is None or not current_user.can("view_jobs"):
-        flash("Choose the job to save this upgrade to.", "error")
-        return redirect(url_for("generator_upgrade", calculate=1, **state))
+        flash("Pick the job to add this upgrade to (start typing its number, client or title).", "error")
+        return redirect(url_for("generator_upgrade", calculate=1, **upgrade_state(request.form, with_job=False)) + "#save")
     result = gen.upgrade(request.form)
-    estimate = upgrade_estimate(result, request.form) if current_user.can("view_quoting") else None
-    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form, with_job=False)), summary=_upgrade_summary(result, estimate),
-                                    total=estimate["total"] if estimate else None, created_by=current_user))
+    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form, with_job=False)), summary=_upgrade_summary(result),
+                                    created_by=current_user))
     db.session.commit()
-    flash(f"Saved the upgrade to job #{job.job_number} {job.title}.", "success")
+    flash(f"Added the upgrade to job #{job.job_number} {job.title}. Generate Quote for that job and Caden will use it.", "success")
     return redirect(url_for("job_detail", job_id=job.id) + "#generator-upgrade")
-
-
-@app.route("/generators/upgrade/quote", methods=["POST"])
-@login_required
-def generator_upgrade_quote():
-    """Save the upgrade to the job and hand Caden the brief: the quote assistant receives it as the office's message."""
-    check_csrf()
-    job = db.session.get(Job, request.form.get("job_id", type=int) or 0)
-    if job is None or not current_user.can("view_quoting"):
-        flash("Choose the job to quote this upgrade on.", "error")
-        return redirect(url_for("generator_upgrade", calculate=1, **upgrade_state(request.form)))
-    result = gen.upgrade(request.form)
-    estimate = upgrade_estimate(result, request.form)
-    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form, with_job=False)), summary=_upgrade_summary(result, estimate),
-                                    total=estimate["total"], created_by=current_user))
-    db.session.commit()
-    message = ("Quote this generator upgrade. Price the generator, transfer switch, pad, wire, conduit and gas pipe from the Pricing Sheet "
-               "and include the time to rip out the old unit.\n\n" + gen.upgrade_brief(result, estimate))
-    quote = draft_quote_for(job)
-    try:
-        refresh_quote_travel(quote)
-        db.session.commit()
-    except Exception:  # noqa: BLE001  (travel is added later on the quote page; the upgrade still goes to Caden)
-        db.session.commit()
-    send_quote_message(job, quote, message)            # exactly as if it were typed on the quote page
-    return redirect(url_for("quote_assistant", job_id=job.id))
 
 
 @app.route("/generators/upgrade/ask", methods=["POST"])
@@ -7240,8 +7099,8 @@ def caleb_tools(user):
                 "parameters": {"type": "object", "properties": properties, "required": required or list(properties), "additionalProperties": False}}
     text = {"type": "string"}
     number = {"type": "integer"}
-    tools = [tool("size_generator", "Size a Kohler home standby generator (the Generators -> Sizing math). Give only what you know; "
-                  "leave other numbers null for the page's defaults.",
+    tools = [tool("size_generator", "Size a Kohler home standby generator with the NEC 220.82 load calculation (the Generators -> Sizing page): "
+                  "appliance fields are how many of each. Give only what you know; leave other numbers null for the page's defaults.",
                   {name: {"type": ["number", "null"], "description": label} for name, (label, *_rest) in gen.FIELDS.items()}
                   | {name: {"type": ["string", "null"], "enum": [value for value, _ in options] + [None]} for name, options in gen.CHOICES.items()})]
     if user.can("view_clients"):
@@ -7284,10 +7143,11 @@ def caleb_run_tool(name, args, user):
         values = {key: value for key, value in args.items() if value is not None}
         values["calculate"] = "1"
         result = gen.size(values)
-        return {"needs_kw": result["required_kw"], "running_kw": result["running_kw"], "starting_kw": result["starting_kw"],
-                "starting_set_by": result["sets_start"], "recommended": result["model"],
-                "with_load_management": result["with_load_management"], "transfer_switch_amps": result["transfer_switch_amps"],
-                "notes": result["notes"], "lines": [{"load": row[0], "running_kw": round(row[1], 2), "starting_kw": round(row[2], 2)} for row in result["rows"]],
+        return {"method": "NEC 220.82 optional dwelling calculation, generator per NEC 702.4(B)", "needs_kw": result["required_kw"],
+                "calculated_load_va": result["total_va"], "calculated_amps": result["total_amps"], "starting_check_kva": result["starting_kw"],
+                "recommended": result["model"], "managed_loads": result["with_load_management"]["shed"],
+                "transfer_switch_amps": result["transfer_switch_amps"], "notes": result["notes"],
+                "steps": [{"step": number, "load": label, "how": how, "va": round(value), "nec": ref} for number, label, how, value, ref in result["steps"]],
                 "page": url_for("generator_sizing")}
     if name == "find_clients":
         query = Client.query
