@@ -35,10 +35,11 @@ ROOM_TYPES = {
 CU_TABLE = [(0, 0.95), (1, 0.86), (2, 0.78), (3, 0.71), (4, 0.65), (5, 0.59), (6, 0.54), (7, 0.50), (8, 0.46), (9, 0.42), (10, 0.39)]
 LIGHT_LOSS_FACTOR = 0.85          # LED lumen depreciation (0.90) x dirt (0.95), rounded down
 SPACING_CRITERION = 1.5           # most downlights and panels: spacing no more than 1.5 x mounting height above the work plane
+SHAPES = {"rect": "Rectangle", "circle": "Round"}
 FIELDS = {
     # name: (label, default, minimum, maximum)
-    "length": ("Length (ft)", 14, 2, 400),
-    "width": ("Width (ft)", 12, 2, 400),
+    "length": ("Length, or diameter for a round room (ft)", 14, 2, 400),
+    "width": ("Width (ft, rectangle)", 12, 2, 400),
     "height": ("Ceiling height (ft)", 9, 6, 60),
 }
 LUMENS_IN_NAME = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{2,6})\s*(?:lm|lumens?)\b", re.IGNORECASE)
@@ -61,6 +62,9 @@ def read_room(values):
         except ValueError:
             number = float(default)
         room[name] = min(max(number, low), high)
+    room["shape"] = values.get("shape") if values.get("shape") in SHAPES else "rect"
+    if room["shape"] == "circle":
+        room["width"] = room["length"]                  # a round room: length is its diameter
     kind = values.get("type") if values.get("type") in ROOM_TYPES else "living"
     label, target, plane = ROOM_TYPES[kind]
     try:
@@ -73,9 +77,22 @@ def read_room(values):
     return room
 
 
+def floor_area(room):
+    if room.get("shape") == "circle":
+        return math.pi * (room["length"] / 2) ** 2
+    return room["length"] * room["width"]
+
+
+def perimeter(room):
+    if room.get("shape") == "circle":
+        return math.pi * room["length"]
+    return 2 * (room["length"] + room["width"])
+
+
 def room_cavity_ratio(room):
+    """RCR = 2.5 x cavity height x perimeter / floor area (for a rectangle: 5 x h x (L + W) / (L x W))."""
     cavity = max(room["height"] - room["work_plane"], 0.5)
-    return 5 * cavity * (room["length"] + room["width"]) / (room["length"] * room["width"])
+    return 2.5 * cavity * perimeter(room) / floor_area(room)
 
 
 def coefficient_of_utilization(rcr):
@@ -107,18 +124,58 @@ def grid(count, room):
     return rows, cols
 
 
+def rings(count, room):
+    """A round room: one light in the middle and rings around it, each ring's share growing with its circumference; a small
+    count is one ring. Never spaced wider than the spacing criterion (lights are added until they are not).
+    Returns (positions, spacing)."""
+    radius = room["length"] / 2
+    max_spacing = SPACING_CRITERION * max(room["height"] - room["work_plane"], 1)
+
+    def place(n):
+        if n == 1:
+            return [[radius, radius]], radius
+        if n <= 6:                                              # one ring, halfway out
+            r = radius / 2
+            return [[radius + r * math.cos(2 * math.pi * k / n), radius + r * math.sin(2 * math.pi * k / n)] for k in range(n)], \
+                max(r, 2 * math.pi * r / n)
+        spacing = math.sqrt(math.pi * radius ** 2 / n)
+        ring_count = max(1, round(radius / spacing))
+        step = radius / (ring_count + 0.5)
+        weights = sum(range(1, ring_count + 1))
+        points, widest = [[radius, radius]], step
+        for k in range(1, ring_count + 1):
+            around = max(3, round((n - 1) * k / weights))
+            r, turn = k * step, (k % 2) * math.pi / max(3, round((n - 1) * k / weights))
+            points += [[radius + r * math.cos(turn + 2 * math.pi * j / around), radius + r * math.sin(turn + 2 * math.pi * j / around)] for j in range(around)]
+            widest = max(widest, 2 * math.pi * r / around)
+        return points, widest
+
+    n = count
+    while True:
+        points, spacing = place(n)
+        if spacing <= max_spacing or n > count * 4:
+            return [[round(x, 2), round(y, 2)] for x, y in points], spacing
+        n += 1
+
+
 def layout(lumens, room):
     """How many of a fixture the room needs, where they go, and the light they give."""
-    area = room["length"] * room["width"]
+    area = floor_area(room)
     rcr = room_cavity_ratio(room)
     cu = coefficient_of_utilization(rcr)
     needed = max(1, math.ceil(room["target"] * area / (lumens * cu * LIGHT_LOSS_FACTOR)))
-    rows, cols = grid(needed, room)
-    count = rows * cols
-    positions = [[round(room["length"] / cols * (c + 0.5), 2), round(room["width"] / rows * (r + 0.5), 2)] for r in range(rows) for c in range(cols)]
+    if room.get("shape") == "circle":
+        positions, spacing = rings(needed, room)
+        rows, cols, count = 0, 0, len(positions)
+        gap = [round(spacing, 2), round(spacing, 2)]
+    else:
+        rows, cols = grid(needed, room)
+        count = rows * cols
+        positions = [[round(room["length"] / cols * (c + 0.5), 2), round(room["width"] / rows * (r + 0.5), 2)] for r in range(rows) for c in range(cols)]
+        gap = [round(room["length"] / cols, 2), round(room["width"] / rows, 2)]
     achieved = count * lumens * cu * LIGHT_LOSS_FACTOR / area
-    return {"needed": needed, "count": count, "rows": rows, "cols": cols, "positions": positions,
-            "spacing": [round(room["length"] / cols, 2), round(room["width"] / rows, 2)],
+    return {"needed": needed, "count": count, "rows": rows, "cols": cols, "positions": positions, "shape": room.get("shape", "rect"),
+            "spacing": gap,
             "footcandles": round(achieved, 1), "target": room["target"], "rcr": round(rcr, 2), "cu": round(cu, 3),
             "added_for_spacing": count - needed if count > needed else 0}
 

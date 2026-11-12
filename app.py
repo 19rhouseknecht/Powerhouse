@@ -1840,7 +1840,9 @@ def check_cooper_prices():
     scope_label = ("selected items" + (f" ({skipped} without a Cooper part number left out)" if skipped else "")) if only_selected else "$0/new items only" if only_zero_prices else "all Cooper items"
     run = PriceSyncRun(batch=batch, total=len(priced_items), only_zero_prices=only_zero_prices,
                        item_ids_json=json.dumps([item.id for item in priced_items]) if only_selected else "",
-                       activity_log=json.dumps([f"Price check queued for {len(priced_items)} {scope_label}. Waiting for the office listener."]))
+                       activity_log=json.dumps([(f"Cooper update queued for {len(priced_items)} {scope_label}: prices come back for your review, "
+                                                 "pictures are saved as they are found. Waiting for the office listener.") if only_selected else
+                                                f"Price check queued for {len(priced_items)} {scope_label}. Waiting for the office listener."]))
     db.session.add(run); db.session.commit()
     return jsonify({"batch_id": batch.id, "status_url": url_for("cooper_sync_status", batch_id=batch.id), "preview_url": url_for("cooper_sync_preview", batch_id=batch.id)})
 
@@ -2305,7 +2307,7 @@ def quote_assistant(job_id):
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
                            pricing_rows=pricing_needed_rows(quote) if quote.options else [],
-                           lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS,
+                           lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS, lighting_shapes=lighting.SHAPES,
                            lighting_plans=lighting_plans_for(quote)[1], lights_missing=lights_without_lumens() if quote.lighting_room or request.args.get("lighting") else [],
                            sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
 
@@ -5837,13 +5839,18 @@ def apply_lighting_plan(quote):
     for option in quote.options:
         option.lighting_json = ""
         line = next((line for line in option.lines if line.price_item_id in by_item), None)
-        if line is None:
-            continue
-        plan = by_item[line.price_item_id]
+        if line is not None:
+            plan = by_item[line.price_item_id]
+        else:                                 # a light Caden recommends that is not on the sheet: laid out from the lumens in its name
+            line = next((line for line in option.lines if line.is_missing and lighting.lumens_from_name(line.service_name)), None)
+            if line is None:
+                continue
+            plan = lighting.layout(lighting.lumens_from_name(line.service_name), room)
+            plan.update({"name": line.service_name, "lumens": lighting.lumens_from_name(line.service_name), "image": ""})
         if line.multiplier != plan["count"]:
             notes.append(f"{option.tier}: {line.service_name} set to {plan['count']} (the layout for {room['name']}; Caden had {line.multiplier:g}).")
             line.multiplier = plan["count"]
-        option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "lumens": plan["lumens"], "count": plan["count"],
+        option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "shape": room.get("shape", "rect"), "lumens": plan["lumens"], "count": plan["count"],
                                            "rows": plan["rows"], "cols": plan["cols"], "positions": plan["positions"], "spacing": plan["spacing"],
                                            "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"]})
     return notes
@@ -5855,9 +5862,10 @@ def lighting_prompt(quote):
     if not room:
         return ""
     rows = [{"price_item_id": plan["id"], "light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"],
-             "grid": f"{plan['rows']} x {plan['cols']}", "footcandles": plan["footcandles"], "material_cost": plan["material"],
+             "layout": "rings" if plan["shape"] == "circle" else f"{plan['rows']} x {plan['cols']} grid", "footcandles": plan["footcandles"], "material_cost": plan["material"],
              "unconfirmed": plan["unconfirmed"]} for plan in plans[:40]]
-    return f"""LIGHTING_PLAN for {room['name']} ({room['length']:g} x {room['width']:g} ft, {room['height']:g} ft ceiling, {room['type_label']},
+    size = f"{room['length']:g} ft round" if room.get("shape") == "circle" else f"{room['length']:g} x {room['width']:g} ft"
+    return f"""LIGHTING_PLAN for {room['name']} ({size}, {room['height']:g} ft ceiling, {room['type_label']},
 target {room['target']:g} foot-candles average, worked out with the lumen method):
 {json.dumps(rows) if rows else "No light on the Pricing Sheet has known lumens yet: say so, and put the lights in missing_services."}
 Lighting rule: for this room's general lighting, every option uses exactly ONE light from LIGHTING_PLAN, in items, with its
@@ -5865,6 +5873,10 @@ price_item_id and exactly its quantity (the quantity is the layout's, not yours)
 choose: lower tiers the most economical light that meets the target, higher tiers better lights (higher output for fewer
 fixtures, slimmer or premium trims, dimmable, better color) or more light. Never pick a light whose footcandles fall short of
 the target. Add the switching, dimmers and wiring as usual. Say in the option description how many lights and how bright.
+We use RAB lighting for almost everything (sold through Cooper): prefer RAB lights on LIGHTING_PLAN. When the right light for a
+tier is not on LIGHTING_PLAN (often a RAB part not on the Pricing Sheet yet), put it in missing_services named with its RAB
+part number and its lumens, for example "RAB SLIM6 6in LED wafer 1200 lm": it is listed at the top of the quote to be priced, and
+the app lays it out and sets its quantity from those lumens. Never invent a lumen figure: use the maker's.
 """
 
 
