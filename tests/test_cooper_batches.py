@@ -245,29 +245,26 @@ seen, prompts = asyncio.run(normal_check())
 check(not seen and prompts == 0, "Cooper's ordinary page (its Incapsula script, an invisible reCAPTCHA badge, 'security check' in the footer) never pauses")
 SOLVED["yes"] = True
 
-# 4b. the real keyboard: Enter during a scan asks for a pause; Enter while waiting carries on; no keyboard is EOFError
+# 4b. the real keyboard: no background reader; Enter is read only while waiting, and a closed Chrome is never an error
 import subprocess  # noqa: E402
 probe = f"""
-import importlib.util, time
+import asyncio, importlib.util
 spec = importlib.util.spec_from_file_location("kb", {os.path.join(ROOT, "tools", "cooper_price_listener.py")!r})
 kb = importlib.util.module_from_spec(spec); spec.loader.exec_module(kb)
 kb.log = lambda message: None
-kb.start_keyboard()
-time.sleep(0.6)
-print("PAUSE", kb.PAUSE_REQUESTED.is_set())
+import threading
+print("THREADS", threading.active_count())
+print("PRESSED", kb.enter_was_pressed())
 print("LINE", repr(kb.wait_for_enter("go? ")))
-try:
-    kb.wait_for_enter("again? ")
-except EOFError:
-    print("EOF")
+asyncio.run(kb.close_quietly(None))
+print("CLOSED")
 """
 proc = subprocess.Popen([sys.executable, "-c", probe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
-proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(1.2)
-proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(0.3); proc.stdin.close()
-out = proc.stdout.read(); proc.wait(timeout=20)
-check("PAUSE True" in out, "pressing Enter during a scan asks for a pause")
-check("LINE '\\n'" in out, "pressing Enter while it waits carries on")
-check("EOF" in out, "with the keyboard gone it never hangs (it watches the page instead)")
+out = proc.communicate("\n", timeout=30)[0]
+check("THREADS 1" in out, "nothing holds the keyboard in the background (it can stop Chrome starting on Windows)")
+check("PRESSED False" in out, "looking for a key press never waits")
+check("LINE ''" in out, "Enter carries on while it waits")
+check("CLOSED" in out, "closing a Chrome that never opened is not an error")
 
 # 5. the catalog walk stops when the site says the batch is full
 spec = importlib.util.spec_from_file_location("listener_walk", os.path.join(ROOT, "tools", "cooper_price_listener.py"))

@@ -11,7 +11,8 @@ Updater plus the Cooper username and password. They are stored only in the
 local config file beside this script. The listener then waits for Update Prices
 commands from the website. Chrome opens only while a scan is running. Results
 always require review and approval in Power House Flow; this program never
-applies prices directly. Product pictures are sent as each item is scanned.
+applies prices directly. Product pictures are sent as each item is scanned, and for Update from Cooper (and lights without
+lumens) the product's own page is read too: lumens, watts, color temperature and whatever else Cooper lists.
 
 Options:
     --tabs 3           how many Cooper tabs scan at once (1-6, default 3)
@@ -39,14 +40,13 @@ import base64
 import json
 import os
 import re
-import queue
 import socket
 import sys
-import threading
 import time
+import traceback
 from getpass import getpass
 
-LISTENER_VERSION = "2.5"
+LISTENER_VERSION = "2.8"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -189,10 +189,19 @@ def picture_url(card_html_attrs: dict, page_url: str) -> str:
     return ""
 
 
+# The "are you human" puzzle is pictures from these services: never blocked, or the person cannot see what to click.
+CHALLENGE_HOSTS = ("recaptcha", "gstatic.com", "hcaptcha", "_Incapsula_Resource", "incapsula", "imperva", "perimeterx", "px-cdn",
+                   "px-cloud", "px-captcha", "arkoselabs", "funcaptcha", "geetest", "challenges.cloudflare")
+HUMAN_WAITING = False            # while a person answers Cooper's check nothing at all is blocked
+
+
 async def block_extras(route):
-    """Search pages do not need pictures, fonts, video or trackers: skipping them is most of the page weight."""
+    """Search pages do not need pictures, fonts, video or trackers: skipping them is most of the page weight.
+    Never while a person is answering Cooper's check, and never the check's own pictures."""
     request = route.request
-    if request.resource_type in BLOCKED_TYPES or any(host in request.url for host in BLOCKED_HOSTS):
+    if HUMAN_WAITING or any(host in request.url.lower() for host in CHALLENGE_HOSTS):
+        await route.continue_()
+    elif request.resource_type in BLOCKED_TYPES or any(host in request.url for host in BLOCKED_HOSTS):
         await route.abort()
     else:
         await route.continue_()
@@ -206,45 +215,51 @@ SELF_CLEAR_SECONDS = 3           # a flash of Cooper's automatic browser check i
 STILL_WAITING_SECONDS = 300      # while waiting for a person, the website hears "still waiting" this often (so the run never times out)
 NOTIFY = None                    # set per command: NOTIFY(message) puts a line in the website's live status
 HUMAN_LOCK = None                # one question to the person at a time, however many tabs hit the check
-# The keyboard: one reader for the whole run. Enter while a scan is going pauses it before its next page; Enter while
-# the listener is waiting (Cooper's human check, or a pause) carries on.
-KEYBOARD_LINES = queue.Queue()
-KEYBOARD_WAITING = threading.Event()
-PAUSE_REQUESTED = threading.Event()
-KEYBOARD = None
+# The keyboard. Nothing holds it in the background (on Windows a thread waiting on the keyboard can stop Chrome from
+# starting): Enter is read only while the listener is waiting for a person, and between pages a key press already made is
+# picked up without waiting (msvcrt on Windows, select elsewhere) to pause the scan.
+class _Flag:
+    def __init__(self):
+        self.on = False
+
+    def set(self):
+        self.on = True
+
+    def clear(self):
+        self.on = False
+
+    def is_set(self):
+        return self.on
 
 
-def _read_keyboard() -> None:
-    for line in sys.stdin:
-        if KEYBOARD_WAITING.is_set():
-            KEYBOARD_LINES.put(line)
-        elif not PAUSE_REQUESTED.is_set():
-            PAUSE_REQUESTED.set()
-            log("Pause requested: the scan stops before its next page.")
-    KEYBOARD_LINES.put(None)                      # the keyboard went away (running as a service)
+PAUSE_REQUESTED = _Flag()
 
 
-def start_keyboard() -> None:
-    global KEYBOARD
-    if KEYBOARD is None and sys.stdin is not None:
-        KEYBOARD = threading.Thread(target=_read_keyboard, name="keyboard", daemon=True)
-        KEYBOARD.start()
+def enter_was_pressed() -> bool:
+    """True when Enter was pressed since the last look. Never waits."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            pressed = False
+            while msvcrt.kbhit():
+                pressed = msvcrt.getwch() in ("\r", "\n") or pressed
+            return pressed
+        import select
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+        if select.select([sys.stdin], [], [], 0)[0]:
+            sys.stdin.readline()
+            return True
+    except Exception:  # noqa: BLE001  (no keyboard: no manual pause)
+        return False
+    return False
 
 
 def wait_for_enter(prompt: str) -> str:
     """Block until the person presses Enter. EOFError when there is no keyboard."""
-    start_keyboard()
-    if KEYBOARD is None:
+    if sys.stdin is None:
         raise EOFError
-    print(prompt, end="", flush=True)
-    KEYBOARD_WAITING.set()
-    try:
-        line = KEYBOARD_LINES.get()
-    finally:
-        KEYBOARD_WAITING.clear()
-    if line is None:
-        raise EOFError
-    return line
+    return input(prompt)
 
 
 PROMPT = wait_for_enter          # tests replace this
@@ -309,6 +324,30 @@ async def paused_by_person(page) -> None:
         notify("Carrying on.")
 
 
+async def close_quietly(context) -> None:
+    """Close Chrome; a Chrome that never opened or already went away is not an error."""
+    if context is None:
+        return
+    try:
+        await context.close()
+    except Exception as error:  # noqa: BLE001
+        log(f"Chrome was already closed ({type(error).__name__}).")
+
+
+ERROR_LOG = Path(__file__).resolve().parent / "listener_error.log"
+
+
+def keep_error() -> str:
+    """Write the whole traceback beside the script, for whoever fixes it."""
+    details = traceback.format_exc()
+    try:
+        with ERROR_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} listener v{LISTENER_VERSION}\n{details}")
+    except OSError:
+        pass
+    return details
+
+
 def notify(message: str) -> None:
     if NOTIFY:
         try:
@@ -321,6 +360,9 @@ async def wait_for_verification(page, headless=None) -> None:
     """Let Cooper's browser check finish by itself; when it asks for a person, pause until they finish it and press Enter."""
     global HUMAN_LOCK
     headless = HEADLESS if headless is None else headless
+    if enter_was_pressed():
+        PAUSE_REQUESTED.set()
+        log("Pause requested.")
     if PAUSE_REQUESTED.is_set():
         await paused_by_person(page)
     if not await verification_page_is_present(page):
@@ -332,39 +374,53 @@ async def wait_for_verification(page, headless=None) -> None:
             return
     if headless:
         raise RuntimeError("Cooper is asking whether this is a person. Run the listener without --headless so you can answer it in Chrome.")
+    global HUMAN_WAITING
     HUMAN_LOCK = HUMAN_LOCK or asyncio.Lock()
     async with HUMAN_LOCK:                     # another tab may have just answered it for everyone
         if not await verification_page_is_present(page):
             return
-        while await verification_page_is_present(page):
-            try:
-                await page.bring_to_front()
-            except Exception:  # noqa: BLE001
-                pass
-            print("\a", end="", flush=True)
-            log("=" * 60)
-            log("COOPER IS ASKING IF YOU'RE HUMAN. The scan is paused.")
-            log("Finish the check in the Chrome window that just came to the front,")
-            log("then come back here and press Enter.")
-            log("=" * 60)
-            notify("Paused: Cooper is asking if this is a person. Finish the check in Chrome on the office computer, then press Enter in the listener.")
-            answer = asyncio.ensure_future(asyncio.to_thread(PROMPT, "Press Enter once Cooper's check is done... "))
-            while True:
-                done, _ = await asyncio.wait({answer}, timeout=STILL_WAITING_SECONDS)
-                if done:
-                    break
-                notify("Still paused: waiting for someone at the office computer to finish Cooper's check and press Enter.")
-            try:
-                answer.result()
-            except EOFError:                   # no keyboard (running as a service): watch the page instead
-                log("No keyboard to press Enter on; watching the page until the check is gone.")
-                while await verification_page_is_present(page):
-                    await page.wait_for_timeout(5_000)
-            await page.wait_for_timeout(1_500)
-            if await verification_page_is_present(page):
-                log("Cooper's check is still showing. Finish it in Chrome, then press Enter again.")
+        HUMAN_WAITING = True                   # show the whole puzzle: pictures included
+        try:
+            await page.reload(wait_until="domcontentloaded", timeout=60_000)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await _ask_person(page)
+        finally:
+            HUMAN_WAITING = False
         log("Thanks: carrying on.")
         notify("Cooper's check is done; the scan carries on.")
+
+
+async def _ask_person(page) -> None:
+    """Hold until the check is gone and the person has pressed Enter."""
+    while await verification_page_is_present(page):
+        try:
+            await page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        print("\a", end="", flush=True)
+        log("=" * 60)
+        log("COOPER IS ASKING IF YOU'RE HUMAN. The scan is paused.")
+        log("Finish the check in the Chrome window that just came to the front,")
+        log("then come back here and press Enter.")
+        log("=" * 60)
+        notify("Paused: Cooper is asking if this is a person. Finish the check in Chrome on the office computer, then press Enter in the listener.")
+        answer = asyncio.ensure_future(asyncio.to_thread(PROMPT, "Press Enter once Cooper's check is done... "))
+        while True:
+            done, _ = await asyncio.wait({answer}, timeout=STILL_WAITING_SECONDS)
+            if done:
+                break
+            notify("Still paused: waiting for someone at the office computer to finish Cooper's check and press Enter.")
+        try:
+            answer.result()
+        except EOFError:                   # no keyboard (running as a service): watch the page instead
+            log("No keyboard to press Enter on; watching the page until the check is gone.")
+            while await verification_page_is_present(page):
+                await page.wait_for_timeout(5_000)
+        await page.wait_for_timeout(1_500)
+        if await verification_page_is_present(page):
+            log("Cooper's check is still showing. Finish it in Chrome, then press Enter again.")
 
 
 async def accept_cookies(page, wait_seconds: float = 0) -> bool:
@@ -465,6 +521,12 @@ async def scan_item(page, item: dict, label: str) -> dict:
     source_quantity, source_unit = parse_source_quantity_and_unit(source_uom)
     name_node = exact_card.locator("[data-analytics-description]").first
     matched_name = (await name_node.get_attribute("data-analytics-description")) if await name_node.count() else item["name"]
+    product_url = ""
+    for link in await exact_card.locator("a[href]").all():
+        href = (await link.get_attribute("href")) or ""
+        if "/product/" in href and "/category/" not in href and "search" not in href:
+            product_url = urljoin(page.url, href)
+            break
     image = ""
     img = exact_card.locator("img").first
     if await img.count():
@@ -481,7 +543,46 @@ async def scan_item(page, item: dict, label: str) -> dict:
         "source_unit": source_unit,
         "source_uom": source_uom,
         "image_url": image,
+        "product_url": product_url,
     }
+
+
+# Every label/value pair a product page shows: table rows (th + td, or two td), definition lists, and "Label: value" lines in
+# anything whose class or id mentions spec / attribute / feature / detail. Kept short; the website decides what it keeps.
+SPECS_JS = r"""() => {
+  const clean = t => (t || '').replace(/\s+/g, ' ').trim();
+  const out = {};
+  const put = (k, v) => { k = clean(k).replace(/:$/, ''); v = clean(v); if (k && v && k.length <= 80 && v.length <= 300 && !(k in out) && Object.keys(out).length < 80) out[k] = v; };
+  document.querySelectorAll('tr').forEach(tr => { const cells = tr.querySelectorAll('th, td'); if (cells.length === 2) put(cells[0].innerText, cells[1].innerText); });
+  document.querySelectorAll('dl').forEach(dl => { dl.querySelectorAll('dt').forEach(dt => { const dd = dt.nextElementSibling; if (dd && dd.tagName === 'DD') put(dt.innerText, dd.innerText); }); });
+  document.querySelectorAll('[class*="spec" i], [id*="spec" i], [class*="attribute" i], [class*="feature" i], [class*="detail" i]').forEach(box => {
+    box.querySelectorAll('li, p, div').forEach(line => { if (line.children.length > 3) return; const m = clean(line.innerText).match(/^([^:]{2,60}):\s*(.{1,300})$/); if (m) put(m[1], m[2]); });
+  });
+  const meta = n => { const e = document.querySelector('meta[name="' + n + '"], meta[property="' + n + '"]'); return e ? e.content : ''; };
+  const title = clean((document.querySelector('h1') || {}).innerText) || meta('og:title');
+  const description = clean((document.querySelector('[itemprop="description"], .product-description, #description') || {}).innerText) || meta('description');
+  const brand = clean((document.querySelector('[itemprop="brand"], .brand, .manufacturer') || {}).innerText);
+  return {specs: out, title: title.slice(0, 300), description: description.slice(0, 600), manufacturer: brand.slice(0, 120)};
+}"""
+SPECS_DEBUG_LIMIT = 3
+
+
+async def read_specs(page, url: str) -> dict:
+    """Open a product's page and read what it lists (lumens, watts, color temperature, ...). A page with nothing readable is
+    copied into catalog_debug/ (the first few), so the reader can be fitted to Cooper's pages."""
+    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    await wait_for_verification(page)
+    await accept_cookies(page)
+    await page.wait_for_timeout(600)
+    found = await page.evaluate(SPECS_JS)
+    found["url"] = page.url
+    if not found.get("specs"):
+        global SPECS_DEBUG_LIMIT
+        if SPECS_DEBUG_LIMIT > 0:
+            SPECS_DEBUG_LIMIT -= 1
+            DEBUG_DIRECTORY.mkdir(exist_ok=True)
+            (DEBUG_DIRECTORY / f"product-{SPECS_DEBUG_LIMIT}.html").write_text(await page.content(), encoding="utf-8")
+    return found
 
 
 async def fetch_picture(context, url: str, referer: str) -> bytes:
@@ -498,7 +599,7 @@ async def fetch_picture(context, url: str, referer: str) -> bytes:
     return b""
 
 
-async def scan_all_items(items: list, config: dict, progress=None, send_picture=None, tabs: int = 3, headless: bool = False) -> list:
+async def scan_all_items(items: list, config: dict, progress=None, send_picture=None, tabs: int = 3, headless: bool = False, send_specs=None) -> list:
     """Scan every item with up to `tabs` Cooper tabs at once. Results come back in the items' order."""
     from playwright.async_api import async_playwright
     global HEADLESS, HUMAN_LOCK
@@ -547,6 +648,13 @@ async def scan_all_items(items: list, config: dict, progress=None, send_picture=
                             picture = await fetch_picture(context, result["image_url"], page.url)
                             if picture:
                                 await asyncio.to_thread(send_picture, item, picture)
+                        if send_specs and item.get("want_specs") and result.get("product_url"):
+                            try:
+                                details = await read_specs(page, result["product_url"])
+                                await asyncio.to_thread(send_specs, item, details)
+                                log(f"{label} {item['part_number']}: {len(details.get('specs') or {})} detail(s) read from its product page")
+                            except Exception as error:  # noqa: BLE001 — details never stop a price check
+                                log(f"{label} {item['part_number']}: details not read ({type(error).__name__}: {error})")
                     except Exception as error:  # noqa: BLE001 — one item's problem never stops the others
                         log(f"{label} {item['part_number']}: could not scan ({type(error).__name__}: {error})")
                         result = {"item_id": item["id"], "part_number": item["part_number"], "status": "error",
@@ -564,7 +672,7 @@ async def scan_all_items(items: list, config: dict, progress=None, send_picture=
             log(f"Scanned {total} item(s) in {seconds:,.0f}s ({seconds / max(total, 1):.1f}s per item).")
         finally:
             log("Scanning finished. Closing Chrome.")
-            await context.close()
+            await close_quietly(context)
     return results
 
 
@@ -740,7 +848,7 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
                 await flush(final=True, message=f"Read {totals['categories']} categories ({totals['pages']} pages, {totals['seen']} products seen)"
                                                 + (": stopped at this run's batch limit." if stop.is_set() else "."))
         finally:
-            await context.close()
+            await close_quietly(context)
     return totals
 
 
@@ -759,8 +867,7 @@ def main() -> None:
     poll_seconds = max(args.poll_seconds, 2)
     log(f"Listener v{LISTENER_VERSION} connected to {config['base_url']}. Checking for Update Prices commands every {poll_seconds} seconds.")
     log("If Cooper asks whether you're human, the scan pauses until you finish it in Chrome and press Enter here.")
-    log("Press Enter at any time to pause a scan yourself; press Enter again to carry on.")
-    start_keyboard()
+    log("Press Enter at any time to pause a scan yourself (it stops before its next page); press Enter again to carry on.")
     waiting = 0
     while True:
         command_id = None
@@ -816,7 +923,14 @@ def main() -> None:
                 except RuntimeError as error:
                     log(f"Picture for {item['part_number']} not saved: {error}")
 
-            results = asyncio.run(scan_all_items(items, config, heartbeat, send_picture, tabs=args.tabs, headless=args.headless))
+            def send_specs(item, details):
+                try:
+                    api_request(config, f"/api/local-cooper/commands/{command_id}/specs", method="POST",
+                                payload={"item_id": item["id"], "part_number": item["part_number"], **details})
+                except RuntimeError as error:
+                    log(f"Details for {item['part_number']} not saved: {error}")
+
+            results = asyncio.run(scan_all_items(items, config, heartbeat, send_picture, tabs=args.tabs, headless=args.headless, send_specs=send_specs))
             log("Uploading results for website review.")
             payload = {"results": [{k: v for k, v in r.items() if k != "image_url"} for r in results]}
             try:
@@ -846,7 +960,8 @@ def main() -> None:
             time.sleep(poll_seconds)
         except Exception as error:  # noqa: BLE001
             message = f"{type(error).__name__}: {error}"
-            log(f"Price check failed: {message}")
+            keep_error()
+            log(f"Price check failed: {message} (the full error is in {ERROR_LOG.name})")
             if command_id is not None:
                 try:
                     api_request(config, f"/api/local-cooper/commands/{command_id}/failed", method="POST", payload={"error": message})
@@ -863,6 +978,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         log("Stopped by user.")
     except Exception as error:  # noqa: BLE001
-        log(f"Updater stopped: {type(error).__name__}: {error}")
+        keep_error()
+        log(f"Updater stopped: {type(error).__name__}: {error} (the full error is in {ERROR_LOG.name})")
         if "401" in str(error):
             print("Run again with --reset-config and enter a newly generated token.")

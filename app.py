@@ -148,6 +148,18 @@ class PriceItem(db.Model):
         return self.lumens if self.lumens else lighting.lumens_from_name(self.name)
     image_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'cooper' (captured by the listener) · 'upload'
     lumens = db.Column(db.Float, nullable=True)                               # a light's output; blank = read from its name when it says
+    lumens_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'typed' (never overwritten) · 'cooper'
+    specs_json = db.Column(db.Text, nullable=False, default="")               # everything Cooper's product page lists: {label: value}
+    product_url = db.Column(db.String(400), nullable=False, default="")       # Cooper's product page
+    specs_at = db.Column(db.DateTime, nullable=True)                          # when Cooper's details were last read
+
+    @property
+    def specs(self):
+        try:
+            value = json.loads(self.specs_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except ValueError:
+            return {}
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     service_links = db.relationship("ServiceItemPricingLink", backref="price_item", cascade="all, delete-orphan")
     quote_lines = db.relationship("QuoteOptionService", back_populates="price_item")
@@ -1539,9 +1551,9 @@ def enforce_role_permissions():
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
-        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing",
+        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "quote_lighting":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -1940,6 +1952,35 @@ def edit_price_item(item_id):
     return redirect(url_for("pricing_sheet"))
 
 
+@app.route("/quoting/pricing/<int:item_id>/profile", methods=["GET", "POST"])
+@login_required
+def price_item_profile(item_id):
+    """Everything stored about one material: picture, prices, suppliers, lumens, Cooper's details, where it is used.
+    Opened from the (i) next to it (in a window) or on its own. Lumens can be typed here (and are then never replaced)."""
+    item = db.get_or_404(PriceItem, item_id)
+    if request.method == "POST":
+        check_csrf()
+        raw = request.form.get("lumens", "").replace(",", "").strip()
+        try:
+            typed = float(raw) if raw else None
+        except ValueError:
+            typed = -1
+        if typed is not None and not 50 <= typed <= 200000:
+            flash("Lumens must be a number between 50 and 200,000.", "error")
+        else:
+            item.lumens = typed
+            item.lumens_source = "typed" if typed else ""
+            db.session.commit()
+            flash(f"Lumens for {item.name} saved." if typed else f"Lumens cleared for {item.name}.", "success")
+        back = request.form.get("next", "")
+        return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("price_item_profile", item_id=item.id))
+    checks = (db.session.query(PriceSyncRow, PriceSyncBatch).join(PriceSyncBatch, PriceSyncRow.batch_id == PriceSyncBatch.id)
+              .filter(PriceSyncRow.price_item_id == item.id).order_by(PriceSyncBatch.created_at.desc()).limit(8).all())
+    on_quotes = QuoteOptionService.query.filter_by(price_item_id=item.id).count()
+    template = "_price_profile.html" if request.args.get("partial") else "price_profile.html"
+    return render_template(template, item=item, checks=checks, on_quotes=on_quotes, unconfirmed_label=UNCONFIRMED)
+
+
 @app.route("/quoting/pricing/<int:item_id>/delete", methods=["POST"])
 @login_required
 def delete_price_item(item_id):
@@ -2302,7 +2343,23 @@ def quote_assistant(job_id):
         if not message:
             flash("Enter a message for the quote assistant.", "error")
             return redirect(url_for("quote_assistant", job_id=job.id))
+        room_note = ""
+        if request.form.get("lighting"):
+            found, room_note = set_lighting_room_from_words(quote, [message] + [m.content for m in reversed(quote.messages) if m.role == "user"] + [job.description])
+            if not found:
+                quote.messages.append(QuoteMessage(role="user", content=message))
+                quote.messages.append(QuoteMessage(role="assistant", content="To lay out the lights I need the room's size: length × width and the ceiling height, "
+                                                   "for example \"kitchen 14x12, 9 ft ceiling\" or \"18 ft round sunroom, 9 ft ceiling\". Send it with Lighting layout ticked."))
+                db.session.commit()
+                return redirect(url_for("quote_assistant", job_id=job.id))
+        elif quote.lighting_json:
+            quote.lighting_json = ""                  # unticked: not a lighting quote any more
+            for option in quote.options:
+                option.lighting_json = ""
+            db.session.commit()
         send_quote_message(job, quote, message)
+        if room_note:
+            quote.messages.append(QuoteMessage(role="assistant", content=room_note)); db.session.commit()
         return redirect(url_for("quote_assistant", job_id=job.id))
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
@@ -4194,7 +4251,8 @@ def local_cooper_next_command():
     items = item_query.order_by(PriceItem.name).all()
     version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
     put_listener_version(version.group(1) if version else "1")
-    return jsonify({"state":"running", "command":{"id":run.batch_id, "items":[{"id":item.id, "name":item.name, "part_number":item.cooper_part_number.strip(), "unit":item.unit, "current_price":item.price} for item in items]}})
+    return jsonify({"state":"running", "command":{"id":run.batch_id, "items":[{"id":item.id, "name":item.name, "part_number":item.cooper_part_number.strip(), "unit":item.unit,
+                                                                               "current_price":item.price, "want_specs": wants_cooper_specs(item, bool(run.item_ids_json))} for item in items]}})
 
 
 @app.route("/api/local-cooper/commands/<int:batch_id>/heartbeat", methods=["POST"])
@@ -4234,6 +4292,69 @@ def local_cooper_command_results(batch_id):
         return jsonify({"error":"Submit between 1 and 1,000 results."}), 400
     batch, matched, errors = store_local_cooper_results(submitted, batch)
     return jsonify({"batch_id":batch.id, "matched":matched, "errors":errors, "preview_url":url_for("cooper_sync_preview", batch_id=batch.id, _external=True)}), 201
+
+
+def wants_cooper_specs(item, update_from_cooper):
+    """Read Cooper's product page for this item? Always for Update from Cooper (selected items); in a full price check only
+    for lights that have no lumens yet (their page is where the lumens are)."""
+    if update_from_cooper:
+        return True
+    looks_like_light = any(word in item.name.lower() for word in LIGHT_WORDS) and not NOT_A_LIGHT.search(item.name)
+    return looks_like_light and not item.light_lumens
+
+
+SPEC_LUMENS = re.compile(r"lumen", re.IGNORECASE)
+
+
+def lumens_from_specs(specs, *texts):
+    """A light's lumens from Cooper's details (a field whose name mentions lumens), else from its title or description."""
+    for key, value in specs.items():
+        if SPEC_LUMENS.search(key):
+            match = re.search(r"(\d{1,3}(?:,\d{3})+|\d{2,6})(?:\.\d+)?", str(value))
+            if match:
+                number = float(match.group(1).replace(",", ""))
+                if 50 <= number <= 200000:
+                    return number
+    for text in texts:
+        found = lighting.lumens_from_name(text)
+        if found:
+            return found
+    return None
+
+
+@app.route("/api/local-cooper/commands/<int:batch_id>/specs", methods=["POST"])
+@local_cooper_api_required
+def local_cooper_command_specs(batch_id):
+    """What Cooper's product page lists for an item (lumens, watts, color temperature, ...), read while scanning. Saved at
+    once, like pictures: details are not prices. Lumens typed by hand are never replaced."""
+    batch = db.get_or_404(PriceSyncBatch, batch_id)
+    if batch.run is None or batch.run.status not in ("queued", "running"):
+        return jsonify({"error": "This command is no longer active."}), 409
+    payload = request.get_json(silent=True) or {}
+    item = db.session.get(PriceItem, payload.get("item_id")) if isinstance(payload.get("item_id"), int) else None
+    if item is None or " ".join(str(payload.get("part_number") or "").casefold().split()) != " ".join(item.cooper_part_number.casefold().split()):
+        return jsonify({"error": "Those details do not match a Pricing Sheet item's Cooper part number."}), 400
+    raw = payload.get("specs") if isinstance(payload.get("specs"), dict) else {}
+    specs = {}
+    for key, value in list(raw.items())[:80]:
+        key, value = " ".join(str(key).split())[:80], " ".join(str(value).split())[:300]
+        if key and value and key.lower() != value.lower():
+            specs[key] = value
+    for label in ("title", "description", "manufacturer"):
+        value = " ".join(str(payload.get(label) or "").split())[:600]
+        if value:
+            specs.setdefault(label.title(), value)
+    url = str(payload.get("url") or "")[:400]
+    if url.startswith("http"):
+        item.product_url = url
+    if specs:
+        item.specs_json = json.dumps(specs)
+    item.specs_at = datetime.utcnow()
+    lumens = lumens_from_specs(specs, str(payload.get("title") or ""), str(payload.get("description") or ""), item.name)
+    if lumens and item.lumens_source != "typed":
+        item.lumens = lumens; item.lumens_source = "cooper"
+    db.session.commit()
+    return jsonify({"ok": True, "fields": len(specs), "lumens": item.lumens}), 201
 
 
 @app.route("/api/local-cooper/commands/<int:batch_id>/image", methods=["POST"])
@@ -5880,39 +6001,22 @@ the app lays it out and sets its quantity from those lumens. Never invent a lume
 """
 
 
-@app.route("/quotes/<int:quote_id>/lighting", methods=["POST"])
-@login_required
-def quote_lighting(quote_id):
-    """Set (or clear) the room for a lighting layout on a draft quote, and lumens for lights that had none."""
-    check_csrf()
-    quote = db.get_or_404(Quote, quote_id)
-    if quote.status != "draft":
-        flash("Only a draft quote's lighting room can change.", "error")
-        return redirect(url_for("quote_presentation", quote_id=quote.id))
-    typed = 0
-    for key, value in request.form.items():
-        if key.startswith("lumens_") and key[7:].isdigit() and value.strip():
-            item = db.session.get(PriceItem, int(key[7:]))
-            try:
-                lumens = float(value.replace(",", ""))
-            except ValueError:
-                continue
-            if item is not None and 50 <= lumens <= 200000:
-                item.lumens = lumens; typed += 1
-    if request.form.get("clear"):
-        quote.lighting_json = ""
-        for option in quote.options:
-            option.lighting_json = ""
-        flash("The lighting room was removed from this quote.", "success")
-    else:
-        room = lighting.read_room(request.form)
-        quote.lighting_json = json.dumps(room)
-        apply_lighting_plan(quote)
-        flash(f"Lighting room set: {room['name']}, {room['length']:g} x {room['width']:g} ft, {room['height']:g} ft ceiling, "
-              f"{room['target']:g} foot-candles." + (f" Lumens saved for {typed} light(s)." if typed else "")
-              + " Ask Caden to build (or rebuild) the options and he will lay the lights out.", "success")
-    db.session.commit()
-    return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#lighting")
+def set_lighting_room_from_words(quote, texts):
+    """Lighting layout ticked: read the room from the newest text that gives one (the message, earlier messages, the job).
+    Saves it on the quote. Returns (found, a sentence saying what was read when it changed)."""
+    for text in texts:
+        values, assumed = lighting.parse_room(text)
+        if values:
+            room = lighting.read_room(values)
+            changed = quote.lighting_room != room
+            quote.lighting_json = json.dumps(room)
+            db.session.flush()
+            if not changed:
+                return True, ""
+            size = f"{room['length']:g} ft round" if room["shape"] == "circle" else f"{room['length']:g} × {room['width']:g} ft"
+            return True, (f"Lighting layout: {room['name']}, {size}, {room['height']:g} ft ceiling, {room['type_label'].lower()} "
+                          f"({room['target']:g} foot-candles)" + (f". I assumed {' and '.join(assumed)}; say so if that's wrong." if assumed else "."))
+    return False, ""
 
 
 # ---------------- Pricing Sheet matching for quote lines ----------------
@@ -6207,7 +6311,9 @@ def save_price_item_from_form(item=None):
     if "lumens" in request.form:
         try:
             typed = float(request.form.get("lumens", "").replace(",", "").strip() or 0)
-            item.lumens = typed if typed > 0 else None
+            if (typed or None) != item.lumens:
+                item.lumens = typed if typed > 0 else None
+                item.lumens_source = "typed" if typed > 0 else ""
         except ValueError:
             return "Lumens must be a number.", item
     item.active = True
@@ -7892,7 +7998,9 @@ with app.app_context():
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
         ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
-        ("price_item", "lumens", "FLOAT"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_item", "lumens", "FLOAT"), ("price_item", "lumens_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
+        ("price_item", "specs_json", "TEXT NOT NULL DEFAULT ''"), ("price_item", "product_url", "VARCHAR(400) NOT NULL DEFAULT ''"),
+        ("price_item", "specs_at", "DATETIME"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),

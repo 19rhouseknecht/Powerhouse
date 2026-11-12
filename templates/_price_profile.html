@@ -1,0 +1,29 @@
+{# One material's profile: everything stored about it. Drawn in the Pricing Sheet's window, or on its own page. #}
+<article class="price-profile">
+  <header class="pp-head">
+    <div class="pp-picture">{% if item.image_path %}<img src="{{ url_for('static', filename=item.image_path) }}" alt="{{ item.name }}">{% else %}<span>No picture yet</span>{% endif %}</div>
+    <div>
+      <span class="eyebrow">{{ item.category }}{% if item.category == unconfirmed_label %} · from Cooper's catalog, not confirmed yet{% endif %}</span>
+      <h2>{{ item.name }}</h2>
+      <p class="pp-price">${{ '{:,.2f}'.format(item.price) }} <small>per {{ item.unit }}</small>{% if item.labor_hours_per_unit %} · {{ '%g'|format(item.labor_hours_per_unit) }} labor hr per {{ item.unit }}{% endif %}</p>
+      {% if item.product_url %}<a href="{{ item.product_url }}" target="_blank" rel="noopener" class="pp-link">Cooper's product page ↗</a>{% endif %}
+    </div>
+  </header>
+  <dl class="pp-facts">
+    <div><dt>Part numbers</dt><dd>{% for part in item.supplier_parts %}{{ part.supplier }} {{ part.part_number }}{% if not loop.last %}<br>{% endif %}{% else %}{{ item.cooper_part_number or 'none' }}{% endfor %}</dd></div>
+    <div><dt>Lumens</dt><dd>{% if item.light_lumens %}{{ '{:,.0f}'.format(item.light_lumens) }} <small>{{ {'typed': 'typed in', 'cooper': "from Cooper's product page"}.get(item.lumens_source, 'read from its name') if item.lumens else 'read from its name' }}</small>{% else %}none{% endif %}</dd></div>
+    <div><dt>Picture</dt><dd>{{ {'cooper': "from Cooper", 'upload': 'uploaded here'}.get(item.image_source, 'none') if item.image_path else 'none' }}</dd></div>
+    <div><dt>Cooper's details</dt><dd>{{ item.specs_at.strftime('%b %-d, %Y') if item.specs_at else 'not read yet: select it and press Update from Cooper' }}</dd></div>
+    <div><dt>Used in services</dt><dd>{% for service in item.linked_services %}<a href="{{ url_for('service_detail', service_id=service.id) }}">{{ service.name }}</a>{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}</dd></div>
+    <div><dt>On quotes</dt><dd>{{ on_quotes }} line{{ 's' if on_quotes != 1 }}</dd></div>
+    <div><dt>Last changed</dt><dd>{{ item.updated_at.strftime('%b %-d, %Y') if item.updated_at else '' }}</dd></div>
+    {% if item.notes %}<div class="pp-wide"><dt>Notes</dt><dd>{{ item.notes }}</dd></div>{% endif %}
+  </dl>
+  {% if item.specs %}<section><h3>From Cooper's product page</h3><table class="pp-specs">{% for key, value in item.specs.items() %}<tr><th>{{ key }}</th><td>{{ value }}</td></tr>{% endfor %}</table></section>{% endif %}
+  <form method="POST" action="{{ url_for('price_item_profile', item_id=item.id) }}" class="pp-lumens">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.args.get('next') or url_for('pricing_sheet') + '#price-item-' ~ item.id }}">
+    <label><span>Lumens (a light's output; typed lumens are never replaced by Cooper's)</span><input type="number" name="lumens" min="50" max="200000" step="1" value="{{ '%g'|format(item.lumens) if item.lumens else '' }}" placeholder="{{ '%g'|format(item.light_lumens) if item.light_lumens else 'not a light, or not known' }}"></label>
+    <button class="btn btn-secondary btn-small">Save lumens</button>
+  </form>
+  {% if checks %}<section><h3>Cooper price checks</h3><table class="pp-specs">{% for row, batch in checks %}<tr><th>{{ batch.created_at.strftime('%b %-d, %Y') }}</th><td>{% if row.new_price is not none %}${{ '{:,.2f}'.format(row.old_price) }} → ${{ '{:,.2f}'.format(row.new_price) }}{% else %}{{ row.message or row.status }}{% endif %} · {{ row.status }}</td></tr>{% endfor %}</table></section>{% endif %}
+</article>

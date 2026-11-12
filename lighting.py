@@ -193,3 +193,53 @@ def plans(room, fixtures):
         result.append(plan)
     result.sort(key=lambda plan: (plan["material"], plan["count"]))
     return result
+
+
+# ---------------- the room, read from the words of a quote request ----------------
+# "Lighting layout" ticked on a quote: the room comes from what was typed ("kitchen 14x12 with 9 ft ceilings",
+# "18 ft round sunroom", "garage 24 by 24, 10' ceiling, 50 fc"). Plain pattern reading, no AI. Without a length and width
+# there is no room, and the person is asked for it.
+FT = r"(?:'|’|\s*ft\.?|\s*feet|\s*foot)?"
+NUMBER = r"(\d+(?:\.\d+)?)"
+ROOM_WORDS = [
+    ("commercial_office", r"commercial office|open office"), ("kitchen", r"kitchen"), ("dining", r"dining"),
+    ("bedroom", r"bed ?room|master suite"), ("bathroom", r"bath ?room|bath\b|powder room"), ("hallway", r"hallway|hall\b|stairs?|stairway|corridor"),
+    ("laundry", r"laundry|utility room|mud ?room"), ("office", r"office|study|den\b"), ("basement", r"basement"),
+    ("garage", r"garage"), ("workshop", r"workshop|shop\b|work ?bench"), ("retail", r"retail|store\b|showroom"),
+    ("classroom", r"classroom"), ("warehouse", r"warehouse|storage"), ("exterior", r"porch|patio|exterior|outside|pavilion"),
+    ("living", r"living|family room|great room|den|sunroom|bonus room|rec room"),
+]
+
+
+def parse_room(text):
+    """The room (values for read_room) from free text, or None when no length and width (or diameter) are given.
+    The second value says which parts were assumed."""
+    words = " ".join(str(text or "").lower().split())
+    values, assumed = {}, []
+    round_match = re.search(NUMBER + FT + r"\s*(?:round|circular|diameter|across)", words) or re.search(r"(?:round|circular)[a-z ]{0,20}?" + NUMBER + FT, words)
+    rect = re.search(NUMBER + FT + r"\s*(?:x|by|×|\*)\s*" + NUMBER + FT + r"(?:\s*(?:x|by|×|\*)\s*" + NUMBER + FT + r")?", words)
+    if rect:
+        values.update(shape="rect", length=rect.group(1), width=rect.group(2))
+        if rect.group(3):
+            values["height"] = rect.group(3)
+    elif round_match:
+        values.update(shape="circle", length=round_match.group(1))
+    else:
+        return None, []
+    height = re.search(NUMBER + FT + r"\s*(?:high |tall |vaulted |flat )?(?:ceilings?|high\b|tall\b)", words) or \
+        re.search(r"ceilings?(?: height| heights)?(?: is| are| of| at|:)?\s*" + NUMBER, words)
+    if "height" not in values:
+        if height:
+            values["height"] = height.group(1)
+        else:
+            values["height"] = "8"; assumed.append("an 8 ft ceiling")
+    target = re.search(NUMBER + r"\s*(?:fc\b|foot[- ]?candles?)", words)
+    if target:
+        values["target"] = target.group(1)
+    kind = next((key for key, pattern in ROOM_WORDS if re.search(r"\b(?:" + pattern + r")", words)), None)
+    if kind is None:
+        kind = "living"; assumed.append("general living space")
+    values["type"] = kind
+    named = re.search(r"\b(" + "|".join(pattern for _, pattern in ROOM_WORDS) + r")", words)
+    values["name"] = named.group(1).title() if named else ROOM_TYPES[kind][0]
+    return values, assumed

@@ -124,3 +124,23 @@
   });
   refresh();
 })();
+
+/* The (i) next to a material: its profile in a window (the link still opens the page on its own without scripts). */
+(function () {
+  var dialog = document.getElementById('profile-dialog');
+  if (!dialog || !dialog.showModal) return;
+  var body = dialog.querySelector('[data-profile-body]');
+  document.addEventListener('click', function (event) {
+    var link = event.target.closest('a[data-profile]');
+    if (!link || event.metaKey || event.ctrlKey || event.shiftKey) return;
+    event.preventDefault();
+    body.innerHTML = '<p class="muted">Loading…</p>';
+    dialog.showModal();
+    var next = encodeURIComponent(location.pathname + location.search);
+    fetch(link.href + (link.href.indexOf('?') < 0 ? '?' : '&') + 'partial=1&next=' + next, {headers: {'X-Requested-With': 'fetch'}})
+      .then(function (response) { if (!response.ok) throw new Error(response.status); return response.text(); })
+      .then(function (html) { body.innerHTML = html; })
+      .catch(function () { location.href = link.href; });
+  });
+  dialog.addEventListener('click', function (event) { if (event.target === dialog || event.target.closest('[data-profile-close]')) dialog.close(); });
+})();

@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} — Pricing Sheet{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('pricing_sheet') }}">Pricing Sheet</a><span>/</span>{{ item.name }}</div>
+<section class="panel section-panel">{% include "_price_profile.html" %}</section>
+{% endblock %}
