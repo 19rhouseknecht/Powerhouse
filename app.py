@@ -10,6 +10,7 @@ import threading
 import math
 import shutil
 import zipfile
+import lighting
 from difflib import SequenceMatcher
 from functools import wraps
 from urllib.parse import quote_plus
@@ -140,7 +141,13 @@ class PriceItem(db.Model):
     notes = db.Column(db.String(255), nullable=False, default="")
     active = db.Column(db.Boolean, nullable=False, default=True, index=True)
     image_path = db.Column(db.String(255), nullable=False, default="")       # under static/uploads/price-items/
+
+    @property
+    def light_lumens(self):
+        """Lumens typed on the Pricing Sheet, else read from the name ("... 1200 lm"), else None. Never estimated."""
+        return self.lumens if self.lumens else lighting.lumens_from_name(self.name)
     image_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'cooper' (captured by the listener) · 'upload'
+    lumens = db.Column(db.Float, nullable=True)                               # a light's output; blank = read from its name when it says
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     service_links = db.relationship("ServiceItemPricingLink", backref="price_item", cascade="all, delete-orphan")
     quote_lines = db.relationship("QuoteOptionService", back_populates="price_item")
@@ -1043,6 +1050,15 @@ class Quote(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     confirmed_at = db.Column(db.DateTime, nullable=True)
     pricing_needed_json = db.Column(db.Text, nullable=False, default="")    # Caden's suggested prices for unpriced items
+    lighting_json = db.Column(db.Text, nullable=False, default="")          # the room for a lighting layout (lighting.read_room)
+
+    @property
+    def lighting_room(self):
+        try:
+            value = json.loads(self.lighting_json or "{}")
+            return value if isinstance(value, dict) and value.get("length") else None
+        except ValueError:
+            return None
     created_by = db.relationship("User", backref="created_quotes")
     messages = db.relationship("QuoteMessage", backref="quote", cascade="all, delete-orphan", order_by="QuoteMessage.created_at")
     options = db.relationship("QuoteOption", backref="quote", cascade="all, delete-orphan", order_by="QuoteOption.position")
@@ -1103,7 +1119,26 @@ class QuoteOption(db.Model):
     position = db.Column(db.Integer, nullable=False, default=0)
     manually_edited = db.Column(db.Boolean, nullable=False, default=False)
     manual_total_override = db.Column(db.Float, nullable=True)
+    lighting_json = db.Column(db.Text, nullable=False, default="")          # this option's lighting layout (room, fixture, positions)
     lines = db.relationship("QuoteOptionService", backref="option", cascade="all, delete-orphan", order_by="QuoteOptionService.position")
+
+    @property
+    def lighting(self):
+        try:
+            value = json.loads(self.lighting_json or "{}")
+            return value if isinstance(value, dict) and value.get("positions") else None
+        except ValueError:
+            return None
+
+    @property
+    def pictures(self):
+        """[(name, static path)] for the materials in this option that have a Pricing Sheet picture, once each."""
+        seen, found = set(), []
+        for line in self.lines:
+            for name, path in line.pictures:
+                if path not in seen:
+                    seen.add(path); found.append((name, path))
+        return found[:12]
 
     @property
     def bullets(self):
@@ -1167,6 +1202,16 @@ class QuoteOptionService(db.Model):
         if self.manual_priced:
             return "Typed on this quote"
         return "Needs a price"
+
+    @property
+    def pictures(self):
+        """The Pricing Sheet picture(s) for this line: its item's, or the pictured materials of its Service."""
+        if self.price_item_id and self.price_item and self.price_item.image_path:
+            return [(self.price_item.name, self.price_item.image_path)]
+        if self.service_id and self.service:
+            return [(item.catalog_item.name, item.catalog_item.image_path) for item in self.service.items
+                    if item.catalog_item and item.catalog_item.image_path][:4]
+        return []
 
     @property
     def unconfirmed_item(self):
@@ -1496,7 +1541,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "quote_lighting":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2260,6 +2305,8 @@ def quote_assistant(job_id):
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
                            pricing_rows=pricing_needed_rows(quote) if quote.options else [],
+                           lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS,
+                           lighting_plans=lighting_plans_for(quote)[1], lights_missing=lights_without_lumens() if quote.lighting_room or request.args.get("lighting") else [],
                            sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
 
 
@@ -5386,6 +5433,7 @@ JOB:
 ONSITE_INSPECTION:
 {json.dumps(inspection_context)}
 
+{lighting_prompt(quote)}
 GENERATOR_WORK (saved on this job from Generators -> Sizing / Upgrading):
 {generator_context(job) or "Nothing saved for this job."}
 When the client's request involves a generator, build the generator scope from GENERATOR_WORK: the recommended or new model,
@@ -5738,7 +5786,121 @@ def apply_ai_quote_options(quote, option_data):
     found = sheet_found_note(price_missing_from_sheet(quote))
     if found:
         notes.append(found)
+    notes.extend(apply_lighting_plan(quote))
     return list(dict.fromkeys(notes)), suggestions
+
+
+# ---------------- Lighting layouts on a quote ----------------
+# The room (length x width x ceiling, its use) is set on the quote; lighting.py works out, for every light on the Pricing
+# Sheet with known lumens, how many the room needs and where they go. Caden picks one light per option from that list and
+# the count is the layout's, never his own; each option keeps its layout for the 3D view.
+LIGHT_WORDS = ("light", "led", "lamp", "fixture", "downlight", "wafer", "recessed", "troffer", "panel light", "high bay", "highbay",
+               "flush mount", "pendant", "sconce", "strip", "canless", "can light", "retrofit", "flood")
+
+
+NOT_A_LIGHT = re.compile(r"\b(switch|dimmer|sensor|occupancy|timer|driver|transformer|receptacle|outlet|breaker|wire|cable|box|bracket|"
+                         r"cover|plate|bulb socket|photocell|controller|remote|connector)\b", re.IGNORECASE)
+
+
+def lighting_fixtures():
+    """Every active Pricing Sheet item with known lumens (typed, or stated in its name), Unconfirmed included."""
+    rows = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0,
+                                  db.or_(PriceItem.lumens > 0, PriceItem.name.ilike("%lm%"), PriceItem.name.ilike("%lumen%"))).all()
+    found = []
+    for item in rows:
+        lumens = item.light_lumens
+        if lumens:
+            found.append({"id": item.id, "name": item.name, "lumens": lumens, "price": item.price, "labor": item.labor_hours_per_unit,
+                          "image": item.image_path, "unconfirmed": item.category == UNCONFIRMED})
+    return found
+
+
+def lights_without_lumens(limit=30):
+    """Pricing Sheet items that look like lights but have no lumens yet (so they cannot be laid out)."""
+    rows = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.lumens.is_(None), PriceItem.category != UNCONFIRMED,
+                                  db.or_(PriceItem.category.ilike("%light%"), *[PriceItem.name.ilike(f"%{w}%") for w in LIGHT_WORDS])).order_by(PriceItem.name).limit(200).all()
+    return [item for item in rows if not item.light_lumens and not NOT_A_LIGHT.search(item.name)][:limit]
+
+
+def lighting_plans_for(quote):
+    room = quote.lighting_room
+    return (room, lighting.plans(room, lighting_fixtures())) if room else (None, [])
+
+
+def apply_lighting_plan(quote):
+    """Hold each option's light to the layout: its count is the layout's, and the layout is kept for the 3D view."""
+    room, plans = lighting_plans_for(quote)
+    if not room:
+        return []
+    by_item = {plan["id"]: plan for plan in plans}
+    notes = []
+    for option in quote.options:
+        option.lighting_json = ""
+        line = next((line for line in option.lines if line.price_item_id in by_item), None)
+        if line is None:
+            continue
+        plan = by_item[line.price_item_id]
+        if line.multiplier != plan["count"]:
+            notes.append(f"{option.tier}: {line.service_name} set to {plan['count']} (the layout for {room['name']}; Caden had {line.multiplier:g}).")
+            line.multiplier = plan["count"]
+        option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "lumens": plan["lumens"], "count": plan["count"],
+                                           "rows": plan["rows"], "cols": plan["cols"], "positions": plan["positions"], "spacing": plan["spacing"],
+                                           "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"]})
+    return notes
+
+
+def lighting_prompt(quote):
+    """The LIGHTING_PLAN block for Caden, or ''."""
+    room, plans = lighting_plans_for(quote)
+    if not room:
+        return ""
+    rows = [{"price_item_id": plan["id"], "light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"],
+             "grid": f"{plan['rows']} x {plan['cols']}", "footcandles": plan["footcandles"], "material_cost": plan["material"],
+             "unconfirmed": plan["unconfirmed"]} for plan in plans[:40]]
+    return f"""LIGHTING_PLAN for {room['name']} ({room['length']:g} x {room['width']:g} ft, {room['height']:g} ft ceiling, {room['type_label']},
+target {room['target']:g} foot-candles average, worked out with the lumen method):
+{json.dumps(rows) if rows else "No light on the Pricing Sheet has known lumens yet: say so, and put the lights in missing_services."}
+Lighting rule: for this room's general lighting, every option uses exactly ONE light from LIGHTING_PLAN, in items, with its
+price_item_id and exactly its quantity (the quantity is the layout's, not yours). Make the options differ the way a client would
+choose: lower tiers the most economical light that meets the target, higher tiers better lights (higher output for fewer
+fixtures, slimmer or premium trims, dimmable, better color) or more light. Never pick a light whose footcandles fall short of
+the target. Add the switching, dimmers and wiring as usual. Say in the option description how many lights and how bright.
+"""
+
+
+@app.route("/quotes/<int:quote_id>/lighting", methods=["POST"])
+@login_required
+def quote_lighting(quote_id):
+    """Set (or clear) the room for a lighting layout on a draft quote, and lumens for lights that had none."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    if quote.status != "draft":
+        flash("Only a draft quote's lighting room can change.", "error")
+        return redirect(url_for("quote_presentation", quote_id=quote.id))
+    typed = 0
+    for key, value in request.form.items():
+        if key.startswith("lumens_") and key[7:].isdigit() and value.strip():
+            item = db.session.get(PriceItem, int(key[7:]))
+            try:
+                lumens = float(value.replace(",", ""))
+            except ValueError:
+                continue
+            if item is not None and 50 <= lumens <= 200000:
+                item.lumens = lumens; typed += 1
+    if request.form.get("clear"):
+        quote.lighting_json = ""
+        for option in quote.options:
+            option.lighting_json = ""
+        flash("The lighting room was removed from this quote.", "success")
+    else:
+        room = lighting.read_room(request.form)
+        quote.lighting_json = json.dumps(room)
+        apply_lighting_plan(quote)
+        flash(f"Lighting room set: {room['name']}, {room['length']:g} x {room['width']:g} ft, {room['height']:g} ft ceiling, "
+              f"{room['target']:g} foot-candles." + (f" Lumens saved for {typed} light(s)." if typed else "")
+              + " Ask Caden to build (or rebuild) the options and he will lay the lights out.", "success")
+    db.session.commit()
+    return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#lighting")
 
 
 # ---------------- Pricing Sheet matching for quote lines ----------------
@@ -6030,6 +6192,12 @@ def save_price_item_from_form(item=None):
     item.labor_hours_per_unit = labor_hours
     item.cooper_part_number = part_number
     item.notes = request.form.get("notes", "").strip()
+    if "lumens" in request.form:
+        try:
+            typed = float(request.form.get("lumens", "").replace(",", "").strip() or 0)
+            item.lumens = typed if typed > 0 else None
+        except ValueError:
+            return "Lumens must be a number.", item
     item.active = True
     # Reconcile supplier rows in place. Clearing and recreating an unchanged
     # part number can make SQLite insert the replacement before deleting the
@@ -7852,6 +8020,7 @@ with app.app_context():
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
         ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_item", "lumens", "FLOAT"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
