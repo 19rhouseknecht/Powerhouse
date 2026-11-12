@@ -4188,7 +4188,7 @@ def download_cooper_listener():
 
 # ---------------- Cooper's catalog -> Unconfirmed items ----------------
 UNCONFIRMED = "Unconfirmed"
-CATALOG_BATCH, CATALOG_BATCH_MAX = 200, 2000        # new items one "Add all items from Cooper" run adds before it stops
+CATALOG_BATCH, CATALOG_BATCH_MAX = 5000, 20000        # new items one "Add all items from Cooper" run adds before it stops
 CATALOG_UNITS = {"ea", "ft", "box", "roll", "lb"}
 
 
