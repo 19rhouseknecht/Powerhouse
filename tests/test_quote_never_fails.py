@@ -86,9 +86,9 @@ check(len(st["options"]) == 3, "a made-up price no longer stops the quote: all 3
 check(not any("couldn" in msg.lower() for msg in st["messages"]), "and Caden never says he couldn't")
 check(("Fluorescent/LED tube set", 6.0, True) in st["options"][0][1], "the made-up price is not in the totals: the item is marked to price, qty 6 (and Caden's \"(direct-priced)\" label is gone)")
 check(st["missing"], "so the draft cannot be confirmed until it is priced")
-check(any("need a price before this quote is final" in msg for msg in st["messages"]), "Caden says, kindly, which items need a price")
-check("Needs a price" in page or "items need a price" in page, "the draft shows the Needs a price panel at the top")
-check('value="18.50"' in page and 'value="64.00"' in page, "with Caden's suggested prices filled in (18.50 and 64.00)")
+check(any("not priced from the Pricing Sheet yet" in msg and "only my guess" in msg for msg in st["messages"]), "Caden says which items are not priced from the Pricing Sheet, and that his figures are guesses")
+check("not priced from the Pricing Sheet yet" in page, "the draft shows the Needs a price panel at the top")
+check("Caden's guess: $18.50" in page and "Caden's guess: $64.00" in page and 'value="18.50"' not in page, "Caden's guesses are shown as guesses (18.50 and 64.00), never filled in")
 check("Typical supply-house price." in page, "and his reason")
 
 # 2. pricing them from the panel

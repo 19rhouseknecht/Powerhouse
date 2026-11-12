@@ -1118,3 +1118,16 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .gen-job-note a { color:var(--accent-hover); }
 .gen-save-to { flex:1 1 220px; align-self:center; }
 .gen-sub { margin:14px 0 0; font-size:14px; }
+
+/* Quotes: where each price comes from */
+.sheet-picks { display:grid; gap:6px; margin-top:8px; }
+.sheet-picks-label { color:var(--muted); }
+.sheet-pick { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; border:1px solid rgba(22,163,74,.4); border-radius:8px; background:rgba(22,163,74,.08); font-size:12px; }
+.sheet-pick > span { min-width:0; overflow-wrap:anywhere; }
+.unconfirmed-tag { font-style:normal; color:#fde68a; border:1px solid rgba(217,119,6,.55); border-radius:999px; padding:0 6px; font-size:10px; margin-left:4px; }
+.needs-price-guess { display:block; color:var(--muted); font-style:italic; margin-top:4px; }
+.price-source { font-weight:600; color:#86efac; }
+.price-source.src-unconfirmed { color:#fde68a; }
+.price-source.src-missing { color:#fca5a5; }
+.confirm-item-form { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:4px 0 2px; }
+.confirm-item-form select { min-width:0; max-width:200px; font-size:12px; padding:5px 8px; }
