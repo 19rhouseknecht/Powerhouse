@@ -1159,13 +1159,18 @@ class QuoteOptionService(db.Model):
 
     @property
     def source_label(self):
+        """Where this line's price comes from, said plainly on the draft."""
         if self.service_id:
             return "Service"
         if self.price_item_id:
-            return "Pricing item"
+            return "Pricing Sheet (Unconfirmed)" if self.price_item and self.price_item.category == UNCONFIRMED else "Pricing Sheet"
         if self.manual_priced:
-            return "Manual quote line"
-        return "Missing"
+            return "Typed on this quote"
+        return "Needs a price"
+
+    @property
+    def unconfirmed_item(self):
+        return self.price_item if self.price_item_id and self.price_item and self.price_item.category == UNCONFIRMED else None
 
     @property
     def total(self):
@@ -1491,7 +1496,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2254,7 +2259,8 @@ def quote_assistant(job_id):
         return redirect(url_for("quote_assistant", job_id=job.id))
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
-                           pricing_rows=pricing_needed_rows(quote) if quote.options else [])
+                           pricing_rows=pricing_needed_rows(quote) if quote.options else [],
+                           sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
 
 
 @app.route("/quotes/<int:quote_id>/option-count", methods=["POST"])
@@ -2635,6 +2641,52 @@ def repair_quote_missing(quote_id):
     quote.messages.append(QuoteMessage(role="assistant", content=mapping_message))
     db.session.commit()
     return redirect(url_for("quote_assistant", job_id=quote.job_id))
+
+
+@app.route("/quotes/<int:quote_id>/use-sheet-item", methods=["POST"])
+@login_required
+def use_sheet_item(quote_id):
+    """"Use this" in the Needs a price panel: price that one item from the chosen Pricing Sheet item (nothing else changes)."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    if quote.status != "draft":
+        flash("Only a draft quote can be priced here.", "error")
+        return redirect(url_for("quote_presentation", quote_id=quote.id))
+    index, _, item_id = request.form.get("pick", "").partition(":")
+    key = request.form.get(f"key_{index}", "").strip()
+    item = db.session.get(PriceItem, int(item_id)) if item_id.isdigit() else None
+    if not key or item is None or not item.active:
+        flash("That Pricing Sheet item is no longer available.", "error")
+        return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#needs-price")
+    lines = [line for option in quote.options for line in option.lines if line.is_missing and
+             ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
+              (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88))]
+    asked = lines[0].service_name if lines else key
+    for line in lines:
+        price_line_from_item(line, item)
+    if lines:
+        quote.messages.append(QuoteMessage(role="assistant", content=f"Priced from the Pricing Sheet: {asked} → {item.name} at ${item.price:,.2f}/{item.unit}"
+                                           + (f" + {item.labor_hours_per_unit:g} hr" if item.labor_hours_per_unit else "")
+                                           + (" (Unconfirmed: confirm it on the line when it looks right)." if item.category == UNCONFIRMED else ".")))
+        flash(f"{asked} is priced from the Pricing Sheet ({item.name}).", "success")
+    db.session.commit()
+    return redirect(url_for("quote_assistant", job_id=quote.job_id) + ("#needs-price" if quote.has_missing_pricing else ""))
+
+
+@app.route("/quoting/pricing/items/<int:item_id>/confirm", methods=["POST"])
+@login_required
+def confirm_unconfirmed_item(item_id):
+    """An Unconfirmed item (from Cooper's catalog) becomes a normal Pricing Sheet item in the chosen category."""
+    check_csrf()
+    item = db.get_or_404(PriceItem, item_id)
+    category = " ".join(request.form.get("category", "").split())[:100] or "General"
+    if item.category == UNCONFIRMED and category != UNCONFIRMED:
+        item.category = category
+        item.notes = (item.notes + f" · Confirmed by {current_user.username} {datetime.utcnow():%b %-d, %Y}")[:255]
+        db.session.commit()
+        flash(f"{item.name} is confirmed, in {category} on the Pricing Sheet.", "success")
+    back = request.form.get("next", "")
+    return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("pricing_sheet"))
 
 
 @app.route("/quotes/<int:quote_id>/use-prices", methods=["POST"])
@@ -5683,7 +5735,98 @@ def apply_ai_quote_options(quote, option_data):
         if not option.lines:
             pending(option, "Service library match needed")
         quote.options.append(option)
+    found = sheet_found_note(price_missing_from_sheet(quote))
+    if found:
+        notes.append(found)
     return list(dict.fromkeys(notes)), suggestions
+
+
+# ---------------- Pricing Sheet matching for quote lines ----------------
+# Every quote price comes from the Pricing Sheet (Unconfirmed items included) or a Service. An item Caden names without
+# linking it is looked up here: a clear match is priced from the sheet at once, near matches are offered with one click,
+# and Caden's own figure stays a hint that is never used unless someone types it.
+SHEET_AUTO_SCORE = 0.86          # a match this strong (with every size agreeing) is used without asking
+SHEET_OFFER_SCORE = 0.45         # anything at least this close is offered
+MATCH_WORD_FILLER = SCOPE_FILLER | {"pricing", "pending", "needed", "item", "items", "material", "materials", "labor", "per", "each",
+                                    "ea", "ft", "foot", "feet", "inch", "in", "piece", "pc", "pcs", "pack", "box", "roll", "to", "on", "at"}
+
+
+def _match_tokens(name):
+    text = str(name or "").lower().replace('"', " in ").replace("’", "'")
+    return re.findall(r"[a-z0-9]+(?:[./-][a-z0-9]+)*", text)
+
+
+def _sizes(tokens):
+    """Tokens that carry a size or rating (20a, 12/2, 1-1/4, 200a, 50ft): these must agree for a match to count."""
+    return {t for t in tokens if re.search(r"\d", t)}
+
+
+def sheet_matches(name, limit=3):
+    """Pricing Sheet items (active, Unconfirmed included) that could be this item: [(score, item)], best first."""
+    tokens = _match_tokens(name)
+    words = [t for t in tokens if t not in MATCH_WORD_FILLER and len(t) > 1]
+    if not words:
+        return []
+    part_keys = {canonical_part_number(t) for t in words if re.search(r"[a-z]", t) and re.search(r"\d", t) and len(canonical_part_number(t)) >= 5}
+    distinctive = sorted(set(words), key=lambda w: (-len(w), w))[:3]
+    query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
+    rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in distinctive],
+                               *[PriceItem.cooper_part_number.ilike(f"%{w}%") for w in distinctive])).limit(400).all()
+    want_words, want_sizes = set(words), _sizes(words)
+    want_canon = canonical_item_name(name)
+    scored = []
+    for item in rows:
+        if part_keys and canonical_part_number(item.cooper_part_number) in part_keys:
+            scored.append((1.0, item)); continue
+        have = [t for t in _match_tokens(item.name) if t not in MATCH_WORD_FILLER and len(t) > 1]
+        have_words = set(have)
+        shared = len(want_words & have_words)
+        contained = shared / max(len(want_words), 1)              # how much of what was asked for the sheet item has
+        overlap = shared / max(len(want_words | have_words), 1)
+        ratio = SequenceMatcher(None, want_canon, canonical_item_name(item.name)).ratio()
+        score = 0.5 * contained + 0.25 * overlap + 0.25 * ratio
+        if want_sizes and not want_sizes <= _sizes(have):
+            score = min(score, SHEET_AUTO_SCORE - 0.01) * 0.75          # a different size is never the same item
+        if score >= SHEET_OFFER_SCORE:
+            scored.append((round(score, 3), item))
+    scored.sort(key=lambda row: (-row[0], row[1].category == UNCONFIRMED, row[1].name))
+    return scored[:limit]
+
+
+def price_line_from_item(line, item):
+    """Point a quote line at a Pricing Sheet item, at the sheet's price and labor."""
+    rate = get_labor_rate()
+    line.service = None; line.price_item = item; line.manual_priced = False
+    line.service_name = item.name; line.example_quantity = f"1 {item.unit}"
+    line.material_unit_price = item.price; line.labor_hours_per_unit = item.labor_hours_per_unit
+    line.labor_rate_snapshot = rate; line.unit_price = item.price + item.labor_hours_per_unit * rate
+
+
+def price_missing_from_sheet(quote):
+    """Price every unpriced line that clearly matches one Pricing Sheet item. Returns [(asked name, item)] used."""
+    used = []
+    for option in quote.options:
+        for line in option.lines:
+            if not line.is_missing:
+                continue
+            matches = sheet_matches(line.service_name, limit=2)
+            if not matches or matches[0][0] < SHEET_AUTO_SCORE:
+                continue
+            if len(matches) > 1 and matches[1][0] >= SHEET_AUTO_SCORE and matches[1][1].price != matches[0][1].price:
+                continue                       # two strong matches at different prices: a person picks
+            asked = line.service_name
+            price_line_from_item(line, matches[0][1])
+            used.append((asked, matches[0][1]))
+    return used
+
+
+def sheet_found_note(used):
+    if not used:
+        return ""
+    names = sorted({item.name for _, item in used})
+    unconfirmed = sorted({item.name for _, item in used if item.category == UNCONFIRMED})
+    return (f"Found on the Pricing Sheet and priced from it: {', '.join(names[:8])}{' and more' if len(names) > 8 else ''}."
+            + (f" Unconfirmed (from Cooper's catalog): {', '.join(unconfirmed[:6])}; confirm them on the quote when they look right." if unconfirmed else ""))
 
 
 def remember_pricing_suggestions(quote, ai_suggestions, line_suggestions):
@@ -5703,8 +5846,10 @@ def quote_ready_summary(quote, notes=()):
     parts = []
     if rows:
         names = ", ".join(row["name"] for row in rows[:6]) + (" and more" if len(rows) > 6 else "")
-        parts.append(f"All {quote.option_count} options are built. {len(rows)} item{'s need' if len(rows) != 1 else ' needs'} a price before this quote is final: {names}. "
-                     "They're at the top of the draft with my suggested prices; adjust them if needed and press Use these prices.")
+        on_sheet = sum(1 for row in rows if row["candidates"])
+        parts.append(f"All {quote.option_count} options are built. {len(rows)} item{'s are' if len(rows) != 1 else ' is'} not priced from the Pricing Sheet yet: {names}. "
+                     + (f"{on_sheet} of them have a likely Pricing Sheet match at the top of the draft: press Use this. " if on_sheet else "")
+                     + "Any figure I gave is only my guess and is not used unless you type it.")
     for note in notes:
         parts.append("• " + note)
     return "\n\n".join(parts)
@@ -5719,11 +5864,14 @@ def pricing_needed_rows(quote):
         suggestion = saved.get(key) or next((row for other, row in saved.items()
                                               if SequenceMatcher(None, other, key).ratio() >= .82), {})
         quantities = sorted({line.multiplier for line in group["lines"]})
-        rows.append({"key": group["key"], "name": group["name"], "tiers": group["tiers"], "lines": len(group["lines"]),
+        candidates = [{"id": item.id, "name": item.name, "price": item.price, "unit": item.unit, "labor": item.labor_hours_per_unit,
+                       "unconfirmed": item.category == UNCONFIRMED, "part": item.cooper_part_number}
+                      for score, item in sheet_matches(group["name"], limit=3)]
+        rows.append({"key": group["key"], "name": group["name"], "tiers": group["tiers"], "lines": len(group["lines"]), "candidates": candidates,
                      "quantities": quantities, "quantity_text": " / ".join("%g" % q for q in quantities), "unit": suggestion.get("unit") or "ea",
                      "material": suggestion.get("suggested_material_price"), "labor": suggestion.get("suggested_labor_hours"),
                      "reason": suggestion.get("reason") or ""})
-    rows.sort(key=lambda row: row["material"] is None)          # Caden's priced suggestions first
+    rows.sort(key=lambda row: not row["candidates"])            # the ones the Pricing Sheet can price first
     return rows
 
 
