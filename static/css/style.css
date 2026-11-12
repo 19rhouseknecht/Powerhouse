@@ -428,8 +428,8 @@ body:has(.client-presentation) .topbar, body:has(.client-presentation) .sidebar 
 .pricing-form input, .pricing-form select, .pricing-table input, .pricing-table select { background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 9px; color: var(--text); min-width: 0; }
 .pricing-filters { margin-top: 20px; }
 .pricing-table-panel { padding: 12px 18px; }
-.pricing-table td:first-child { min-width: 190px; }
-.pricing-table td:nth-child(2) { min-width: 135px; }
+.pricing-table td:nth-child(3) { min-width: 200px; }
+.pricing-table td:nth-child(4) { min-width: 130px; }
 .pricing-table input, .pricing-table select { width: 100%; }
 .pricing-table td small { max-width: 220px; }
 .money-input { display: flex; align-items: center; gap: 3px; }
@@ -875,7 +875,7 @@ body:has(.client-presentation) .topbar, body:has(.client-presentation) .sidebar 
 .btn { white-space: nowrap; }
 .app-page > .panel + .section-title, .app-page > .panel + h2, .app-page > section + .section-title { margin-top: 28px; }
 .pricing-table td:has(> select[name="unit"]), .pricing-table td:has(select[name="unit"]) { min-width: 96px; }
-.pricing-table select[name="unit"] { min-width: 84px; }
+.pricing-table select[name="unit"] { min-width: 112px; }
 .label-note { font-weight: 400; color: #78716c; }
 .clock-card h2, .visit-card h2 { margin: 4px 0; color: var(--text); font-size: 19px; text-transform: none; letter-spacing: normal; }
 .clock-card .live-timer, .visit-card .live-timer { color: var(--accent-hover); font-size: 38px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -888,7 +888,7 @@ label.check-line > input[type="checkbox"], label.check-line > input[type="radio"
 .item-table a:not(.btn), .record-notes a, .compact-job-list a { color: var(--accent-hover); }
 .pricing-form { align-items: flex-start; }
 .pricing-form > .btn { align-self: flex-start; margin-top: 21px; }
-.pricing-table td:has(> .price-actions), .pricing-table td.price-actions, .pricing-table thead th:last-child { position: sticky; right: 0; z-index: 1; background: var(--panel); box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .7); }
+.pricing-table td.price-actions { position: sticky; right: 0; z-index: 1; background: var(--panel); box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .7); }
 td.row-actions { display: table-cell; text-align: right; white-space: nowrap; vertical-align: middle; }
 td.row-actions > * { display: inline-flex; vertical-align: middle; margin-left: 6px; }
 td.row-actions > form { margin: 0 0 0 6px; }
@@ -959,3 +959,22 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
   .needs-price-item { grid-column: 1 / -1; }
   .needs-price-save { grid-column: 1 / -1; }
 }
+.listener-outdated { margin: 12px 0; padding: 12px 14px; border: 1px solid rgba(217, 119, 6, .55); background: rgba(217, 119, 6, .08); border-radius: 10px; font-size: 13px; color: #fde68a; line-height: 1.5; }
+.listener-current { margin: 10px 0 0; font-size: 12px; }
+
+/* Pricing Sheet: pictures, selection and autosave */
+.pricing-table th.price-select, .pricing-table td.price-select { width: 34px; text-align: center !important; padding-left: 6px; padding-right: 2px; }
+.pricing-table td.price-image, .pricing-table th.price-image { width: 54px; padding-left: 2px; padding-right: 4px; }
+.price-thumb { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 8px; border: 1px dashed #57534e; background: var(--bg); color: var(--muted); cursor: pointer; overflow: hidden; font-size: 16px; transition: border-color .15s; }
+.price-thumb:hover, .price-thumb:focus-within { border-color: var(--accent); color: var(--accent-hover); }
+.price-thumb.has-image { border-style: solid; background: #fff; }
+.price-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.autosave-status { display: block; min-height: 14px; margin-top: 3px; font-size: 11px; color: var(--muted); }
+.autosave-status.is-ok { color: #86efac; }
+.autosave-status.is-error { color: #fca5a5; }
+.selection-bar { position: sticky; bottom: 12px; z-index: 6; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px auto 0; padding: 10px 14px; width: fit-content; max-width: 100%; background: #292524; border: 1px solid var(--accent); border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, .5); }
+.selection-bar strong { font-size: 13px; margin-right: 4px; }
+.selection-bar[hidden] { display: none; }
+.selection-bar form { margin: 0; }
+.pricing-table th.price-select, .pricing-table th.price-image { text-align: center !important; }
+.pricing-table .price-image .price-thumb { margin: 0 auto; }
