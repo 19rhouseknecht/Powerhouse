@@ -1033,3 +1033,32 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .sizing-fields label { min-width: 0; }
 .sizing-fields input, .sizing-save select { width: 100%; min-width: 0; }
 .sizing-result > * { min-width: 0; }
+
+/* Ask Caleb */
+.caleb-heading { display:flex; justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap; }
+.caleb-heading > div { max-width:760px; min-width:0; }
+.caleb-panel { padding:0; overflow:hidden; max-width:980px; }
+.caleb-head { display:flex; align-items:center; gap:11px; padding:14px 16px; border-bottom:1px solid var(--border); background:#171412; }
+.caleb-head > div:last-child { display:grid; gap:2px; min-width:0; }
+.caleb-head small { color:var(--muted); font-size:12px; }
+.caleb-messages { height:min(60vh, 620px); overflow-y:auto; display:flex; flex-direction:column; gap:12px; padding:18px 16px; }
+.caleb-message { max-width:min(88%, 760px); padding:11px 14px; border-radius:10px; background:#292524; }
+.caleb-message.user { align-self:flex-end; background:#6b3c08; }
+.caleb-message > span { color:var(--accent-hover); font-size:10px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; }
+.caleb-text { margin-top:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:14px; line-height:1.6; color:#e7e5e4; }
+.caleb-text a { color:var(--accent-hover); }
+.caleb-wait .caleb-text { color:var(--muted); font-style:italic; }
+.caleb-looked { margin-top:8px; color:var(--muted); font-size:12px; }
+.caleb-looked summary { cursor:pointer; }
+.caleb-looked ul { margin:6px 0 0; padding-left:18px; }
+.caleb-welcome { margin:auto 0; padding:18px; color:var(--muted); border:1px dashed var(--border); border-radius:10px; }
+.caleb-welcome strong { color:var(--text); font-size:15px; }
+.caleb-welcome p { margin:6px 0 12px; line-height:1.5; }
+.caleb-examples { display:flex; flex-wrap:wrap; gap:8px; }
+.caleb-example { padding:8px 12px; border:1px solid var(--border); border-radius:999px; background:#1c1917; color:var(--text); font:inherit; font-size:13px; text-align:left; cursor:pointer; }
+.caleb-example:hover { border-color:var(--accent); }
+.caleb-form { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:end; padding:14px 16px; border-top:1px solid var(--border); }
+.caleb-form textarea { width:100%; min-width:0; resize:vertical; }
+.caleb-foot { margin:0; padding:0 16px 14px; color:var(--muted); font-size:12px; line-height:1.5; }
+.caleb-foot a { color:var(--accent-hover); }
+@media (max-width:620px) { .caleb-messages { height:58vh; padding:14px 10px; } .caleb-message { max-width:94%; } .caleb-form { grid-template-columns:1fr; } .caleb-form .btn { width:100%; } }

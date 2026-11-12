@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Ask Caleb — Power House{% endblock %}
+{% block content %}
+<div class="page-heading caleb-heading">
+  <div><span class="eyebrow">Help</span><h1>Ask Caleb</h1><p>Your first stop before calling Caleb: electrical work and the 2020 NEC Pennsylvania enforces, Kohler generators, and what's in this software about our clients, jobs and quotes.</p></div>
+  {% if messages %}<form method="POST" action="{{ url_for('caleb_new') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-secondary">New conversation</button></form>{% endif %}
+</div>
+<section class="panel caleb-panel">
+  <div class="caleb-head">
+    <div class="mike-avatar">C</div>
+    <div><strong>Caleb</strong><small>{{ 'Ready' if ready else 'Not connected' }}{% if sees %} · can look up {{ sees|join(', ') }}{% endif %}</small></div>
+  </div>
+  <div class="caleb-messages" id="caleb-messages">
+    {% for message in messages %}
+    <div class="caleb-message {{ message.role }}" {% if loop.last %}id="latest"{% endif %}>
+      <span>{{ 'You' if message.role == 'user' else 'Caleb' }}</span>
+      <div class="caleb-text">{{ message.content|caleb_links }}</div>
+      {% if message.looked_up %}<details class="caleb-looked"><summary>What I looked at</summary><ul>{% for line in message.looked_up.split('\n') %}<li>{{ line }}</li>{% endfor %}</ul></details>{% endif %}
+    </div>
+    {% else %}
+    <div class="caleb-welcome">
+      <strong>Ask anything you'd normally call Caleb about.</strong>
+      <p>Code questions, wire and breaker sizing, generators, how something works here, or where a job stands. Try one:</p>
+      <div class="caleb-examples">{% for example in examples %}<button type="button" class="caleb-example" data-ask="{{ example }}">{{ example }}</button>{% endfor %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  <form method="POST" action="{{ url_for('caleb_ask') }}" class="caleb-form" id="caleb-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <textarea name="question" id="caleb-question" rows="3" required maxlength="4000" placeholder="Ask Caleb…"></textarea>
+    <button class="btn btn-primary" id="caleb-send" {{ 'disabled' if not ready }}>Ask</button>
+  </form>
+  <p class="caleb-foot">Caleb reads our records but never changes them. Check code answers against the code book and the inspector; when something is unsafe or a judgment call, call Caleb.{% if current_user.role and current_user.role.is_admin and agent %} <a href="{{ url_for('edit_agent', agent_id=agent.id) }}">Teach Caleb more</a>{% endif %}</p>
+</section>
+<script>
+(function () {
+  var box = document.getElementById('caleb-messages'), form = document.getElementById('caleb-form'), field = document.getElementById('caleb-question'), send = document.getElementById('caleb-send');
+  if (box) box.scrollTop = box.scrollHeight;
+  document.querySelectorAll('[data-ask]').forEach(function (button) {
+    button.addEventListener('click', function () { field.value = button.getAttribute('data-ask'); field.focus(); });
+  });
+  field.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter' && !event.shiftKey && field.value.trim() && !send.disabled) { event.preventDefault(); form.requestSubmit ? form.requestSubmit() : form.submit(); }
+  });
+  form.addEventListener('submit', function () {
+    send.disabled = true; send.textContent = 'Thinking…';
+    var wait = document.createElement('div'); wait.className = 'caleb-message assistant caleb-wait';
+    wait.innerHTML = '<span>Caleb</span><div class="caleb-text">Looking into it… this can take up to a minute.</div>';
+    box.appendChild(wait); box.scrollTop = box.scrollHeight;
+  });
+})();
+</script>
+{% endblock %}

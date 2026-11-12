@@ -15,6 +15,7 @@ from functools import wraps
 from urllib.parse import quote_plus
 from datetime import datetime, date, timedelta
 
+from markupsafe import Markup, escape
 from flask import Flask, render_template, request, redirect, url_for, flash, session, abort, send_from_directory, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
@@ -308,6 +309,17 @@ class FlowChart(db.Model):
     updated_at = db.Column(db.DateTime, nullable=True)
     updated_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
     updated_by = db.relationship("User")
+
+
+class CalebMessage(db.Model):
+    """One line of a person's conversation with Ask Caleb. "New conversation" sets cleared; nothing is deleted."""
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    role = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    looked_up = db.Column(db.Text, nullable=False, default="")       # what Caleb looked at for this answer, one per line
+    cleared = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
 class GeneratorSizing(db.Model):
@@ -6446,6 +6458,329 @@ def generator_sizing():
                            models=gen.KOHLER_MODELS, jobs=jobs, selected_job=request.args.get("job_id", type=int))
 
 
+# ---------------- Ask Caleb ----------------
+# The team's first stop for help, before calling Caleb himself: electrical work and the code Pennsylvania enforces
+# (2020 NEC), Kohler generators, and everything in this software about clients, jobs, quotes, services and prices.
+# He reads the records through the tools below, only what the person asking may see (their role's permissions),
+# and never changes anything. Admins teach him more under Settings -> AI agents -> Caleb (knowledge and reference files).
+
+CALEB_IDENTITY = ("You are Caleb, Power House Electrical Solutions' in-house electrical expert and helper. Employees ask you first, "
+                  "before calling Caleb (the owner) on the phone. Be practical, safe and plain-spoken, like a master electrician "
+                  "talking to his own crew and office staff.")
+CALEB_PROMPT = """Answer like a master electrician who also knows this company's software inside out.
+- Electrical work and code: Pennsylvania enforces the 2020 National Electrical Code (NFPA 70) through the Uniform Construction Code. Cite the article or section (for example "NEC 210.8(A)") when you state a code requirement. Say when the township or inspector (the AHJ) may have local amendments, and when you are not sure of an exact section, say so instead of guessing.
+- Kohler generators: sizing, models, fuel, transfer switches, placement and clearances, maintenance. For a sizing, use the size_generator tool, which is the same math as the Generators -> Sizing page, and point them to that page.
+- This company: look records up with the tools before you answer anything about a client, a job, a quote, a service or a price. Never guess a name, number, status or price; if a tool finds nothing, say so. Mention jobs as "Job #<number>" so they link.
+- Safety first: never coach live work that should be de-energized. When something is dangerous, a judgment call for the owner, a warranty or a pricing decision, or beyond what you can confirm, tell them it is worth calling Caleb.
+- Keep answers short: a direct answer first, then the few details that matter. Plain text, short paragraphs and simple "- " lists. No markdown headings, tables or bold."""
+CALEB_HISTORY = 16
+CALEB_TOOL_ROUNDS = 6
+CALEB_LIMIT = 8
+CALEB_EXAMPLES = (
+    "What does Premium mean on our quotes?",
+    "What size wire and breaker for a 48 A EV charger?",
+    "Which Kohler generator for a 2,600 sq ft home with a 4-ton A/C on natural gas?",
+    "Where are we on the Smith job?",
+    "Where does GFCI protection have to go in a kitchen remodel?",
+)
+
+
+def caleb_agent():
+    return AiAgent.query.filter(db.func.lower(AiAgent.name) == "caleb").first()
+
+
+def caleb_company_facts(user):
+    """What Caleb knows about this company without looking anything up."""
+    lines = [
+        "HOW QUOTES WORK HERE",
+        "A quote offers the client options in tiers, lowest to highest: " + ", ".join(QUOTE_TIERS) + ". A three-option quote uses "
+        + ", ".join(THREE_OPTION_TIERS) + ". Each higher tier adds scope or uses a better product than the one below. Caden (the quoting AI) "
+        "builds the options from the Services library and the Pricing Sheet; a person confirms the quote and presents it.",
+        "Words on a quote: \"Premium installation of ...\" (or \"Premium replacement of ...\") means the upgraded product or higher-quality "
+        "version, offered in the higher tiers. \"Turnkey installation of ...\" means a complete new install we supply, wire and finish. "
+        "\"Replacement of ...\" swaps old for new, \"Upgrade of ...\" improves what is there, \"Safety inspection of ...\" is checking and testing. "
+        "Labor, setup, cleanup, travel and disposal are always included and never listed.",
+        "Client-facing names: GFCI = water-protection receptacle/breaker, AFCI = fire-protection breaker, SPD = whole-home surge protector, "
+        "tamper-resistant = child-safe receptacle, interlock = generator safety switch, load center = electrical panel.",
+        "",
+        "JOBS",
+        "Statuses: " + "; ".join(label for _, label in JOB_STATUSES) + ".",
+        "The Jobs page groups them: In the works (before a quote), Quoted (a confirmed quote waiting on the client), Active (approved, "
+        "scheduled or in progress) and Completed (completed or declined). Many clients and jobs are pulled from Jobber.",
+        "",
+        "WHERE THINGS ARE IN THE SOFTWARE",
+        "Quoting -> Generate Quote (Caden builds tiered options), Pricing Sheet (material prices, Cooper prices), Labor Calculator (Mike, labor "
+        "times), Services. Clients & Jobs -> Clients, Jobs, Schedule. Sales -> Onsite Checklist (site visits on jobs in the works), Reviews. "
+        "Time Tracking -> Time Clock, Timesheet. Bookkeeping -> Tasking (Brendon), Training (Darwin). Generators -> Sizing. Settings is admins only.",
+        "",
+        "KOHLER AIR-COOLED MODELS ON THE SIZING PAGE (kW on LP / natural gas)",
+    ]
+    lines += ["- %s: %g / %g kW (%s)" % (model, lp, ng, description) for model, lp, ng, description in gen.KOHLER_MODELS]
+    lines.append("Above the largest of these: load management or a Kohler liquid-cooled unit (30 kW and up), sized with Kohler or the distributor.")
+    if user.can("view_pricing"):
+        lines += ["", "Company labor rate: $%.2f per hour." % get_labor_rate()]
+    return "\n".join(lines)
+
+
+def caleb_tools(user):
+    """The look-ups this person's role allows (OpenAI function tools)."""
+    def tool(name, description, properties, required=None):
+        return {"type": "function", "name": name, "description": description, "strict": True,
+                "parameters": {"type": "object", "properties": properties, "required": required or list(properties), "additionalProperties": False}}
+    text = {"type": "string"}
+    number = {"type": "integer"}
+    tools = [tool("size_generator", "Size a Kohler home standby generator (the Generators -> Sizing math). Give only what you know; "
+                  "leave other numbers null for the page's defaults.",
+                  {name: {"type": ["number", "null"], "description": label} for name, (label, *_rest) in gen.FIELDS.items()}
+                  | {name: {"type": ["string", "null"], "enum": [value for value, _ in options] + [None]} for name, options in gen.CHOICES.items()})]
+    if user.can("view_clients"):
+        tools.append(tool("find_clients", "Search clients by name, company, phone, email, address or tag.", {"query": text}))
+        tools.append(tool("client_details", "One client's contact details, notes and jobs.", {"client_id": number}))
+    if user.can("view_jobs"):
+        tools.append(tool("find_jobs", "Search jobs by job number, title, description, client name or address. group narrows to a Jobs tab.",
+                          {"query": text, "group": {"type": "string", "enum": ["any", "in_works", "quoted", "active", "completed"]}}))
+        tools.append(tool("job_details", "One job: status, client, address, notes, dates, its quotes and their options, site visits and generator sizings.",
+                          {"job_id": number}))
+    if user.can("view_services"):
+        tools.append(tool("find_services", "Search the Services library (what we sell, its parts and labor hours).", {"query": text}))
+    if user.can("view_pricing"):
+        tools.append(tool("find_price_items", "Search the Pricing Sheet (materials: price, unit, labor hours, Cooper part number).", {"query": text}))
+    return tools
+
+
+def _caleb_words(query):
+    return [word for word in re.split(r"\s+", str(query or "").strip()) if word][:6]
+
+
+def _caleb_client_row(client):
+    return {"client_id": client.id, "name": client.full_name, "phone": client.phone, "email": client.email,
+            "address": client.primary_address, "tags": client.tag_list, "jobs": len(client.jobs)}
+
+
+def _caleb_job_row(job):
+    return {"job_id": job.id, "job_number": job.job_number, "title": job.title, "client": job.client.full_name if job.client else "",
+            "status": job.status_label, "group": job.bucket, "address": job.job_address,
+            "updated": job.updated_at.strftime("%Y-%m-%d") if job.updated_at else ""}
+
+
+def caleb_run_tool(name, args, user):
+    """Run one look-up for this person. Read only; a look-up their role does not allow answers with a refusal."""
+    allowed = {tool["name"] for tool in caleb_tools(user)}
+    if name not in allowed:
+        return {"error": "This person's role cannot see that, so do not answer it from guesswork."}
+    args = args if isinstance(args, dict) else {}
+    if name == "size_generator":
+        values = {key: value for key, value in args.items() if value is not None}
+        values["calculate"] = "1"
+        result = gen.size(values)
+        return {"needs_kw": result["required_kw"], "running_kw": result["running_kw"], "starting_kw": result["starting_kw"],
+                "starting_set_by": result["sets_start"], "recommended": result["model"],
+                "with_load_management": result["with_load_management"], "transfer_switch_amps": result["transfer_switch_amps"],
+                "notes": result["notes"], "lines": [{"load": row[0], "running_kw": round(row[1], 2), "starting_kw": round(row[2], 2)} for row in result["rows"]],
+                "page": url_for("generator_sizing")}
+    if name == "find_clients":
+        query = Client.query
+        for word in _caleb_words(args.get("query")):
+            like = f"%{word}%"
+            query = query.filter(db.or_(Client.first_name.ilike(like), Client.last_name.ilike(like), Client.company_name.ilike(like),
+                                        Client.phone.ilike(like), Client.email.ilike(like), Client.address_line1.ilike(like),
+                                        Client.city.ilike(like), Client.tags.ilike(like)))
+        rows = query.order_by(Client.last_name, Client.first_name).limit(CALEB_LIMIT).all()
+        return {"clients": [_caleb_client_row(client) for client in rows]} if rows else {"clients": [], "note": "No client matches."}
+    if name == "client_details":
+        client = db.session.get(Client, int(args.get("client_id") or 0))
+        if client is None:
+            return {"error": "No such client."}
+        row = _caleb_client_row(client)
+        row.update({"other_contacts": client.other_contacts, "notes": client.notes[:2000], "lead_source": client.lead_source,
+                    "other_addresses": [prop.text for prop in client.properties],
+                    "job_list": [_caleb_job_row(job) for job in client.jobs[:20]] if user.can("view_jobs") else "This role cannot see jobs."})
+        return row
+    if name == "find_jobs":
+        query = Job.query.join(Client, Job.client_id == Client.id)
+        for word in _caleb_words(args.get("query")):
+            like = f"%{word.lstrip('#')}%"
+            conditions = [Job.title.ilike(like), Job.description.ilike(like), Client.first_name.ilike(like), Client.last_name.ilike(like),
+                          Client.company_name.ilike(like), Job.address_line1.ilike(like), Job.city.ilike(like)]
+            if word.lstrip("#").isdigit():
+                conditions.append(Job.job_number == int(word.lstrip("#")))
+            query = query.filter(db.or_(*conditions))
+        jobs = query.order_by(Job.updated_at.desc()).limit(200).all()
+        group = args.get("group") or "any"
+        if group != "any":
+            jobs = [job for job in jobs if job.bucket == group]
+        jobs = jobs[:CALEB_LIMIT]
+        return {"jobs": [_caleb_job_row(job) for job in jobs]} if jobs else {"jobs": [], "note": "No job matches."}
+    if name == "job_details":
+        job = db.session.get(Job, int(args.get("job_id") or 0))
+        if job is None:
+            return {"error": "No such job."}
+        row = _caleb_job_row(job)
+        prices = user.can("view_quoting")
+        row.update({
+            "description": job.description[:3000], "internal_notes": job.internal_notes[:2000],
+            "assigned_to": job.assigned_user.username if job.assigned_user else "",
+            "site_review": job.review_at.strftime("%Y-%m-%d %H:%M") if job.review_at else "",
+            "quote_presentation": job.quote_presentation_at.strftime("%Y-%m-%d %H:%M") if job.quote_presentation_at else "",
+            "work_start": job.work_start_date.isoformat() if job.work_start_date else "", "duration_days": job.duration_days,
+            "client_phone": job.client.phone if job.client and user.can("view_clients") else "",
+            "jobber": {"quote_number": job.jobber_quote_number, "quote_status": job.jobber_quote_status,
+                       "quote_total": job.jobber_quote_total if prices else None} if job.jobber_id or job.jobber_quote_id else None,
+            "quotes": [{"status": quote.status, "revision": quote.revision, "title": quote.title,
+                        "created": quote.created_at.strftime("%Y-%m-%d"),
+                        "options": [{"tier": option.tier, "title": option.title, "description": option.description, "bullets": option.bullets,
+                                     "total": round(option.total, 2) if prices else "hidden for this role",
+                                     "chosen": bool(job.material_order and job.material_order.quote_option_id == option.id)}
+                                    for option in quote.options]} for quote in job.quotes[:4]],
+            "site_visits": [{"date": visit.updated_at.strftime("%Y-%m-%d"), "observations": visit.observations[:1500],
+                             "client_priorities": visit.client_priorities[:800]} for visit in job.inspections[:3]],
+            "generator_sizings": [sizing.summary for sizing in job.generator_sizings[:3]],
+            "page": url_for("job_detail", job_id=job.id),
+        })
+        return row
+    if name == "find_services":
+        query = Service.query
+        for word in _caleb_words(args.get("query")):
+            like = f"%{word}%"
+            query = query.filter(db.or_(Service.name.ilike(like), Service.category.ilike(like), Service.description.ilike(like)))
+        prices = user.can("view_pricing")
+        return {"services": [{"name": service.name, "category": service.category, "description": service.description[:600],
+                              "example_quantity": service.example_quantity, "labor_hours": service.estimated_labor_hours,
+                              "parts": [item.name for item in service.items][:15],
+                              "example_total": round(service.example_total, 2) if prices else "hidden for this role"}
+                             for service in query.order_by(Service.name).limit(CALEB_LIMIT).all()]}
+    if name == "find_price_items":
+        query = PriceItem.query.filter_by(active=True)
+        for word in _caleb_words(args.get("query")):
+            like = f"%{word}%"
+            query = query.filter(db.or_(PriceItem.name.ilike(like), PriceItem.category.ilike(like), PriceItem.cooper_part_number.ilike(like)))
+        return {"items": [{"name": item.name, "category": item.category, "unit": item.unit, "price": item.price,
+                           "labor_hours_per_unit": item.labor_hours_per_unit, "cooper_part_number": item.cooper_part_number,
+                           "unconfirmed": item.category == UNCONFIRMED}
+                          for item in query.order_by(PriceItem.name).limit(CALEB_LIMIT).all()]}
+    return {"error": "Unknown look-up."}
+
+
+def _caleb_item(item):
+    dump = getattr(item, "model_dump", None)
+    return dump(exclude_none=True) if callable(dump) else item
+
+
+def _caleb_describe(name, args):
+    if name == "size_generator":
+        return "Sized a generator"
+    detail = args.get("query") or args.get("job_id") or args.get("client_id") or ""
+    return {"find_clients": "Searched clients", "client_details": "Read a client", "find_jobs": "Searched jobs", "job_details": "Read a job",
+            "find_services": "Searched services", "find_price_items": "Searched the Pricing Sheet"}.get(name, name) + (f": {detail}" if detail else "")
+
+
+def ask_caleb(user, history):
+    """Caleb's answer to the last message in history, and what he looked at."""
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("The OpenAI API is not configured.")
+    agent = caleb_agent()
+    instructions = f"""{build_agent_context(agent)}
+
+The person asking is {user.username} (role: {user.role.name if user.role else 'none'}). Today is {datetime.utcnow():%B %d, %Y}.
+Look-ups you have are limited to what this person's role may see; if they ask for something you cannot look up, say their role cannot see it.
+
+{caleb_company_facts(user)}"""
+    tools = caleb_tools(user) + [{"type": "web_search"}]
+    client = OpenAI()
+    model = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    conversation = list(history)
+    looked = []
+    for _ in range(CALEB_TOOL_ROUNDS):
+        try:
+            response = client.responses.create(model=model, instructions=instructions, input=conversation, tools=tools)
+        except Exception as error:  # noqa: BLE001
+            if not any(tool.get("type") == "web_search" for tool in tools) or "web_search" not in str(error):
+                raise
+            tools = [tool for tool in tools if tool.get("type") != "web_search"]       # this account or model has no web search
+            response = client.responses.create(model=model, instructions=instructions, input=conversation, tools=tools)
+        calls = [item for item in (getattr(response, "output", None) or []) if getattr(item, "type", "") == "function_call"]
+        if any(getattr(item, "type", "") == "web_search_call" for item in (getattr(response, "output", None) or [])):
+            looked.append("Searched the web")
+        if not calls:
+            return (response.output_text or "").strip(), looked
+        conversation += [_caleb_item(item) for item in response.output]
+        for call in calls:
+            try:
+                args = json.loads(call.arguments or "{}")
+            except ValueError:
+                args = {}
+            try:
+                result = caleb_run_tool(call.name, args, user)
+            except Exception:  # noqa: BLE001
+                app.logger.exception("Caleb look-up %s failed", call.name)
+                result = {"error": "That look-up failed."}
+            looked.append(_caleb_describe(call.name, args))
+            conversation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(result, default=str)[:30000]})
+    response = client.responses.create(model=model, instructions=instructions, tool_choice="none", tools=tools,
+                                       input=conversation + [{"role": "user", "content": "Answer now with what you found."}])
+    return (response.output_text or "").strip(), looked
+
+
+def caleb_links(text):
+    """Escape an answer and link every "Job #N" the reader may open."""
+    html = str(escape(text or ""))
+    if not (current_user.is_authenticated and current_user.can("view_jobs")):
+        return Markup(html)
+    numbers = {int(n) for n in re.findall(r"Job #(\d+)", html)}
+    jobs = {job.job_number: job.id for job in Job.query.filter(Job.job_number.in_(numbers)).all()} if numbers else {}
+    return Markup(re.sub(r"Job #(\d+)", lambda m: f'<a href="{url_for("job_detail", job_id=jobs[int(m.group(1))])}">{m.group(0)}</a>'
+                         if int(m.group(1)) in jobs else m.group(0), html))
+
+
+app.jinja_env.filters["caleb_links"] = caleb_links
+
+
+@app.route("/caleb")
+@login_required
+def caleb_page():
+    messages = CalebMessage.query.filter_by(user_id=current_user.id, cleared=False).order_by(CalebMessage.created_at, CalebMessage.id).all()[-60:]
+    agent = caleb_agent()
+    ready = bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY") and agent and agent.active)
+    return render_template("caleb.html", messages=messages, ready=ready, agent=agent, examples=CALEB_EXAMPLES,
+                           sees=[label for permission, label in (("view_clients", "clients"), ("view_jobs", "jobs and quotes"),
+                                                                 ("view_services", "services"), ("view_pricing", "prices"))
+                                 if current_user.can(permission)])
+
+
+@app.route("/caleb/ask", methods=["POST"])
+@login_required
+def caleb_ask():
+    check_csrf()
+    question = request.form.get("question", "").strip()[:4000]
+    if not question:
+        return redirect(url_for("caleb_page"))
+    db.session.add(CalebMessage(user_id=current_user.id, role="user", content=question)); db.session.commit()
+    agent = caleb_agent()
+    looked = []
+    if agent is None or not agent.active or OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        answer = "I'm not connected right now (the AI connection or my settings are off), so call Caleb for this one. Your question was saved."
+    else:
+        rows = CalebMessage.query.filter_by(user_id=current_user.id, cleared=False).order_by(CalebMessage.created_at.desc(), CalebMessage.id.desc()).limit(CALEB_HISTORY).all()[::-1]
+        try:
+            answer, looked = ask_caleb(current_user, [{"role": row.role, "content": row.content} for row in rows])
+            answer = answer or "I couldn't put an answer together. Try asking another way, or call Caleb."
+        except Exception as error:  # noqa: BLE001
+            app.logger.exception("Ask Caleb failed")
+            answer = f"I couldn't answer that just now. {describe_ai_error(error)}"
+    db.session.add(CalebMessage(user_id=current_user.id, role="assistant", content=answer, looked_up="\n".join(looked)))
+    db.session.commit()
+    return redirect(url_for("caleb_page") + "#latest")
+
+
+@app.route("/caleb/new", methods=["POST"])
+@login_required
+def caleb_new():
+    check_csrf()
+    CalebMessage.query.filter_by(user_id=current_user.id, cleared=False).update({"cleared": True}, synchronize_session=False)
+    db.session.commit()
+    return redirect(url_for("caleb_page"))
+
+
 # ---------------- Releases (Settings -> Releases) ----------------
 # Builds come straight from GitHub onto the live site; there is no test site.
 # The newest build on the branch goes live by itself (GitHub's webhook, or a look
@@ -7088,6 +7423,8 @@ with app.app_context():
         db.session.add(AiAgent(name="Darwin", role="Powerhouse Training AI Agent", identity="You organize training knowledge into clear, accurate, practical lessons. Summarize what was actually documented, preserve important safety details, and answer questions from the training record without inventing facts."))
     if AiAgent.query.filter(db.func.lower(AiAgent.name) == "brendon").first() is None:
         db.session.add(AiAgent(name="Brendon", role="Powerhouse Tasking AI Agent", identity="You turn quick conversations into organized, accurately assigned work. Match existing tasks carefully, ask when a person or task is ambiguous, and report exactly what you created, updated, or completed."))
+    if AiAgent.query.filter(db.func.lower(AiAgent.name) == "caleb").first() is None:
+        db.session.add(AiAgent(name="Caleb", role="Powerhouse Help AI Agent (Ask Caleb)", identity=CALEB_IDENTITY, prompt=CALEB_PROMPT))
     if AiAgent.query.filter(db.func.lower(AiAgent.name) == "mike").first() is None:
         db.session.add(AiAgent(name="Mike", role="Powerhouse Labor Estimating AI Agent", identity="You are Power House Electrical Solutions' labor-time specialist. Ground estimates in uploaded labor references, existing Pricing Sheet labor, and Service labor. State assumptions clearly, distinguish evidence from inference, and never change central labor values without human preview and approval.", prompt="Use uploaded labor manuals as the primary estimating standard. Match recommendations to exact Pricing Sheet items and their stored unit. Show current versus proposed hours, cite a supporting excerpt, and allow a human to approve every update. For questions, explain access, distance, wall or raceway conditions, crew size, setup, and uncertainty. Never invent precision or alter material pricing."))
     caden_agent = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden").first()

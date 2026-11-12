@@ -28,6 +28,7 @@
   <aside class="sidebar" id="sidebar">
     <a href="{{ url_for('dashboard') }}" class="side-link {{ 'active' if request.endpoint == 'dashboard' else '' }}"><span>⌂</span> Dashboard</a>
     {% if current_user.role and current_user.role.is_admin %}<a href="{{ url_for('flow_page') }}" class="side-link {{ 'active' if request.endpoint == 'flow_page' else '' }}"><span>⇶</span> Power House Flow</a>{% endif %}
+    <a href="{{ url_for('caleb_page') }}" class="side-link {{ 'active' if request.endpoint in ['caleb_page', 'caleb_ask', 'caleb_new'] else '' }}"><span>✦</span> Ask Caleb</a>
     {% if can('view_quoting') or can('view_pricing') or can('view_services') %}<div class="side-section">Quoting</div>{% endif %}
     {% if can('view_quoting') %}
     <a href="{{ url_for('generate_quote') }}" class="side-link {{ 'active' if request.endpoint in ['generate_quote', 'quote_assistant', 'quote_presentation'] else '' }}"><span>＋</span> Generate Quote</a>
