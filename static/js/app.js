@@ -153,7 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
         progress.style.width = `${Math.max(4, percent)}%`;
         log.replaceChildren(...data.logs.map(message => { const line = document.createElement("p"); line.textContent = message; return line; }));
         log.scrollTop = log.scrollHeight;
-        if (data.status === "complete") { preview.href = data.preview_url; preview.hidden = false; clearInterval(cooperPoll); }
+        if (data.status === "complete") { preview.href = data.preview_url; if (data.preview_label) preview.textContent = data.preview_label; preview.hidden = false; clearInterval(cooperPoll); }
         else if (data.status === "failed") { cooperBot.classList.add("bot-failed"); clearInterval(cooperPoll); }
       } catch (error) {
         const line = document.createElement("p"); line.textContent = `Activity window lost contact: ${error.message}`; log.append(line); clearInterval(cooperPoll);

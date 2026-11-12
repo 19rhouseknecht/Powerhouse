@@ -199,6 +199,7 @@ class PriceSyncRun(db.Model):
     only_zero_prices = db.Column(db.Boolean, nullable=False, default=False)
     item_ids_json = db.Column(db.Text, nullable=False, default="")          # "Get selected prices": just these items
     mode = db.Column(db.String(20), nullable=False, default="")             # '' prices · 'catalog' add Cooper's items
+    limit_items = db.Column(db.Integer, nullable=False, default=0)          # catalog: new items this run may add (0 = no limit)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     @property
@@ -1629,7 +1630,7 @@ def pricing_sheet():
     last_catalog = PriceSyncRun.query.filter_by(mode="catalog").order_by(PriceSyncRun.id.desc()).first()
     return render_template("pricing.html", items=items, categories=categories, suppliers=suppliers, search=search, selected_category=category, selected_supplier=supplier, selected_unit=unit, selected_sort=sort, selected_direction=direction, review_duplicates=review_duplicates, duplicate_pairs=duplicate_pairs, labor_rate=get_labor_rate(), active_sync=active_sync, latest_sync=latest_sync,
                            total_items=total_items, page=page, page_count=page_count, page_args=page_args, unconfirmed_count=unconfirmed_count,
-                           unconfirmed_label=UNCONFIRMED, caden_unconfirmed=caden_uses_unconfirmed(), last_catalog=last_catalog, catalog_done_count=len(catalog_done()))
+                           unconfirmed_label=UNCONFIRMED, caden_unconfirmed=caden_uses_unconfirmed(), catalog_batch=CATALOG_BATCH, catalog_batch_max=CATALOG_BATCH_MAX, last_catalog=last_catalog, catalog_done_count=len(catalog_done()))
 
 
 PRICING_PAGE_SIZE = 250
@@ -1815,7 +1816,10 @@ def cooper_sync_status(batch_id):
         return jsonify({"status":"complete", "current":len(batch.rows), "total":len(batch.rows), "logs":["Legacy price check complete."], "preview_url":url_for("cooper_sync_preview", batch_id=batch.id)})
     try: logs = json.loads(run.activity_log or "[]")
     except (TypeError, json.JSONDecodeError): logs = []
-    return jsonify({"status":run.status, "current":run.current, "total":run.total, "logs":logs[-35:], "error":run.error_message, "preview_url":url_for("cooper_sync_preview", batch_id=batch.id)})
+    catalog = run.mode == "catalog"
+    return jsonify({"status":run.status, "current":run.current, "total":run.total, "logs":logs[-35:], "error":run.error_message, "mode": run.mode,
+                    "preview_url": url_for("pricing_sheet", category=UNCONFIRMED) if catalog else url_for("cooper_sync_preview", batch_id=batch.id),
+                    "preview_label": "See the items added" if catalog else "Review proposed prices"})
 
 
 @app.route("/quoting/pricing/cooper-sync/<int:batch_id>")
@@ -4082,7 +4086,7 @@ def local_cooper_next_command():
             run.status = "failed"; run.error_message = "This listener is too old to read Cooper's catalog: download v2.1 or newer from Settings."
             append_sync_log(run, run.error_message); db.session.commit()
             return jsonify({"command": None, "state": "idle"})
-        return jsonify({"state": "running", "command": {"id": run.batch_id, "mode": "catalog", "items": [],
+        return jsonify({"state": "running", "command": {"id": run.batch_id, "mode": "catalog", "items": [], "limit": run.limit_items,
                                                          "known_parts": sorted(known_cooper_parts()), "skip_categories": catalog_done()}})
     if run.item_ids_json:
         item_query = item_query.filter(PriceItem.id.in_(run.item_ids or [0]))
@@ -4184,6 +4188,7 @@ def download_cooper_listener():
 
 # ---------------- Cooper's catalog -> Unconfirmed items ----------------
 UNCONFIRMED = "Unconfirmed"
+CATALOG_BATCH, CATALOG_BATCH_MAX = 200, 2000        # new items one "Add all items from Cooper" run adds before it stops
 CATALOG_UNITS = {"ea", "ft", "box", "roll", "lb"}
 
 
@@ -4246,12 +4251,16 @@ def start_cooper_catalog():
     if request.form.get("restart"):
         row = db.session.get(CompanySetting, "cooper_catalog_done") or CompanySetting(key="cooper_catalog_done")
         row.value = "[]"; db.session.add(row)
+    try:
+        limit = min(max(int(request.form.get("batch") or CATALOG_BATCH), 1), CATALOG_BATCH_MAX)
+    except ValueError:
+        limit = CATALOG_BATCH
     batch = PriceSyncBatch(supplier="cooper", created_by=current_user)
     db.session.add(batch); db.session.flush()
     done = len(catalog_done())
-    db.session.add(PriceSyncRun(batch=batch, mode="catalog", total=0, activity_log=json.dumps([
-        "Catalog run queued: the office listener will read Cooper's categories and add every part number not already on the Pricing Sheet as Unconfirmed."
-        + (f" {done} categories finished earlier are skipped." if done else "")])))
+    db.session.add(PriceSyncRun(batch=batch, mode="catalog", total=0, limit_items=limit, activity_log=json.dumps([
+        f"Catalog run queued for up to {limit} new items: the office listener reads Cooper's categories and adds part numbers that are not "
+        "already on the Pricing Sheet, as Unconfirmed." + (f" {done} categories finished earlier are skipped." if done else "")])))
     db.session.commit()
     return jsonify({"batch_id": batch.id, "status_url": url_for("cooper_sync_status", batch_id=batch.id),
                     "preview_url": url_for("pricing_sheet", category=UNCONFIRMED)})
@@ -4262,6 +4271,8 @@ def start_cooper_catalog():
 def local_cooper_catalog(batch_id):
     """Products found by a catalog run, in batches. Only part numbers not already on the sheet are added."""
     batch = db.get_or_404(PriceSyncBatch, batch_id); run = batch.run
+    if run is not None and run.mode == "catalog" and run.status == "complete" and run.limit_items and run.current >= run.limit_items:
+        return jsonify({"added": 0, "skipped": 0, "total_added": run.current, "stop": True}), 200
     if run is None or run.mode != "catalog" or run.status not in ("queued", "running"):
         return jsonify({"error": "This catalog run is no longer active."}), 409
     payload = request.get_json(silent=True) or {}
@@ -4269,7 +4280,13 @@ def local_cooper_catalog(batch_id):
     if not isinstance(products, list) or len(products) > 500:
         return jsonify({"error": "Send up to 500 products at a time."}), 400
     known = known_cooper_parts()
-    added = sum(1 for product in products if isinstance(product, dict) and add_catalog_product(product, known) is not None)
+    room = (run.limit_items - run.current) if run.limit_items else len(products)
+    added = 0
+    for product in products:
+        if added >= room:
+            break                              # this run's batch is full: the rest are found again next run
+        if isinstance(product, dict) and add_catalog_product(product, known) is not None:
+            added += 1
     done = catalog_done()
     for url in payload.get("categories_done") or []:
         if isinstance(url, str) and url not in done:
@@ -4282,12 +4299,16 @@ def local_cooper_catalog(batch_id):
     message = str(payload.get("message") or "").strip()
     if added or message:
         append_sync_log(run, (f"Added {added} new item{'s' if added != 1 else ''}. " if added else "") + message[:300])
-    if payload.get("finished"):
+    full = bool(run.limit_items) and run.current >= run.limit_items
+    if full and run.status != "complete":
+        run.status = "complete"
+        append_sync_log(run, f"This run's batch is full: {run.current} new Unconfirmed items added. Press Add all items from Cooper again for the next {run.limit_items}.")
+    elif payload.get("finished") and run.status != "complete":
         run.status = "complete"
         append_sync_log(run, f"Catalog run finished: {run.current} new Unconfirmed item{'s' if run.current != 1 else ''} on the Pricing Sheet.")
     run.updated_at = datetime.utcnow()
     db.session.commit()
-    return jsonify({"added": added, "skipped": len(products) - added, "total_added": run.current}), 201
+    return jsonify({"added": added, "skipped": len(products) - added, "total_added": run.current, "stop": full}), 201
 
 
 @app.route("/quoting/pricing/unconfirmed-switch", methods=["POST"])
@@ -7639,6 +7660,7 @@ with app.app_context():
         ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
+        ("price_sync_run", "limit_items", "INTEGER NOT NULL DEFAULT 0"),
     ]:
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")

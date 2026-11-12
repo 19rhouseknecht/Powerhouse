@@ -1102,3 +1102,10 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .upgrade-sources { margin-top:16px; }
 @media (max-width:760px) { .upgrade-pair { grid-template-columns:1fr; } .upgrade-arrow { transform:rotate(90deg); justify-self:center; padding:0; } .upgrade-form .sizing-choices { grid-template-columns:1fr; } }
 .upgrade-table thead th strong { text-transform:none; letter-spacing:0; }
+
+/* An element marked hidden stays hidden, whatever display its classes give it (the Cooper window's review button showed early). */
+[hidden] { display: none !important; }
+.catalog-batch { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:12px; white-space:nowrap; }
+.catalog-batch input { width:84px; }
+.cooper-catalog-form { flex-wrap: wrap; }
+@media (max-width: 620px) { .cooper-catalog-form { width: 100%; } .cooper-catalog-form .btn { flex: 1 1 100%; } }
