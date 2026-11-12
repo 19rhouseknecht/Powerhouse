@@ -69,6 +69,8 @@ def transport(method, url, headers, body):
         return 200, json.dumps({"full_name": REPO, "private": True}).encode()
     if path.endswith("/hooks") and method == "POST":
         return 201, b'{"id": 77}'
+    if "/hooks/" in path and method == "PATCH":
+        return 200, b'{"id": 77}'
     if "/hooks/" in path and method == "DELETE":
         return 204, b""
     if "/check-runs" in path:
@@ -159,11 +161,31 @@ check(open(db_path, "rb").read()[:4] != b"EVIL", "the database is never overwrit
 check(json.load(open(os.path.join(SITE, "instance", "release.json")))["sha"] == sha2, "release.json says what is live")
 check("already runs" in auto(), "the same build is not deployed twice")
 
+# --- a deploy reloads the web app only after letting go of its lock (the reload restarts the worker),
+#     and a lock left behind by a stopped worker never blocks the next deploy
+with app.app_context():
+    appmod.put_release_setting("hook_events", "")        # as on a site connected before the webhook said "tests finished"
+lock_at_reload = []
+real_reload = rel.reload_web_app
+rel.reload_web_app = lambda path: (lock_at_reload.append(os.path.exists(appmod._release_lock.path)), (True, "Reloaded (test)."))[1]
+sha_lock = make_build("Lock check", {"templates/lock.html": b"x"})
+auto()
+check(live()[0] == sha_lock and lock_at_reload == [False], "the web app is reloaded only after the deploy lock is let go")
+with open(appmod._release_lock.path, "w") as handle:
+    handle.write("left by a stopped worker")
+sha_after = make_build("After a stopped worker", {"templates/after.html": b"x"})
+said = auto()
+check("Deploying" in said and live()[0] == sha_after, "a lock left by a stopped worker does not block the next deploy")
+rel.reload_web_app = real_reload
+check(any(m == "PATCH" and "/hooks/77" in u for m, u in CALLS), "an older webhook is upgraded to also say when tests finish")
+with app.app_context():
+    check(appmod.release_setting("hook_events") == "2", "once")
+
 # --- the tests gate
 sha3 = make_build("Untested change", {"templates/untested.html": b"x"}, tests="running")
 said = auto()
 check("waiting" in said and "still running" in said, "a build whose tests are still running waits")
-check(live()[0] == sha2, "and the live site keeps the build it has")
+check(live()[0] == sha_after, "and the live site keeps the build it has")
 TESTS[sha3] = "failed"
 said = auto()
 check("waiting" in said and "failed" in said, "a build whose tests failed never goes live by itself")
