@@ -172,7 +172,7 @@ if os.environ.get("PW_CHROMIUM"):
 spec = importlib.util.spec_from_file_location("listener_catalog", os.path.join(ROOT, "tools", "cooper_price_listener.py"))
 listener = importlib.util.module_from_spec(spec); spec.loader.exec_module(listener)
 listener.PROFILE_DIRECTORY = __import__("pathlib").Path(tempfile.mkdtemp(prefix="catalog-profile-"))
-check(listener.LISTENER_VERSION == "2.1", "the listener is v2.1")
+check(tuple(int(x) for x in listener.LISTENER_VERSION.split(".")) >= (2, 1), "the listener is v2.1 or newer (the catalog needs 2.1)")
 check(listener.leaf_categories(["https://c/product/category/US_200000000000/wire", "https://c/product/category/US_200100000000/building-wire"]) ==
       ["https://c/product/category/US_200100000000/building-wire"], "only the most specific categories are read (a parent repeats its children)")
 batches = []
