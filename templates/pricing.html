@@ -10,6 +10,19 @@
 <section class="panel cooper-sync-panel">
   <div class="cooper-sync-info"><span class="supplier-mark">C</span><div><span class="eyebrow">Office price listener</span><h2>Cooper price update</h2><p>{% if active_sync %}Check #{{ active_sync.batch_id }} is {{ active_sync.status }}. The office listener will process it automatically.{% else %}Queue all Cooper part numbers for the always-running office listener, then review every match before applying it. To price just a few, tick them in the list below and choose <strong>Get Cooper prices for selected</strong>.{% endif %}</p>{% if latest_sync %}<a class="inline-link" href="{{ url_for('cooper_sync_preview', batch_id=latest_sync.batch_id) }}">Review latest completed check #{{ latest_sync.batch_id }}</a>{% endif %}</div></div>
   <div class="button-row">{% if active_sync %}<button class="btn btn-primary" disabled>Update in progress</button><form method="POST" action="{{ url_for('cancel_cooper_price_sync', batch_id=active_sync.batch_id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-ghost">Cancel</button></form>{% else %}<form method="POST" action="{{ url_for('check_cooper_prices') }}" data-cooper-sync-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="scope" value="new"><button class="btn btn-secondary">Get new item prices only</button></form><form method="POST" action="{{ url_for('check_cooper_prices') }}" data-cooper-sync-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="scope" value="all"><button class="btn btn-primary">Update all prices</button></form>{% endif %}</div>
+  <div class="cooper-catalog-row">
+    <div><strong>Cooper's whole catalog</strong><p class="muted">Adds every Cooper part number that is not on this sheet yet, in the category <a href="{{ url_for('pricing_sheet', category=unconfirmed_label) }}">{{ unconfirmed_label }}</a>{% if unconfirmed_count %} ({{ '{:,}'.format(unconfirmed_count) }} so far){% endif %}. Nothing already here is changed.{% if last_catalog %} Last run: {{ last_catalog.status }}{% if last_catalog.current %}, {{ '{:,}'.format(last_catalog.current) }} added{% endif %}.{% endif %}{% if catalog_done_count %} {{ catalog_done_count }} categories are done; the next run carries on from there.{% endif %}</p></div>
+    <form method="POST" action="{{ url_for('start_cooper_catalog') }}" data-cooper-sync-form class="cooper-catalog-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if catalog_done_count %}<label class="check-line"><input type="checkbox" name="restart" value="1"> Start over</label>{% endif %}
+      <button class="btn btn-secondary" {{ 'disabled' if active_sync }}>Add all items from Cooper</button>
+    </form>
+    <form method="POST" action="{{ url_for('unconfirmed_switch') }}" class="cooper-catalog-switch">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="on" value="{{ '0' if caden_unconfirmed else '1' }}">
+      <span class="status-pill {{ 'status-active' if caden_unconfirmed else 'status-completed' }}">Caden {{ 'uses' if caden_unconfirmed else 'ignores' }} Unconfirmed</span>
+      <button class="btn btn-ghost btn-small" title="{{ 'Caden sees only the Unconfirmed items that match the job, up to 60 per quote.' if caden_unconfirmed else 'Caden sees only confirmed items.' }}">{{ 'Stop using them' if caden_unconfirmed else 'Let Caden use them' }}</button>
+    </form>
+  </div>
 </section>
 <aside class="cooper-bot-window" data-cooper-bot data-status-url="{% if active_sync %}{{ url_for('cooper_sync_status', batch_id=active_sync.batch_id) }}{% endif %}" {{ '' if active_sync else 'hidden' }}><div class="cooper-bot-head"><span class="bot-pulse"></span><div><strong>Cooper price activity</strong><small>Live status from your office listener</small></div><button type="button" data-bot-close>×</button></div><div class="cooper-progress"><span data-bot-progress></span></div><div class="cooper-bot-log" data-bot-log><p>Waiting for activity…</p></div><a class="btn btn-primary btn-small" data-bot-preview hidden>Review proposed prices</a></aside>
 <section class="panel labor-rate-panel">
@@ -50,16 +63,19 @@
   <select name="direction" onchange="this.form.submit()"><option value="asc" {{ 'selected' if selected_direction == 'asc' }}>A–Z / Low–High</option><option value="desc" {{ 'selected' if selected_direction == 'desc' }}>Z–A / High–Low</option></select>
   <button class="btn btn-secondary">Apply</button><a class="btn btn-ghost" href="{{ url_for('pricing_sheet') }}">Clear</a>
 </form>
+{% if unconfirmed_count and selected_category != unconfirmed_label and not search %}<p class="unconfirmed-note">{{ '{:,}'.format(unconfirmed_count) }} Unconfirmed item{{ 's' if unconfirmed_count != 1 }} from Cooper's catalog {{ 'are' if unconfirmed_count != 1 else 'is' }} hidden here. <a href="{{ url_for('pricing_sheet', category=unconfirmed_label) }}">View them</a>, or search to include them.</p>{% endif %}
 <div class="panel pricing-table-panel">
 {% if items %}
 <div class="item-table-wrap"><table class="item-table pricing-table">
   <thead><tr><th class="price-select"><input type="checkbox" data-select-all aria-label="Select every item shown"></th><th class="price-image"><span class="sr-only">Picture</span></th><th>Item</th><th>Category</th><th>Supplier part numbers</th><th>Unit</th><th>Material price</th><th>Labor / unit</th><th>Used</th></tr></thead>
   <tbody>{% for item in items %}{% include "_price_row.html" %}{% endfor %}</tbody>
 </table></div>
+{% if page_count > 1 %}<nav class="pricing-pages" aria-label="Pages"><span>{{ '{:,}'.format(total_items) }} items · page {{ page }} of {{ page_count }}</span>{% if page > 1 %}<a class="btn btn-secondary btn-small" href="{{ url_for('pricing_sheet', page=page - 1, **page_args) }}">‹ Previous</a>{% endif %}{% if page < page_count %}<a class="btn btn-secondary btn-small" href="{{ url_for('pricing_sheet', page=page + 1, **page_args) }}">Next ›</a>{% endif %}</nav>{% endif %}
 <div class="selection-bar" data-selection-bar hidden>
   <strong><span data-selected-count>0</span> selected</strong>
   <form method="POST" action="{{ url_for('check_cooper_prices') }}" data-cooper-sync-form data-selected-form><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="scope" value="selected"><input type="hidden" name="item_ids" value="" data-selected-ids><button class="btn btn-primary btn-small" {{ 'disabled' if active_sync }}>Get Cooper prices for selected</button></form>
   <form method="POST" action="{{ url_for('remove_selected_price_items') }}" data-selected-form data-confirm-remove><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="item_ids" value="" data-selected-ids><button class="btn btn-danger btn-small">Remove selected</button></form>
+  <form method="POST" action="{{ url_for('move_selected_price_items') }}" data-selected-form class="move-selected-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="item_ids" value="" data-selected-ids><input name="category" list="pricing-categories" placeholder="Move to category…" aria-label="Category to move the selected items to" required><datalist id="pricing-categories">{% for category in categories %}<option value="{{ category }}">{% endfor %}</datalist><button class="btn btn-secondary btn-small">Move</button></form>
   <button type="button" class="btn btn-ghost btn-small" data-clear-selection>Clear</button>
 </div>
 {% else %}<div class="empty-state"><span>＄</span><h2>No pricing items found</h2><p>Add your first item above or change the current filters.</p></div>{% endif %}

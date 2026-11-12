@@ -979,3 +979,14 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .selection-bar form { margin: 0; }
 .pricing-table th.price-select, .pricing-table th.price-image { text-align: center !important; }
 .pricing-table .price-image .price-thumb { margin: 0 auto; }
+.cooper-catalog-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); width: 100%; }
+.cooper-catalog-row > div { flex: 1 1 340px; }
+.cooper-catalog-row p { margin: 4px 0 0; font-size: 13px; line-height: 1.5; }
+.cooper-catalog-row a { color: var(--accent-hover); }
+.cooper-catalog-form, .cooper-catalog-switch { display: flex; align-items: center; gap: 10px; margin: 0; }
+.cooper-sync-panel { flex-wrap: wrap; }
+.unconfirmed-note { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.unconfirmed-note a { color: var(--accent-hover); }
+.pricing-pages { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 13px; }
+.move-selected-form { display: flex; gap: 6px; align-items: center; }
+.move-selected-form input { width: 170px; padding: 6px 9px; }
