@@ -223,6 +223,11 @@ def create_hook(token, repo, url, secret, old_id=""):
     return str(hook.get("id") or "")
 
 
+def upgrade_hook(token, repo, hook_id):
+    """Make an older webhook (push only) also send "tests finished", so a build goes live as soon as it passes."""
+    gh("PATCH", "/repos/{repo}/hooks/%s" % hook_id, token, repo, {"active": True, "events": ["push", "workflow_run"]})
+
+
 def delete_hook(token, repo, hook_id):
     if hook_id:
         gh("DELETE", "/repos/{repo}/hooks/%s" % hook_id, token, repo)
@@ -486,6 +491,14 @@ class Lock:
             except OSError:
                 pass
             self.held = False
+
+    def clear(self):
+        """Remove a lock left behind by a worker that was stopped before it could let go."""
+        try:
+            os.remove(self.path)
+        except OSError:
+            pass
+        self.held = False
 
     def busy(self):
         try:

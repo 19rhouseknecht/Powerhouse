@@ -6245,8 +6245,12 @@ def _release_log(release, line):
 
 def start_release(sha, source, by_label, zip_path="", meta=None):
     """Record the deploy and run it in the background. Returns (release or None, sentence)."""
-    if release_running() or _release_lock.busy():
-        return None, "A deploy is already running. Wait for it to finish."
+    running = release_running()
+    if running:
+        return None, "A deploy is already running (%s, started %s UTC). Wait for it to finish." % (
+            running.title or running.short, running.started_at.strftime("%-I:%M %p"))
+    if _release_lock.busy():
+        _release_lock.clear()            # no deploy is marked running, so this lock was left by a stopped worker
     meta = meta or {}
     release = Release(sha=sha or "", source=source, by_label=by_label[:120], status="running", zip_path=zip_path,
                       title=(meta.get("title") or "")[:250], notes=meta.get("notes") or "", author=(meta.get("author") or "")[:120],
@@ -6263,6 +6267,9 @@ def _release_worker(release_id):
         release = db.session.get(Release, release_id)
         if release is None:
             return
+        others = Release.query.filter(Release.status == "running", Release.id != release.id).count()
+        if not others:
+            _release_lock.clear()        # nothing else is deploying: any lock here is left over
         if not _release_lock.acquire():
             release.status, release.finished_at = "failed", datetime.utcnow()
             _release_log(release, "Another deploy was already running, so this one did not start.")
@@ -6284,6 +6291,13 @@ def _release_worker(release_id):
             if staged:
                 shutil.rmtree(staged, ignore_errors=True)
             _release_lock.release()
+        # Reload last, with the lock already let go: on PythonAnywhere the reload restarts this very worker,
+        # so nothing after it can be relied on to run.
+        release = db.session.get(Release, release_id)
+        if release is not None and release.status == "live":
+            _release_log(release, "Reloading the web app…")
+            ok, said = rel.reload_web_app(release_setting("wsgi_path"))
+            _release_log(release, said)
 
 
 def _release_deploy(release):
@@ -6335,8 +6349,6 @@ def _release_deploy(release):
         json.dump({"sha": release.sha, "version": release.version, "title": release.title, "release_id": release.id,
                    "deployed_at": release.finished_at.isoformat(timespec="seconds")}, handle, indent=1)
     _release_log(release, "%d file%s updated, %d removed." % (changed, "" if changed == 1 else "s", removed))
-    ok, said = rel.reload_web_app(release_setting("wsgi_path"))
-    _release_log(release, said)
     return staged
 
 
@@ -6346,6 +6358,12 @@ def release_check(by_label="GitHub", force=False):
     if not (token and repo):
         return "GitHub is not connected yet."
     put_release_setting("looked_at", datetime.utcnow().isoformat(timespec="seconds"))
+    if release_setting("hook_id") and release_setting("hook_events") != "2":
+        try:
+            rel.upgrade_hook(token, repo, release_setting("hook_id"))
+            put_release_setting("hook_events", "2")
+        except rel.ReleaseError:
+            pass                                 # the token cannot edit webhooks: the regular check still works
     try:
         newest = rel.head(token, repo, branch)
     except rel.ReleaseError as exc:
@@ -6513,6 +6531,7 @@ def releases_connect():
         hook_id = rel.create_hook(token, repo, url_for("releases_github_hook", _external=True, _scheme="https"), secret,
                                   release_setting("hook_id"))
         put_release_setting("hook_id", hook_id)
+        put_release_setting("hook_events", "2")
         said += " GitHub will tell this site the moment a new build lands."
     except rel.ReleaseError as exc:
         put_release_setting("hook_id", "")
