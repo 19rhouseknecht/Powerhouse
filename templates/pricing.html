@@ -81,5 +81,6 @@
 </div>
 {% else %}<div class="empty-state"><span>＄</span><h2>No pricing items found</h2><p>Add your first item above or change the current filters.</p></div>{% endif %}
 </div>
+<dialog class="profile-dialog" id="profile-dialog" aria-label="Material profile"><button type="button" class="profile-close" data-profile-close aria-label="Close">×</button><div data-profile-body></div></dialog>
 <script src="{{ url_for('static', filename='js/pricing.js', v=asset_version) }}"></script>
 {% endblock %}

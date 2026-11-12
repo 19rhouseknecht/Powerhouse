@@ -68,10 +68,12 @@ with app.app_context():
     db.session.add(cs); db.session.flush()
     db.session.add(m.OnsiteInspection(job_id=jobs[0].id))
     db.session.commit()
+    pi[0].specs_json = '{"Amperage": "200 A", "Spaces": "40", "Title": "Square D 200A main breaker load center, a long name to wrap"}'
+    db.session.commit()
     ids = {"job": jobs[0].id, "job2": jobs[2].id, "client": c.id, "quote": q.id, "draft_job": jobs[1].id, "service": svc.id,
-           "training": m.Training.query.first().id, "agent": m.AiAgent.query.first().id}
+           "training": m.Training.query.first().id, "agent": m.AiAgent.query.first().id, "item": pi[0].id}
     ids = {"job": jobs[0].id, "job2": jobs[2].id, "client": c.id, "quote": q.id, "draft_job": jobs[1].id, "service": svc.id,
-           "training": m.Training.query.first().id, "agent": m.AiAgent.query.first().id}
+           "training": m.Training.query.first().id, "agent": m.AiAgent.query.first().id, "item": pi[0].id}
 
 # Allowed on purpose: file pickers are styled through ::file-selector-button (not visible to this check),
 # the AI agent prompt editor is monospace, and the review QR code is an image link with no text.
@@ -83,7 +85,7 @@ PAGES = ["/", "/flow", "/quoting/generate", "/quoting/generate/%(draft_job)d", "
          "/jobs/%(job)d/edit", "/jobs/%(job2)d/materials", "/schedule", "/sales/onsite-checklist", "/sales/onsite-checklist/%(job)d", "/sales/reviews",
          "/time-tracking", "/time-tracking/timesheet", "/bookkeeping/tasks", "/bookkeeping/training", "/bookkeeping/training/new",
          "/bookkeeping/training/%(training)d", "/bookkeeping/training/%(training)d/edit", "/finance", "/finance/expenses",
-         "/settings", "/settings/tools", "/settings/bug-reports", "/settings/roles", "/settings/agents/%(agent)d", "/settings/jobber", "/settings/releases", "/generators/sizing?calculate=1", "/caleb", "/generators/upgrade?calculate=1&old=generac-20-7039&new=kohler-26rca&existing_pipe=3/4&existing_wire=4", "/generators/upgrade?calculate=1&old=other&old_kw=7&new=generac-22", "/generators/upgrade?calculate=1&job_id=%(job)d&old=generac-20-7039&new=kohler-26rca", "/generators/sizing?calculate=1&job_id=%(job)d", "/quoting/generate/%(job)d?lighting=1"]
+         "/settings", "/settings/tools", "/settings/bug-reports", "/settings/roles", "/settings/agents/%(agent)d", "/settings/jobber", "/settings/releases", "/generators/sizing?calculate=1", "/caleb", "/generators/upgrade?calculate=1&old=generac-20-7039&new=kohler-26rca&existing_pipe=3/4&existing_wire=4", "/generators/upgrade?calculate=1&old=other&old_kw=7&new=generac-22", "/generators/upgrade?calculate=1&job_id=%(job)d&old=generac-20-7039&new=kohler-26rca", "/generators/sizing?calculate=1&job_id=%(job)d", "/quoting/generate/%(job)d?lighting=1", "/quoting/pricing/%(item)d/profile"]
 AUDIT = r"""() => {
   const bodyFont = getComputedStyle(document.body).fontFamily;
   const found = [];

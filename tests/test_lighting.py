@@ -54,19 +54,32 @@ with app.app_context():
     job_id = job.id; ids = {"cheap": cheap.id, "mid": mid.id, "premium": premium.id, "flush": nolumens.id, "dimmer": dimmer.id}
 owner = sign_in(m)
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
-check('id="lighting"' in page and "Quoting lights for a room? Set the room here" in page, "the draft offers a Lighting layout panel")
+check('name="lighting" value="1"' in page and "Lighting layout" in page and 'id="lighting"' not in page,
+      "the message box has a Lighting layout checkbox (no separate section until there is a room)")
 with app.app_context():
     quote = m.Quote.query.filter_by(job_id=job_id).first(); quote.option_count = 3; db.session.commit(); quote_id = quote.id
     tiers = m.quote_tiers(3)
-r = owner.post("/quotes/%d/lighting" % quote_id, data=dict(CSRF, name="Kitchen", type="kitchen", length="14", width="12", height="9", **{"lumens_%d" % ids["flush"]: "1500"}))
-check(r.status_code == 302 and r.headers["Location"].endswith("#lighting"), "setting the room saves")
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Add recessed lights to the kitchen please", lighting="1"))
 with app.app_context():
-    check(db.session.get(m.PriceItem, ids["flush"]).lumens == 1500, "lumens typed for a light without them are saved to the Pricing Sheet")
+    q = db.session.get(m.Quote, quote_id)
+    check(not q.lighting_room and "I need the room's size" in q.messages[-1].content, "ticked with no room size: it asks for the size (and builds nothing)")
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
-check("Kitchen · 14 × 12 ft, 9 ft ceiling · 30 fc" in page, "the panel shows the room")
+check("Surface mount LED flush mount light" not in page, "no lighting section yet")
+owner.post("/quoting/pricing/%d/profile" % ids["flush"], data=dict(CSRF, lumens="1500"))
+with app.app_context():
+    check(db.session.get(m.PriceItem, ids["flush"]).lumens == 1500, "lumens for a light without them can be typed on its profile")
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Kitchen is 14x12 with 9 ft ceilings", lighting="1"))
+with app.app_context():
+    q = db.session.get(m.Quote, quote_id)
+    check(q.lighting_room and (q.lighting_room["length"], q.lighting_room["width"], q.lighting_room["height"], q.lighting_room["type"]) == (14, 12, 9, "kitchen"),
+          "the room is read from the message: kitchen, 14 x 12, 9 ft ceiling")
+    check("Lighting layout: Kitchen, 14 × 12 ft, 9 ft ceiling, kitchen (30 foot-candles)." in q.messages[-1].content, "and Caden's chat says what it read")
+page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
+check("Kitchen · 14 × 12 ft, 9 ft ceiling · 30 fc" in page and "read from your message" in page, "the lighting summary shows the room")
+check('name="lighting" value="1" checked' in page, "and the checkbox stays ticked")
 for name in ("4in LED wafer 650 lm", "Halo 6in LED wafer 1200 lm", "Juno trimless downlight", "Surface mount LED flush mount light"):
     check(name in page.split('class="item-table lighting-plans"')[1].split("</table>")[0], f"plans list {name}")
-check('name="lumens_%d"' % ids["dimmer"] not in page, "a dimmer switch is not mistaken for a light that needs lumens")
+check("LED dimmer switch" not in page.split('id="lighting"')[1].split("</details>")[0], "a dimmer switch is not mistaken for a light that needs lumens")
 check("9 (3 × 3" in page, "with how many and the grid (9 of the 1,200 lm wafers, 3 × 3)")
 
 # 3. Caden picks a light per option; the count is the layout's
@@ -89,7 +102,7 @@ class FakeOpenAI:
 
 m.OpenAI = FakeOpenAI
 os.environ["OPENAI_API_KEY"] = "test-key-not-used"
-owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Recessed lights for the kitchen, three choices."))
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Recessed lights for the kitchen, three choices.", lighting="1"))
 words = SEEN[-1]["instructions"]
 check("LIGHTING_PLAN for Kitchen (14 x 12 ft, 9 ft ceiling" in words and '"price_item_id": %d' % ids["mid"] in words and "exactly its quantity" in words,
       "Caden gets the room, every light's layout, and the rule to use its quantity")
@@ -122,14 +135,14 @@ class RabOpenAI(FakeOpenAI):
 
 
 m.OpenAI = RabOpenAI
-owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Use the RAB 1500 lm downlights."))
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Use the RAB 1500 lm downlights.", lighting="1"))
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     line = q.options[0].lines[0]
     check(line.is_missing and line.multiplier == L.layout(1500, kitchen)["count"], "the RAB light is still to price (top of the quote), with the layout's count, not Caden's 3")
     check(q.options[0].lighting and q.options[0].lighting["fixture"].startswith("RAB RDLED6"), "and it gets its 3D layout")
 m.OpenAI = FakeOpenAI
-owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Back to the Pricing Sheet lights."))
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Back to the Pricing Sheet lights.", lighting="1"))
 
 # 4. the client presentation: layout and pictures
 with app.app_context():
@@ -138,18 +151,27 @@ pres = owner.get("/quotes/%d" % quote_id).get_data(as_text=True)
 check(pres.count("data-light-layout=") == 3 and 'class="proposal-pictures"' in pres, "the presentation shows each option's layout and the pictures of what is used")
 
 # 4b. a round room on the quote
-r = owner.post("/quotes/%d/lighting" % quote_id, data=dict(CSRF, name="Sunroom", shape="circle", type="living", length="16", height="9"))
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     q.status = "draft"; db.session.commit()
-r = owner.post("/quotes/%d/lighting" % quote_id, data=dict(CSRF, name="Sunroom", shape="circle", type="living", length="16", height="9"))
+m.OpenAI = FakeOpenAI
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Actually it's a sunroom, 16 ft round, 9 ft ceiling", lighting="1"))
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
 check("Sunroom · 16 ft round" in page and "in rings" in page, "a round room is set on the quote and laid out in rings")
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     check(all(option.lighting and option.lighting["shape"] == "circle" for option in q.options), "every option's layout is round now")
-    q.status = "confirmed"; db.session.commit()
 check('Update from Cooper</button>' in owner.get("/quoting/pricing").get_data(as_text=True), "selected Pricing Sheet items: Update from Cooper (price and picture)")
+
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Never mind the lights, just the outlets"))
+with app.app_context():
+    q = db.session.get(m.Quote, quote_id)
+    check(not q.lighting_room and not any(option.lighting for option in q.options), "unticked, it is not a lighting quote any more")
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Lights after all: the 16 ft round sunroom, 9 ft ceiling", lighting="1"))
+with app.app_context():
+    q = db.session.get(m.Quote, quote_id)
+    check(all(option.lighting for option in q.options), "ticked again, the layouts come back")
+    q.status = "confirmed"; db.session.commit()
 
 # 5. lumens on the Pricing Sheet's own save, and the room cleared
 r = owner.post("/quoting/pricing/%d/edit" % ids["dimmer"], data=dict(CSRF, name="LED dimmer switch", category="Devices", unit="ea", price="28", labor_hours_per_unit="0.4", lumens=""),
