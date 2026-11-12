@@ -1109,3 +1109,12 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .catalog-batch input { width:84px; }
 .cooper-catalog-form { flex-wrap: wrap; }
 @media (max-width: 620px) { .cooper-catalog-form { width: 100%; } .cooper-catalog-form .btn { flex: 1 1 100%; } }
+
+/* Generators: the job a sizing or upgrade belongs to */
+.gen-job { display:grid; gap:6px; margin-bottom:16px; padding-bottom:14px; border-bottom:1px solid var(--border); }
+.gen-job label { display:flex; flex-direction:column; gap:6px; color:var(--muted); font-size:11px; font-weight:600; min-width:0; }
+.gen-job select { width:100%; min-width:0; }
+.gen-job-note, .gen-save-to, .gen-caden-note { margin:0; color:#d6d3d1; font-size:13px; line-height:1.5; }
+.gen-job-note a { color:var(--accent-hover); }
+.gen-save-to { flex:1 1 220px; align-self:center; }
+.gen-sub { margin:14px 0 0; font-size:14px; }

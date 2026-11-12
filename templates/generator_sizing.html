@@ -5,6 +5,7 @@
 <div class="sizing-layout">
 <form method="GET" class="panel section-panel sizing-form" id="sizing-form">
   <input type="hidden" name="calculate" value="1">
+  {% if jobs %}{% include "_generator_job.html" %}{% endif %}
   <div class="sizing-choices">
     {% for name, options in choices.items() %}<fieldset><legend>{{ {'coverage': 'Coverage', 'fuel': 'Fuel', 'service_amps': 'Electric service', 'soft_start': 'A/C soft starter'}[name] }}</legend><div class="flow-seg">{% for value, label in options %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if values[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endfor %}
   </div>
@@ -32,8 +33,9 @@
     {% if jobs %}<form method="POST" class="sizing-save">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       {% for name, value in result.inputs.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
-      <label><span>Save to job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if selected_job == job.id }}>#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>
-      <button class="btn btn-secondary">Save sizing</button>
+      {% if linked_job %}<input type="hidden" name="job_id" value="{{ linked_job.id }}"><p class="gen-save-to">Save to <strong>job #{{ linked_job.job_number }} {{ linked_job.title }}</strong> for Caden to use on its quote.</p>
+      {% else %}<label><span>Save to job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}">#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>{% endif %}
+      <button class="btn btn-secondary">Save sizing{{ ' to this job' if linked_job }}</button>
     </form>{% endif %}
   </section>
   <section class="panel section-panel">

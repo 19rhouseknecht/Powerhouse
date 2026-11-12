@@ -15,7 +15,7 @@ document.querySelectorAll('[data-other-toggle]').forEach(function (select) {
 
 <form method="GET" class="panel section-panel upgrade-form" id="upgrade-form">
   <input type="hidden" name="calculate" value="1">
-  {% if selected_job %}<input type="hidden" name="job_id" value="{{ selected_job }}">{% endif %}
+  {% if jobs %}{% include "_generator_job.html" %}{% endif %}
   <div class="upgrade-pair">
     <label class="upgrade-unit"><span class="eyebrow">There now</span>{{ model_select('old') }}</label>
     <span class="upgrade-arrow" aria-hidden="true">→</span>
@@ -109,7 +109,8 @@ document.querySelectorAll('[data-other-toggle]').forEach(function (select) {
   {% if jobs %}<div class="upgrade-actions">
     <form method="POST" action="{{ url_for('generator_upgrade_quote') }}" class="sizing-save">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">{{ hidden_state() }}
-      <label><span>Job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if selected_job == job.id }}>#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>
+      {% if linked_job %}<input type="hidden" name="job_id" value="{{ linked_job.id }}"><p class="gen-save-to">For <strong>job #{{ linked_job.job_number }} {{ linked_job.title }}</strong></p>
+      {% else %}<label><span>Job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}">#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>{% endif %}
       <button class="btn btn-primary" name="go" value="quote">Build the quote with Caden</button>
       <button class="btn btn-secondary" formaction="{{ url_for('generator_upgrade_save') }}">Just save it to the job</button>
     </form>
