@@ -974,6 +974,7 @@ class Quote(db.Model):
     travel_method_snapshot = db.Column(db.String(40), nullable=False, default="estimated")
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     confirmed_at = db.Column(db.DateTime, nullable=True)
+    pricing_needed_json = db.Column(db.Text, nullable=False, default="")    # Caden's suggested prices for unpriced items
     created_by = db.relationship("User", backref="created_quotes")
     messages = db.relationship("QuoteMessage", backref="quote", cascade="all, delete-orphan", order_by="QuoteMessage.created_at")
     options = db.relationship("QuoteOption", backref="quote", cascade="all, delete-orphan", order_by="QuoteOption.position")
@@ -982,6 +983,14 @@ class Quote(db.Model):
     @property
     def has_missing_pricing(self):
         return any(option.has_missing_price for option in self.options)
+
+    @property
+    def pricing_needed(self):
+        try:
+            value = json.loads(self.pricing_needed_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except ValueError:
+            return {}
 
 
 class QuoteMessage(db.Model):
@@ -1375,7 +1384,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -1954,7 +1963,7 @@ def assign_quick_quote(quick_id):
     draft.messages.append(QuoteMessage(role="user", content=lead.description))
     result = lead.ai_result
     if result.get("ready") and len(result.get("options", [])) == draft.option_count:
-        apply_ai_quote_options(draft, result["options"]); draft.title = plain_terms(result.get("quote_title")) or draft.title; draft.introduction = plain_terms(result.get("introduction", ""))
+        notes, line_suggestions = apply_ai_quote_options(draft, result["options"]); remember_pricing_suggestions(draft, result.get("pricing_needed"), line_suggestions); draft.title = plain_terms(result.get("quote_title")) or draft.title; draft.introduction = plain_terms(result.get("introduction", ""))
         if not draft.ai_snapshot_json: draft.ai_snapshot_json = serialize_quote_snapshot(draft)
         draft.messages.append(QuoteMessage(role="assistant", content=lead.ai_message or f"I prepared {draft.option_count} options from the quick quote."))
     db.session.commit(); flash("Quick quote assigned to the job with its draft preserved.", "success")
@@ -2009,25 +2018,28 @@ def quote_assistant(job_id):
                     if questions:
                         assistant_message += "\n\n" + "\n".join(f"{number}. {question}" for number, question in enumerate(questions, 1))
                     else:
-                        assistant_message = "Tell me any missing scope details, or ask me to proceed using clearly stated assumptions."
+                        assistant_message = "Tell me a little more about the work, or say \"go ahead\" and I'll build the options with stated assumptions."
                 quote.messages.append(QuoteMessage(role="assistant", content=assistant_message))
                 if result.get("ready"):
-                    apply_ai_quote_options(quote, result.get("options", []))
+                    notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
+                    remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
+                    db.session.flush()
                     if not quote.ai_snapshot_json:
                         quote.ai_snapshot_json = serialize_quote_snapshot(quote)
-                    missing = sorted({name.strip() for option in result.get("options", []) for name in option.get("missing_services", []) if name.strip()})
-                    if missing:
-                        quote.messages.append(QuoteMessage(role="assistant", content=f"I completed all {quote.option_count} options, but these services are missing from the library and remain unpriced:\n\n" + "\n".join(f"• {name}" for name in missing) + "\n\nAdd or repair these services to fill in their pricing."))
+                    summary = quote_ready_summary(quote, notes)
+                    if summary:
+                        quote.messages.append(QuoteMessage(role="assistant", content=summary))
                     quote.title = plain_terms(result.get("quote_title", "")) or f"{job.title} — Service Options"
                     quote.introduction = plain_terms(result.get("introduction", ""))
                 db.session.commit()
             except Exception as exc:
                 app.logger.exception("Quote assistant failed")
-                quote.messages.append(QuoteMessage(role="assistant", content=f"I couldn’t generate the options. Reason: {describe_ai_error(exc)} Your conversation and any existing draft options are still saved."))
+                quote.messages.append(QuoteMessage(role="assistant", content=f"I couldn’t reach the AI service just now, so nothing changed. {describe_ai_error(exc)} Send your message again in a moment; your conversation and draft are saved."))
                 db.session.commit()
         return redirect(url_for("quote_assistant", job_id=job.id))
 
-    return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote))
+    return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
+                           pricing_rows=pricing_needed_rows(quote) if quote.options else [])
 
 
 @app.route("/quotes/<int:quote_id>/option-count", methods=["POST"])
@@ -2406,6 +2418,65 @@ def repair_quote_missing(quote_id):
     return redirect(url_for("quote_assistant", job_id=quote.job_id))
 
 
+@app.route("/quotes/<int:quote_id>/use-prices", methods=["POST"])
+@login_required
+def use_quote_prices(quote_id):
+    """The "Needs a price" panel: price every listed item at once, in this quote (and in the Pricing Sheet when ticked)."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    if quote.status != "draft":
+        flash("Only a draft quote can be priced here.", "error")
+        return redirect(url_for("quote_presentation", quote_id=quote.id))
+    caden = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden").first()
+    rate = get_labor_rate()
+    priced, skipped = [], []
+    for index in range(int(request.form.get("count", "0") or 0)):
+        key = request.form.get(f"key_{index}", "").strip()
+        price_text = request.form.get(f"price_{index}", "").strip()
+        if not key or price_text == "":
+            continue
+        try:
+            price = float(price_text.replace("$", "").replace(",", ""))
+            labor = float((request.form.get(f"labor_{index}", "") or "0").strip())
+        except ValueError:
+            skipped.append(request.form.get(f"name_{index}", "an item")); continue
+        if price < 0 or labor < 0:
+            skipped.append(request.form.get(f"name_{index}", "an item")); continue
+        unit = request.form.get(f"unit_{index}", "ea")
+        unit = unit if unit in {"ea", "ft", "roll", "box", "lb", "job"} else "ea"
+        lines = [line for option in quote.options for line in option.lines if line.is_missing and
+                 ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
+                  (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88))]
+        if not lines:
+            continue
+        name = lines[0].service_name
+        price_item = None
+        if request.form.get(f"save_{index}"):
+            price_item = find_duplicate_price_item(name, include_inactive=True)
+            if price_item is None:
+                price_item = PriceItem(name=name, lookup_key=normalize_item_name(name), category="Quote supplied", unit=unit, price=price,
+                                       labor_hours_per_unit=labor, notes=f"Priced on the quote for job #{quote.job.job_number}.", active=True)
+                db.session.add(price_item); db.session.flush()
+            else:
+                price_item.active = True; price_item.price = price; price_item.unit = unit; price_item.labor_hours_per_unit = labor
+        for line in lines:
+            line.service = None; line.price_item = price_item; line.manual_priced = price_item is None
+            line.example_quantity = f"1 {unit}"; line.material_unit_price = price; line.labor_hours_per_unit = labor
+            line.labor_rate_snapshot = rate; line.unit_price = price + labor * rate
+        remember_direct_pricing(caden, name, unit, price, labor, f"Priced on the quote: {name} ${price:,.2f}/{unit}, {labor:g} labor hours.")
+        priced.append(f"{name} at ${price:,.2f}/{unit}" + (f" + {labor:g} hr" if labor else "") + (" (saved to the Pricing Sheet)" if price_item else ""))
+    if priced:
+        quote.messages.append(QuoteMessage(role="user", content="Pricing confirmed on the quote: " + "; ".join(priced) + ". Use these prices if the quote is reworked."))
+    db.session.commit()
+    if priced:
+        flash("Priced " + ", ".join(priced) + ".", "success")
+    if skipped:
+        flash("Check the price for " + ", ".join(skipped) + ": it must be a number.", "error")
+    if not priced and not skipped:
+        flash("Enter a price for at least one item.", "error")
+    return redirect(url_for("quote_assistant", job_id=quote.job_id))
+
+
 def capture_manual_quote_edits(quote):
     snapshots = {}
     for option in quote.options:
@@ -2500,7 +2571,8 @@ def rework_quote(quote_id):
         result = build_ai_quote_response(quote.job, quote)
         quote.messages.append(QuoteMessage(role="assistant", content=result.get("message", f"I reworked all {quote.option_count} options using the repaired pricing context.")))
         if result.get("ready"):
-            apply_ai_quote_options(quote, result.get("options", []))
+            notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
+            remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
             if not quote.ai_snapshot_json:
                 quote.ai_snapshot_json = serialize_quote_snapshot(quote)
             restore_manual_quote_edits(quote, manual_snapshots)
@@ -4725,7 +4797,7 @@ def validate_ai_option_progression(options, expected_tiers=None):
             tuple(sorted(("service", row.get("service_id"), round(float(row.get("multiplier", 0)), 4)) for row in option.get("services", []))),
             tuple(sorted(("item", row.get("price_item_id"), round(float(row.get("quantity", 0)), 4)) for row in option.get("items", []))),
             tuple(sorted(("direct", canonical_item_name(row.get("name", "")), round(float(row.get("quantity", 0)), 4), round(float(row.get("material_unit_price", 0)), 4), round(float(row.get("labor_hours_per_unit", 0)), 4)) for row in option.get("direct_priced_items", []))),
-            tuple(sorted(normalize_item_name(name) for name in option.get("missing_services", []) if str(name).strip())),
+            tuple(sorted((normalize_item_name(entry[0]), round(entry[1], 4)) for entry in (_missing_entry(value) for value in option.get("missing_services", [])) if entry[0])),
         )
         copy_signature = (normalize_item_name(option.get("title", "")), tuple(normalize_item_name(item) for item in option.get("bullets", [])))
         if previous_signature is not None and source_signature == previous_signature:
@@ -4790,6 +4862,11 @@ If one missing labor duration materially affects the proposal and the stored lib
 
 OPTION_COUNT: {len(tiers)}
 REQUIRED_TIERS_IN_ORDER: {json.dumps(tiers)}
+
+ALWAYS BUILD THE QUOTE:
+Never answer that a quote cannot be made. Either ask one short question (ready=false, one question) when a single missing fact changes the whole scope, or build every option now (ready=true) with clearly stated assumptions.
+Anything you cannot match to a Service or Pricing Sheet item, and whose price the administrator has not typed in this conversation, still goes into the option: put it in that option's missing_services with its quantity and unit, and add one entry to pricing_needed with a realistic suggested material price per unit and labor hours per unit (typical Pennsylvania supply-house pricing) and a short reason. These are suggestions for the administrator to confirm; they are never added to the quote's totals by you.
+Use direct_priced_items only when an administrator message in this conversation states that exact price; copy that message into source_message word for word.
 """
     schema = {
         "type": "object",
@@ -4844,20 +4921,44 @@ REQUIRED_TIERS_IN_ORDER: {json.dumps(tiers)}
                                 "additionalProperties": False,
                             },
                         },
-                        "missing_services": {"type":"array", "items":{"type":"string"}},
+                        "missing_services": {"type": "array", "items": {
+                            "type": "object",
+                            "properties": {"name": {"type": "string"}, "quantity": {"type": "number", "exclusiveMinimum": 0},
+                                           "unit": {"type": "string", "enum": ["ea", "ft", "roll", "box", "lb", "job"]}},
+                            "required": ["name", "quantity", "unit"], "additionalProperties": False}},
                     },
                     "required": ["tier", "title", "description", "bullets", "services", "items", "direct_priced_items", "missing_services"],
                     "additionalProperties": False,
                 },
             },
+            "pricing_needed": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "unit": {"type": "string", "enum": ["ea", "ft", "roll", "box", "lb", "job"]},
+                        "suggested_material_price": {"type": "number", "minimum": 0},
+                        "suggested_labor_hours": {"type": "number", "minimum": 0},
+                        "reason": {"type": "string"},
+                    },
+                    "required": ["name", "unit", "suggested_material_price", "suggested_labor_hours", "reason"],
+                    "additionalProperties": False,
+                },
+            },
         },
-        "required": ["ready", "message", "questions", "quote_title", "introduction", "mike_question", "options"],
+        "required": ["ready", "message", "questions", "quote_title", "introduction", "mike_question", "options", "pricing_needed"],
         "additionalProperties": False,
     }
     client = OpenAI()
     response_args = {"model": os.environ.get("OPENAI_MODEL", "gpt-5-mini"), "instructions": instructions, "text": {"format": {"type": "json_schema", "name": "powerhouse_quote_plan", "schema": schema, "strict": True}}}
     response = client.responses.create(input=conversation, **response_args)
     result = json.loads(response.output_text)
+    if not result.get("ready") and not [q for q in result.get("questions", []) if str(q).strip()]:
+        # "not ready" with nothing to ask is a dead end: build it with stated assumptions instead
+        proceed = conversation + [{"role": "user", "content": "Build all the options now using clearly stated assumptions. Put anything unpriced in missing_services and pricing_needed with a suggested price."}]
+        response = client.responses.create(input=proceed, **response_args)
+        result = json.loads(response.output_text)
     mike_question = str(result.get("mike_question", "")).strip()
     if mike_question and mike:
         mike_answer = ask_mike_labor_question(mike, mike_question)
@@ -4870,9 +4971,9 @@ REQUIRED_TIERS_IN_ORDER: {json.dumps(tiers)}
         except ValueError as error:
             correction = conversation + [{"role": "user", "content": f"Your draft failed this required progression rule: {error} Rebuild all {len(tiers)} options. Every higher tier must add scope or substitute a clearly better-quality Service or Pricing Sheet item."}]
             response = client.responses.create(input=correction, **response_args)
-            result = json.loads(response.output_text)
-            if result.get("ready"):
-                validate_ai_option_progression(result.get("options", []), tiers)
+            retry = json.loads(response.output_text)
+            if retry.get("ready"):
+                result = retry                 # still imperfect? the draft is built anyway and the problem is noted on it
     return result
 
 
@@ -4925,32 +5026,109 @@ def remember_direct_pricing(agent, name, unit, price, labor, source):
     db.session.add(AgentKnowledge(agent=agent, title=f"Direct price — {name} — {datetime.utcnow().strftime('%Y-%m-%d')}", category="User-supplied pricing", content=content, active=True))
 
 
+def _missing_entry(value):
+    """A missing item as (name, quantity, unit), from Caden's object or an older plain string."""
+    if isinstance(value, dict):
+        try:
+            quantity = float(value.get("quantity") or 1)
+        except (TypeError, ValueError):
+            quantity = 1
+        unit = value.get("unit") if value.get("unit") in {"ea", "ft", "roll", "box", "lb", "job"} else "ea"
+        return str(value.get("name") or "").strip(), max(quantity, 0.01), unit
+    return str(value or "").strip(), 1.0, "ea"
+
+
+def normalize_ai_options(option_data, tiers):
+    """Caden's options in the required tier order, whatever came back. Returns (options, notes).
+    A tier Caden left out gets a placeholder to finish; duplicate tiers are kept and noted."""
+    notes = []
+    by_tier, spare = {}, []
+    for data in option_data or []:
+        if not isinstance(data, dict):
+            continue
+        if data.get("tier") in tiers and data["tier"] not in by_tier:
+            by_tier[data["tier"]] = data
+        else:
+            spare.append(data)
+    options = []
+    for tier in tiers:
+        data = by_tier.get(tier) or (spare.pop(0) if spare else None)
+        if data is None:
+            data = {"title": f"{tier} option", "description": "Caden did not finish this option. Ask him to complete it, or edit it by hand.",
+                    "bullets": [], "services": [], "items": [], "direct_priced_items": [],
+                    "missing_services": [{"name": f"Finish the {tier} option", "quantity": 1, "unit": "job"}]}
+            notes.append(f"The {tier} option was not finished; it is marked for you to complete.")
+        options.append(dict(data, tier=tier))
+    try:
+        validate_ai_option_progression(options, tiers)
+    except ValueError as error:
+        notes.append(f"{error} You may want to adjust it before sending.")
+    return options, notes
+
+
 def apply_ai_quote_options(quote, option_data):
-    validate_ai_option_progression(option_data, quote_tiers(quote.option_count))
+    """Save Caden's options on the draft. Never fails on content: anything that breaks a pricing rule becomes a
+    line marked "pricing needed" (and a suggestion to confirm) instead of throwing the quote away.
+    Returns (notes, suggestions): sentences for the office, and {name: Caden's suggested price} for unpriced lines."""
+    option_data, notes = normalize_ai_options(option_data, quote_tiers(quote.option_count))
     service_lookup = {service.id: service for service in Service.query.all()}
     item_lookup = {item.id: item for item in PriceItem.query.filter_by(active=True).all()}
     caden = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden").first()
     created_catalog_items = {}
+    suggestions = {}
     quote.options.clear()
+
+    def pending(option, name, quantity=1.0, unit="ea", suggestion=None):
+        name = re.sub(r"\s*\((?:direct[- ]?priced|estimated?|estimate only|pricing (?:pending|needed)|needs? pric(?:e|ing)|unpriced)\)", "", str(name or ""), flags=re.IGNORECASE).strip()
+        option.lines.append(QuoteOptionService(service=None, service_name=name[:180] or "Item to price", example_quantity="Pricing pending",
+                                               multiplier=quantity, unit_price=0, position=len(option.lines)))
+        if suggestion:
+            suggestions.setdefault(normalize_item_name(name), dict(suggestion, name=name, unit=unit))
+
     for position, data in enumerate(option_data):
         professional_bullets = [line for line in (professionalize_scope_bullet(bullet) for bullet in data.get("bullets", [])) if line]
-        option = QuoteOption(tier=data["tier"], title=plain_terms(data["title"]), description=plain_terms(data["description"]), bullets_json=json.dumps(professional_bullets), position=position)
-        for line_position, selection in enumerate(data.get("services", [])):
+        option = QuoteOption(tier=data["tier"], title=plain_terms(data.get("title") or f"{data['tier']} option"),
+                             description=plain_terms(data.get("description") or ""), bullets_json=json.dumps(professional_bullets), position=position)
+        for selection in data.get("services", []):
             service = service_lookup.get(selection.get("service_id"))
-            multiplier = float(selection.get("multiplier", 0))
+            try:
+                multiplier = float(selection.get("multiplier", 0))
+            except (TypeError, ValueError):
+                multiplier = 0
             if service is None or multiplier <= 0:
-                raise ValueError("AI selected an unavailable service or invalid quantity.")
-            option.lines.append(QuoteOptionService(service=service, service_name=service.name, example_quantity=service.example_quantity, multiplier=multiplier, unit_price=service.example_total, material_unit_price=service.material_total, labor_hours_per_unit=service.estimated_labor_hours, labor_rate_snapshot=get_labor_rate(), position=line_position))
-        for item_position, selection in enumerate(data.get("items", []), len(option.lines)):
+                pending(option, f"Service #{selection.get('service_id')} (no longer in the library)", max(multiplier, 1))
+                notes.append(f"{data['tier']}: a service Caden picked is not in the library; it is marked to price.")
+                continue
+            option.lines.append(QuoteOptionService(service=service, service_name=service.name, example_quantity=service.example_quantity, multiplier=multiplier, unit_price=service.example_total, material_unit_price=service.material_total, labor_hours_per_unit=service.estimated_labor_hours, labor_rate_snapshot=get_labor_rate(), position=len(option.lines)))
+        for selection in data.get("items", []):
             price_item = item_lookup.get(selection.get("price_item_id"))
-            quantity = float(selection.get("quantity", 0))
+            try:
+                quantity = float(selection.get("quantity", 0))
+            except (TypeError, ValueError):
+                quantity = 0
             if price_item is None or quantity <= 0:
-                raise ValueError("AI selected an unavailable Pricing Sheet item or invalid quantity.")
+                pending(option, f"Pricing Sheet item #{selection.get('price_item_id')} (not found)", max(quantity, 1))
+                notes.append(f"{data['tier']}: a Pricing Sheet item Caden picked was not found; it is marked to price.")
+                continue
             rate = get_labor_rate()
-            option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name, example_quantity=f"1 {price_item.unit}", multiplier=quantity, unit_price=price_item.price + (price_item.labor_hours_per_unit * rate), material_unit_price=price_item.price, labor_hours_per_unit=price_item.labor_hours_per_unit, labor_rate_snapshot=rate, position=item_position))
-        for direct_position, selection in enumerate(data.get("direct_priced_items", []), len(option.lines)):
-            name, quantity, material_price, labor = validate_direct_priced_item(quote, selection)
-            unit = selection.get("unit", "ea")
+            option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name, example_quantity=f"1 {price_item.unit}", multiplier=quantity, unit_price=price_item.price + (price_item.labor_hours_per_unit * rate), material_unit_price=price_item.price, labor_hours_per_unit=price_item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines)))
+        for selection in data.get("direct_priced_items", []):
+            unit = selection.get("unit") if selection.get("unit") in {"ea", "ft", "roll", "box", "lb", "job"} else "ea"
+            try:
+                name, quantity, material_price, labor = validate_direct_priced_item(quote, selection)
+            except (ValueError, TypeError):
+                # a price nobody typed: never in the totals, but kept as Caden's suggestion to confirm
+                name = str(selection.get("name") or "Item to price").strip()
+                try:
+                    quantity = max(float(selection.get("quantity") or 1), 0.01)
+                    suggested = {"suggested_material_price": max(float(selection.get("material_unit_price") or 0), 0),
+                                 "suggested_labor_hours": max(float(selection.get("labor_hours_per_unit") or 0), 0)}
+                except (TypeError, ValueError):
+                    quantity, suggested = 1.0, None
+                if suggested is not None:
+                    suggested["reason"] = "Caden's estimate; confirm before sending."
+                pending(option, name, quantity, unit, suggested)
+                continue
             source = " ".join(str(selection.get("source_message", "")).split())
             price_item = None
             if selection.get("create_in_price_sheet"):
@@ -4965,14 +5143,55 @@ def apply_ai_quote_options(quote, option_data):
                 created_catalog_items[key] = price_item
             remember_direct_pricing(caden, name, unit, material_price, labor, source)
             rate = get_labor_rate()
-            option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name if price_item else name, example_quantity=f"1 {unit}", multiplier=quantity, unit_price=material_price + (labor * rate), material_unit_price=material_price, labor_hours_per_unit=labor, labor_rate_snapshot=rate, manual_priced=price_item is None, position=direct_position))
-        for missing_position, missing_name in enumerate(data.get("missing_services", []), len(option.lines)):
-            missing_name = str(missing_name).strip()
-            if missing_name:
-                option.lines.append(QuoteOptionService(service=None, service_name=missing_name, example_quantity="Pricing pending", multiplier=1, unit_price=0, position=missing_position))
+            option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name if price_item else name, example_quantity=f"1 {unit}", multiplier=quantity, unit_price=material_price + (labor * rate), material_unit_price=material_price, labor_hours_per_unit=labor, labor_rate_snapshot=rate, manual_priced=price_item is None, position=len(option.lines)))
+        for value in data.get("missing_services", []):
+            name, quantity, unit = _missing_entry(value)
+            if name:
+                pending(option, name, quantity, unit)
         if not option.lines:
-            option.lines.append(QuoteOptionService(service=None, service_name="Service library match needed", example_quantity="Pricing pending", multiplier=1, unit_price=0, position=0))
+            pending(option, "Service library match needed")
         quote.options.append(option)
+    return list(dict.fromkeys(notes)), suggestions
+
+
+def remember_pricing_suggestions(quote, ai_suggestions, line_suggestions):
+    """Keep Caden's suggested prices on the draft, by item name, for the "Needs a price" panel."""
+    saved = quote.pricing_needed
+    for row in (ai_suggestions or []):
+        if isinstance(row, dict) and str(row.get("name") or "").strip():
+            saved[normalize_item_name(row["name"])] = {k: row.get(k) for k in ("name", "unit", "suggested_material_price", "suggested_labor_hours", "reason")}
+    for key, row in (line_suggestions or {}).items():
+        saved.setdefault(key, row)
+    quote.pricing_needed_json = json.dumps(saved)
+
+
+def quote_ready_summary(quote, notes=()):
+    """What Caden says after building the options: what needs a price, and anything to look at."""
+    rows = pricing_needed_rows(quote)
+    parts = []
+    if rows:
+        names = ", ".join(row["name"] for row in rows[:6]) + (" and more" if len(rows) > 6 else "")
+        parts.append(f"All {quote.option_count} options are built. {len(rows)} item{'s need' if len(rows) != 1 else ' needs'} a price before this quote is final: {names}. "
+                     "They're at the top of the draft with my suggested prices; adjust them if needed and press Use these prices.")
+    for note in notes:
+        parts.append("• " + note)
+    return "\n\n".join(parts)
+
+
+def pricing_needed_rows(quote):
+    """Every unpriced item on the draft, once, with Caden's suggestion when he made one."""
+    saved = quote.pricing_needed
+    rows = []
+    for group in build_missing_quote_groups(quote):
+        key = normalize_item_name(group["name"])
+        suggestion = saved.get(key) or next((row for other, row in saved.items()
+                                              if SequenceMatcher(None, other, key).ratio() >= .82), {})
+        quantities = sorted({line.multiplier for line in group["lines"]})
+        rows.append({"key": group["key"], "name": group["name"], "tiers": group["tiers"], "lines": len(group["lines"]),
+                     "quantities": quantities, "quantity_text": " / ".join("%g" % q for q in quantities), "unit": suggestion.get("unit") or "ea",
+                     "material": suggestion.get("suggested_material_price"), "labor": suggestion.get("suggested_labor_hours"),
+                     "reason": suggestion.get("reason") or ""})
+    return rows
 
 
 def populate_client_from_form(client):
@@ -6295,6 +6514,7 @@ with app.app_context():
         ("job", "jobber_quote_status", "VARCHAR(40) NOT NULL DEFAULT ''"), ("job", "jobber_quote_total", "FLOAT"),
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
+        ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
     ]:
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")
