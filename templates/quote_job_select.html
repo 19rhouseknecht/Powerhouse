@@ -2,5 +2,32 @@
 <div class="page-heading"><span class="eyebrow">Quoting</span><h1>Generate quote</h1><p>Select an existing job, or capture a quick quote before its full client and job record exists.</p></div>
 <details class="panel quick-quote-panel"><summary>＋ Create quote on the fly</summary><form method="POST" action="{{ url_for('create_quick_quote') }}" class="record-form quick-quote-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><div class="form-grid"><label>Client name<input name="client_name" placeholder="Optional"></label><label>Phone<input name="phone"></label><label>Email<input type="email" name="email"></label><label>Proposal size<select name="option_count"><option value="3">3 options</option><option value="6" selected>6 options</option></select></label><label class="wide">Address<input name="address"></label><label class="wide">What would they like done?<textarea name="description" rows="5" required></textarea></label></div><button class="btn btn-primary">Save awaiting job assignment</button></form></details>
 {% if quick_quotes %}<section class="panel section-panel"><div class="section-title"><div><span class="eyebrow">Unassigned</span><h2>Quotes awaiting a job</h2></div><span class="usage-count">{{ quick_quotes|length }}</span></div><div class="quick-quote-list">{% for lead in quick_quotes %}<article><div><strong>{{ lead.client_name or 'Walk-in / unnamed client' }}</strong><p>{{ lead.description }}</p><small>{% if lead.address %}{{ lead.address }} · {% endif %}{{ lead.created_at.strftime('%b %-d, %Y') }}{% if lead.ai_result.get('ready') %} · {{ lead.option_count }} options drafted{% endif %}</small>{% if lead.ai_message %}<small>{{ lead.ai_message }}</small>{% endif %}</div><form method="POST" action="{{ url_for('assign_quick_quote', quick_id=lead.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><select name="job_id" required><option value="">Assign to job…</option>{% for job in jobs %}<option value="{{ job.id }}">#{{ job.job_number }} · {{ job.title }}</option>{% endfor %}</select><button class="btn btn-small btn-primary">Assign &amp; build</button></form></article>{% endfor %}</div></section>{% endif %}
-<div class="section-title"><div><span class="eyebrow">Existing records</span><h2>Select a job</h2></div></div>{% if jobs %}<div class="quote-job-list">{% for job in jobs %}<a href="{{ url_for('quote_assistant', job_id=job.id) }}"><span class="client-avatar">{{ job.client.first_name[:1] }}{{ job.client.last_name[:1] }}</span><div><small>#{{ job.job_number }} · {{ job.client.full_name }}</small><strong>{{ job.title }}</strong><p>{{ job.description }}</p></div><span class="status-pill status-{{ job.bucket }}">{{ job.status_label }}</span><b>Build quote ›</b></a>{% endfor %}</div>{% else %}<div class="empty-state"><span>＋</span><h2>No open jobs</h2><p>Create a job or use the quick quote form above.</p></div>{% endif %}
+<div class="section-title quote-job-heading"><div><span class="eyebrow">In the works</span><h2>Select a job to quote</h2><p class="muted">Jobs without a confirmed quote yet. To quote a job that is already quoted or active, open it from Jobs.</p></div></div>
+<form class="filter-bar quote-job-search" method="GET" role="search"><input type="search" name="q" value="{{ search }}" placeholder="Search job, client, number, description, or address…" aria-label="Search jobs"><button class="btn btn-secondary">Search</button>{% if search %}<a class="btn btn-ghost" href="{{ url_for('generate_quote') }}">Clear</a>{% endif %}</form>
+{% if jobs %}<div class="quote-job-list">{% for job in jobs %}<article class="quote-job-card">
+  <span class="client-avatar" aria-hidden="true">{{ job.client.first_name[:1] }}{{ job.client.last_name[:1] }}</span>
+  <div class="quote-job-body">
+    <small>#{{ job.job_number }} · {{ job.client.full_name }}</small>
+    <a class="quote-job-title" href="{{ url_for('quote_assistant', job_id=job.id) }}"><strong>{{ job.title }}</strong></a>
+    {% if job.description %}<p class="quote-job-description" data-clamp>{{ job.description }}</p><button type="button" class="quote-job-more" data-read-more hidden aria-expanded="false">Read more</button>{% else %}<p class="quote-job-description muted-note">No description added.</p>{% endif %}
+  </div>
+  <div class="quote-job-side"><span class="status-pill status-{{ job.bucket }}">{{ job.status_label }}</span><a class="quote-job-build" href="{{ url_for('quote_assistant', job_id=job.id) }}" tabindex="-1">Build quote ›</a></div>
+</article>{% endfor %}</div>
+<script>
+(function () {
+  document.querySelectorAll('.quote-job-card').forEach(function (card) {
+    var text = card.querySelector('[data-clamp]'), more = card.querySelector('[data-read-more]');
+    if (!text || !more) return;
+    if (text.scrollHeight > text.clientHeight + 2) more.hidden = false;
+    more.addEventListener('click', function (event) {
+      event.preventDefault();
+      var open = card.classList.toggle('is-open');
+      more.textContent = open ? 'Show less' : 'Read more';
+      more.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  });
+})();
+</script>
+{% elif search %}<div class="empty-state"><span>⌕</span><h2>No jobs match “{{ search }}”</h2><p>Only jobs in the works are listed here. Try another word, or clear the search.</p><a class="btn btn-secondary" href="{{ url_for('generate_quote') }}">Clear search</a></div>
+{% else %}<div class="empty-state"><span>＋</span><h2>No jobs in the works</h2><p>Every job already has a quote. Create a job, or use the quick quote form above.</p><a class="btn btn-primary" href="{{ url_for('create_job') }}">New job</a></div>{% endif %}
 {% endblock %}
