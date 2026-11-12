@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Generator sizing — Power House{% endblock %}
+{% block content %}
+<div class="page-heading"><span class="eyebrow">Generators</span><h1>Generator sizing</h1><p>Enter what the home has. You get the running load, the starting load of the largest motor, and the Kohler air-cooled model that covers it, with and without load management.</p></div>
+<div class="sizing-layout">
+<form method="GET" class="panel section-panel sizing-form" id="sizing-form">
+  <input type="hidden" name="calculate" value="1">
+  <div class="sizing-choices">
+    {% for name, options in choices.items() %}<fieldset><legend>{{ {'coverage': 'Coverage', 'fuel': 'Fuel', 'service_amps': 'Electric service', 'soft_start': 'A/C soft starter'}[name] }}</legend><div class="flow-seg">{% for value, label in options %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if values[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endfor %}
+  </div>
+  <div class="sizing-fields">
+    {% for name, (label, default, low, high) in fields.items() %}<label><span>{{ label }}</span><input type="number" name="{{ name }}" value="{{ '%g'|format(values[name]) }}" min="{{ low }}" max="{{ high }}" step="any" inputmode="decimal"></label>{% endfor %}
+  </div>
+  <div class="form-actions"><button class="btn btn-primary">Size the generator</button></div>
+</form>
+
+<aside class="sizing-result">
+{% if result %}
+  <section class="panel section-panel sizing-answer">
+    <span class="eyebrow">Recommendation</span>
+    {% if result.model %}<h2>{{ result.model.model }}</h2><p class="sizing-big">{{ result.model.description }} · {{ '%g'|format(result.model.rated_kw) }} kW on {{ 'propane' if result.inputs.fuel == 'lp' else 'natural gas' }}</p>
+    {% else %}<h2>Liquid-cooled range</h2><p class="sizing-big">More than the largest air-cooled model covers.</p>{% endif %}
+    <dl class="sizing-numbers">
+      <div><dt>Needs</dt><dd>{{ '%g'|format(result.required_kw) }} kW</dd></div>
+      <div><dt>Running</dt><dd>{{ '%g'|format(result.running_kw) }} kW</dd></div>
+      <div><dt>Starting</dt><dd>{{ '%g'|format(result.starting_kw) }} kW</dd></div>
+      <div><dt>Transfer switch</dt><dd>{{ result.transfer_switch_amps }} A</dd></div>
+    </dl>
+    {% if result.sets_start %}<p class="muted">The starting load is set by the {{ result.sets_start|lower }} starting while everything else runs.</p>{% endif %}
+    {% if result.with_load_management.shed %}<div class="sizing-shed"><strong>With load management</strong> (shedding {{ result.with_load_management.shed|map('lower')|join(', ') }} while the generator runs): needs {{ '%g'|format(result.with_load_management.required_kw) }} kW{% if result.with_load_management.model %}, so a <strong>{{ result.with_load_management.model.model }}</strong> ({{ '%g'|format(result.with_load_management.model.rated_kw) }} kW) covers it{% endif %}.</div>{% endif %}
+    {% for note in result.notes %}<p class="sizing-note">{{ note }}</p>{% endfor %}
+    {% if jobs %}<form method="POST" class="sizing-save">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% for name, value in result.inputs.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+      <label><span>Save to job</span><select name="job_id" required><option value="">Choose a job…</option>{% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if selected_job == job.id }}>#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}</select></label>
+      <button class="btn btn-secondary">Save sizing</button>
+    </form>{% endif %}
+  </section>
+  <section class="panel section-panel">
+    <span class="eyebrow">How it adds up</span>
+    <div class="item-table-wrap"><table class="item-table sizing-table"><thead><tr><th>Load</th><th>Running kW</th><th>Starting kW</th></tr></thead><tbody>
+      {% for name, running, starting, shed in result.rows %}<tr><td>{{ name }}{% if shed %} <small>can be load-managed</small>{% endif %}</td><td>{{ '%.2f'|format(running) }}</td><td>{{ '%.2f'|format(starting) if starting else '—' }}</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+{% else %}
+  <section class="panel section-panel"><span class="eyebrow">How it works</span><h2>Enter the home, press Size</h2><p class="muted">Running load is everything on at once (lighting and receptacles from the square footage, NEC 220.12 and 220.42). Starting load is the largest motor starting while the rest runs; enter the A/C nameplate LRA for the real figure. The recommendation leaves 10 % headroom.</p></section>
+{% endif %}
+  <section class="panel section-panel sizing-models">
+    <span class="eyebrow">Models used</span>
+    <ul>{% for model, lp, ng, description in models %}<li><strong>{{ model }}</strong> {{ '%g'|format(lp) }} kW LP / {{ '%g'|format(ng) }} kW NG</li>{% endfor %}</ul>
+    <small class="muted">From Kohler spec sheets and dealer listings. Confirm on the current spec sheet before ordering. Kohler's own sizing tool and distributor have the final word, especially for liquid-cooled units and anything with large motors.</small>
+  </section>
+</aside>
+</div>
+{% endblock %}

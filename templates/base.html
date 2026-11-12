@@ -59,6 +59,8 @@
     {% endif %}{% if can('view_finance') or can('view_expenses') %}<div class="side-section">Finance</div>{% endif %}
     {% if can('view_finance') %}<a href="{{ url_for('finance_dashboard') }}" class="side-link {{ 'active' if request.endpoint == 'finance_dashboard' else '' }}"><span>◉</span> Dashboard</a>{% endif %}
     {% if can('view_expenses') %}<a href="{{ url_for('expenses') }}" class="side-link {{ 'active' if request.endpoint in ['expenses','create_expense'] else '' }}"><span>▧</span> Expenses</a>{% endif %}
+    <div class="side-section">Generators</div>
+    <a href="{{ url_for('generator_sizing') }}" class="side-link {{ 'active' if request.endpoint == 'generator_sizing' else '' }}"><span>⚙︎</span> Sizing</a>
     <div class="side-spacer"></div>
     {% if current_user.role and current_user.role.is_admin %}
     <a href="{{ url_for('settings') }}" class="side-link {{ 'active' if request.endpoint in ['settings', 'roles', 'update_role', 'edit_agent'] else '' }}"><span>⚙</span> Settings</a>

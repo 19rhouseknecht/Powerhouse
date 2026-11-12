@@ -310,6 +310,27 @@ class FlowChart(db.Model):
     updated_by = db.relationship("User")
 
 
+class GeneratorSizing(db.Model):
+    """A generator sizing saved to a job (Generators -> Sizing)."""
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job.id"), nullable=False, index=True)
+    inputs_json = db.Column(db.Text, nullable=False, default="{}")
+    required_kw = db.Column(db.Float, nullable=False, default=0)
+    model = db.Column(db.String(40), nullable=False, default="")
+    summary = db.Column(db.Text, nullable=False, default="")
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    job = db.relationship("Job", backref=db.backref("generator_sizings", order_by="GeneratorSizing.created_at.desc()"))
+    created_by = db.relationship("User")
+
+    @property
+    def inputs(self):
+        try:
+            return json.loads(self.inputs_json or "{}")
+        except ValueError:
+            return {}
+
+
 class Release(db.Model):
     """One deploy of a build onto the live site (Settings -> Releases)."""
     id = db.Column(db.Integer, primary_key=True)
@@ -6392,6 +6413,37 @@ def jobber_import():
         counts["clients_new"], counts["jobs_new"], counts["clients_update"] + counts["clients_link"] + counts["clients_fill"] +
         counts["jobs_update"] + counts["jobs_fill"]), "success")
     return redirect(url_for("jobber_page"))
+
+
+# ---------------- Generators ----------------
+import generators as gen
+
+
+@app.route("/generators/sizing", methods=["GET", "POST"])
+@login_required
+def generator_sizing():
+    values = request.form if request.method == "POST" else request.args
+    result = gen.size(values) if values.get("calculate") or request.method == "POST" else None
+    if request.method == "POST":
+        check_csrf()
+        job = db.session.get(Job, request.form.get("job_id", type=int) or 0)
+        if job is None:
+            flash("Choose the job to save this sizing to.", "error")
+        else:
+            model = result["model"]["model"] if result["model"] else ""
+            summary = (f"Needs {result['required_kw']:g} kW (running {result['running_kw']:g} kW, starting {result['starting_kw']:g} kW). "
+                       + (f"Recommended: {result['model']['description']} ({model}, {result['model']['rated_kw']:g} kW on "
+                          f"{'propane' if result['inputs']['fuel'] == 'lp' else 'natural gas'})." if model else "Larger than the air-cooled range.")
+                       + (f" With load management: {result['with_load_management']['required_kw']:g} kW." if result["with_load_management"]["shed"] else ""))
+            db.session.add(GeneratorSizing(job=job, inputs_json=json.dumps(result["inputs"]), required_kw=result["required_kw"], model=model,
+                                           summary=summary, created_by=current_user))
+            db.session.commit()
+            flash(f"Saved the sizing to job #{job.job_number} {job.title}.", "success")
+            return redirect(url_for("job_detail", job_id=job.id) + "#generator-sizing")
+    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all()
+    defaults = gen.read_inputs(values)
+    return render_template("generator_sizing.html", result=result, fields=gen.FIELDS, choices=gen.CHOICES, values=defaults,
+                           models=gen.KOHLER_MODELS, jobs=jobs, selected_job=request.args.get("job_id", type=int))
 
 
 # ---------------- Releases (Settings -> Releases) ----------------
