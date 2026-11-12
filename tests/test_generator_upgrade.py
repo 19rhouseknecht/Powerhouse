@@ -44,6 +44,29 @@ check(any("liquid-cooled" in t for _, t in gen.upgrade({"old": "kohler-20rca", "
 check(gen.read_upgrade({"old": "nope", "wire_feet": "-4", "fuel": "x"})["old"] == "generac-20-7039", "odd input falls back to defaults")
 check(all(row[0] != "24RCLA" for row in gen.KOHLER_MODELS), "the Sizing page's air-cooled list no longer holds the liquid-cooled 24RCLA")
 
+# 3a. Kohler's installation manual: its pipe chart (Figure 10), 8 ft per 90-degree elbow, the fuel supply (Figure 8)
+chart = {"kohler-14rca": (["3/4", "1", "1", "1-1/4", "1-1/4"], ["3/4", "3/4", "1", "1", "1"]),
+         "kohler-20rca": (["1", "1", "1-1/4", "1-1/4", "1-1/4"], ["3/4", "1", "1", "1-1/4", "1-1/4"]),
+         "kohler-26rca": (["1", "1-1/4", "1-1/4", "1-1/4", "1-1/2"], ["3/4", "1", "1", "1", "1-1/4"])}
+for key, (ng, lp) in chart.items():
+    unit = gen.MODEL_BY_KEY[key]
+    check([gen.gas(unit, "ng", f)["size"] for f in (25, 50, 100, 150, 200)] == ng and [gen.gas(unit, "lp", f)["size"] for f in (25, 50, 100, 150, 200)] == lp,
+          f"{key}: every pipe size is Kohler's own chart (natural gas and LPG, 25 to 200 ft)")
+check(gen.gas(gen.MODEL_BY_KEY["kohler-26rca"], "ng", 250)["source"] == "fuel-gas code tables", "past the chart's 200 ft the code tables take over")
+btu = {key: (gen.gas_demand(gen.MODEL_BY_KEY[key], "ng")[0], gen.gas_demand(gen.MODEL_BY_KEY[key], "lp")[0]) for key in chart}
+check(btu == {"kohler-14rca": (193000, 202500), "kohler-20rca": (281000, 340000), "kohler-26rca": (290000, 322500)},
+      "maximum fuel flow matches Figure 8 (14RCA LPG 202,500 from 81 cfh x 2,500 against the manual's 203,000)")
+check(all(gen.MODEL_BY_KEY[key]["inlet"] == "1/2 in NPT" for key in chart) and gen.MODEL_BY_KEY["kohler-14rca"]["ng_wc"] == (5, 11)
+      and gen.MODEL_BY_KEY["kohler-26rca"]["ng_wc"] == (3.5, 11) and all(gen.MODEL_BY_KEY[key]["lp_wc"] == (7, 11) for key in chart),
+      "fuel inlet 1/2 in NPT and the supply pressures of Figure 8")
+elbows = gen.upgrade({"old": "generac-20-7039", "new": "kohler-26rca", "gas_feet": "25", "gas_elbows": "3", "existing_pipe": "1"})
+rows = {row["key"]: row for row in gen.upgrade_table(elbows)}
+check(rows["gas_feet"]["needs"] == "49 ft total" and elbows["gas_new"]["size"] == "1-1/4" and rows["pipe"]["status"] == "bad",
+      "25 ft with 3 elbows is read as 49 ft (the 50 ft row): the 26RCA needs 1-1/4 in, so a 1 in line is red")
+straight = gen.upgrade({"old": "generac-20-7039", "new": "kohler-26rca", "gas_feet": "25", "existing_pipe": "1"})
+check(straight["gas_new"]["size"] == "1" and {r["key"]: r for r in gen.upgrade_table(straight)}["pipe"]["status"] == "ok",
+      "without the elbows the same 25 ft run takes 1 in, and the 1 in line is green")
+
 # 3b. the older, smaller Generac units, and anything not on the list
 seven = gen.MODEL_BY_KEY["generac-7-5240"]
 check((seven["kw_lp"], seven["kw_ng"], seven["breaker"], seven["ng_cfh"], seven["lp_cfh"]) == (7, 6, 30, 119, 54), "Generac 7 kW (6 kW NG): 30 A breaker, 119 cfh NG, 54 cfh LP (its manual)")
@@ -81,7 +104,8 @@ def row_class(key):
 
 
 check('ug-bad' in row_class("feeder") and "85 A wire on a 125 A breaker" in page, "the 4 AWG feeder is red: 85 A wire on the new 125 A breaker")
-check('ug-bad' in row_class("pipe") and "Carries only 52%" in page, "the 3/4 in gas line is red: it carries 52% of the new unit's fuel")
+check('ug-bad' in row_class("pipe") and "Under Kohler&#39;s installation manual for 45 ft (it carries about 52% of full-load fuel)" in page.replace("Kohler's", "Kohler&#39;s"),
+      "the 3/4 in gas line is red: under Kohler's chart, and it carries 52% of the new unit's fuel")
 check('ug-ok' in row_class("drop"), "voltage drop is green")
 check('ug-bad' in row_class("switch") and "Different maker" in page, "Generac to Kohler: the transfer switch is red")
 check("Food for thought" in page and "Plan for" not in page, "the notes are Food for thought")
@@ -104,7 +128,7 @@ job_page = owner.get("/jobs/%d" % job_id).get_data(as_text=True)
 check("Generator work" in job_page and "Needs work: Feeder wire (x 3), Ground wire, Conduit (PVC 40), Gas pipe" in job_page, "the job page lists it with what needs work")
 with app.app_context():
     words = m.generator_context(db.session.get(m.Job, job_id))
-check("Needs work:" in words and "Gas pipe (Schedule 40): now 3/4 in" in words and "removal and haul-away of the old unit" in words,
+check("Needs work:" in words and "Gas pipe: now 3/4 in" in words and "removal and haul-away of the old unit" in words,
       "Caden gets the red rows to quote and the rip-out")
 check(owner.post("/generators/upgrade/quote", data=dict(CSRF, job_id=job_id)).status_code == 404, "the old Build the quote is gone (quoting is Generate Quote's)")
 
