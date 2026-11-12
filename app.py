@@ -2521,9 +2521,19 @@ def use_quote_prices(quote_id):
     caden = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden").first()
     rate = get_labor_rate()
     priced, skipped = [], []
+    removed = []
     for index in range(int(request.form.get("count", "0") or 0)):
         key = request.form.get(f"key_{index}", "").strip()
         price_text = request.form.get(f"price_{index}", "").strip()
+        if key and request.form.get(f"skip_{index}"):
+            for option in quote.options:
+                for line in list(option.lines):
+                    if line.is_missing and ((normalize_item_name(line.service_name) or f"line-{line.id}") == key or
+                                            (not key.startswith("line-") and SequenceMatcher(None, normalize_item_name(line.service_name), key).ratio() >= .88)):
+                        option.lines.remove(line)
+                        db.session.delete(line)
+            removed.append(request.form.get(f"name_{index}", "an item"))
+            continue
         if not key or price_text == "":
             continue
         try:
@@ -2556,15 +2566,22 @@ def use_quote_prices(quote_id):
             line.labor_rate_snapshot = rate; line.unit_price = price + labor * rate
         remember_direct_pricing(caden, name, unit, price, labor, f"Priced on the quote: {name} ${price:,.2f}/{unit}, {labor:g} labor hours.")
         priced.append(f"{name} at ${price:,.2f}/{unit}" + (f" + {labor:g} hr" if labor else "") + (" (saved to the Pricing Sheet)" if price_item else ""))
-    if priced:
-        quote.messages.append(QuoteMessage(role="user", content="Pricing confirmed on the quote: " + "; ".join(priced) + ". Use these prices if the quote is reworked."))
+    if priced or removed:
+        said = []
+        if priced:
+            said.append("Pricing confirmed on the quote: " + "; ".join(priced) + ".")
+        if removed:
+            said.append("Not needed (already covered), removed from the quote: " + "; ".join(removed) + ".")
+        quote.messages.append(QuoteMessage(role="user", content=" ".join(said) + " Keep these decisions if the quote is reworked."))
     db.session.commit()
     if priced:
         flash("Priced " + ", ".join(priced) + ".", "success")
+    if removed:
+        flash("Removed as not needed: " + ", ".join(removed) + ".", "success")
     if skipped:
         flash("Check the price for " + ", ".join(skipped) + ": it must be a number.", "error")
-    if not priced and not skipped:
-        flash("Enter a price for at least one item.", "error")
+    if not priced and not skipped and not removed:
+        flash("Enter a price for at least one item, or tick Not needed.", "error")
     return redirect(url_for("quote_assistant", job_id=quote.job_id))
 
 
@@ -2814,7 +2831,8 @@ def edit_saved_quote(quote_id):
 @app.route("/sales/onsite-checklist")
 @login_required
 def onsite_checklist():
-    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).all()
+    jobs = [job for job in Job.query.filter(~Job.status.in_(["completed", "declined"])).options(db.selectinload(Job.quotes), db.selectinload(Job.material_order)).order_by(Job.updated_at.desc()).all()
+            if job.bucket == "in_works"]
     return render_template("onsite_checklist_select.html", jobs=jobs)
 
 
@@ -2914,7 +2932,14 @@ def clients():
     query = Client.query
     if search:
         query = query.filter(db.or_(Client.first_name.ilike(f"%{search}%"), Client.last_name.ilike(f"%{search}%"), Client.email.ilike(f"%{search}%"), Client.phone.ilike(f"%{search}%"), Client.address_line1.ilike(f"%{search}%"), Client.company_name.ilike(f"%{search}%"), Client.tags.ilike(f"%{search}%")))
-    return render_template("clients.html", clients=query.order_by(Client.last_name, Client.first_name).all(), search=search)
+    sort = request.args.get("sort", "last")
+    orders = {"last": (db.func.lower(Client.last_name), db.func.lower(Client.first_name)),
+              "last_desc": (db.func.lower(Client.last_name).desc(), db.func.lower(Client.first_name).desc()),
+              "first": (db.func.lower(Client.first_name), db.func.lower(Client.last_name)),
+              "first_desc": (db.func.lower(Client.first_name).desc(), db.func.lower(Client.last_name).desc()),
+              "newest": (Client.created_at.desc(),)}
+    sort = sort if sort in orders else "last"
+    return render_template("clients.html", clients=query.order_by(*orders[sort]).all(), search=search, sort=sort)
 
 
 @app.route("/clients/new", methods=["GET", "POST"])
@@ -5012,6 +5037,7 @@ REQUIRED_TIERS_IN_ORDER: {json.dumps(tiers)}
 
 ALWAYS BUILD THE QUOTE:
 Never answer that a quote cannot be made. Either ask one short question (ready=false, one question) when a single missing fact changes the whole scope, or build every option now (ready=true) with clearly stated assumptions.
+missing_services is only for individual parts or services that truly need a price in that option. Never put a summary of the option's scope there (that is what bullets are for), never repeat something the option already prices with a service, item or direct price, and never list the same thing twice. Every missing_services entry must have a matching pricing_needed entry.
 Anything you cannot match to a Service or Pricing Sheet item, and whose price the administrator has not typed in this conversation, still goes into the option: put it in that option's missing_services with its quantity and unit, and add one entry to pricing_needed with a realistic suggested material price per unit and labor hours per unit (typical Pennsylvania supply-house pricing) and a short reason. These are suggestions for the administrator to confirm; they are never added to the quote's totals by you.
 Use direct_priced_items only when an administrator message in this conversation states that exact price; copy that message into source_message word for word.
 """
@@ -5185,6 +5211,24 @@ def _missing_entry(value):
     return str(value or "").strip(), 1.0, "ea"
 
 
+SCOPE_FILLER = {"supply", "install", "installation", "and", "of", "the", "a", "an", "new", "for", "with", "premium", "turnkey",
+                "replace", "replacement", "upgrade", "professional", "custom", "complete", "full", "residential", "grade", "set", "kit"}
+
+
+def _scope_words(name):
+    words = re.findall(r"[a-z0-9]+", str(name or "").lower())
+    return {w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words if w not in SCOPE_FILLER}
+
+
+def _same_scope(a, b):
+    """Two line names that describe the same thing ("LED-compatible dimmer switch (kitchen)" and
+    "Supply & install LED-compatible dimmer switches")."""
+    if not a or not b:
+        return False
+    small, large = (a, b) if len(a) <= len(b) else (b, a)
+    return len(small & large) / len(small) >= .75 and len(small) >= 2
+
+
 def normalize_ai_options(option_data, tiers):
     """Caden's options in the required tier order, whatever came back. Returns (options, notes).
     A tier Caden left out gets a placeholder to finish; duplicate tiers are kept and noted."""
@@ -5293,8 +5337,12 @@ def apply_ai_quote_options(quote, option_data):
             option.lines.append(QuoteOptionService(service=None, price_item=price_item, service_name=price_item.name if price_item else name, example_quantity=f"1 {unit}", multiplier=quantity, unit_price=material_price + (labor * rate), material_unit_price=material_price, labor_hours_per_unit=labor, labor_rate_snapshot=rate, manual_priced=price_item is None, position=len(option.lines)))
         for value in data.get("missing_services", []):
             name, quantity, unit = _missing_entry(value)
-            if name:
-                pending(option, name, quantity, unit)
+            if not name:
+                continue
+            key = _scope_words(name)
+            if any(_same_scope(key, _scope_words(line.service_name)) for line in option.lines):
+                continue                       # a restatement of something this option already has
+            pending(option, name, quantity, unit)
         if not option.lines:
             pending(option, "Service library match needed")
         quote.options.append(option)
@@ -5338,6 +5386,7 @@ def pricing_needed_rows(quote):
                      "quantities": quantities, "quantity_text": " / ".join("%g" % q for q in quantities), "unit": suggestion.get("unit") or "ea",
                      "material": suggestion.get("suggested_material_price"), "labor": suggestion.get("suggested_labor_hours"),
                      "reason": suggestion.get("reason") or ""})
+    rows.sort(key=lambda row: row["material"] is None)          # Caden's priced suggestions first
     return rows
 
 

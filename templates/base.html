@@ -25,7 +25,7 @@
     </nav>
   </header>
   <button class="sidebar-scrim" data-menu-close aria-label="Close menu"></button>
-  <aside class="sidebar">
+  <aside class="sidebar" id="sidebar">
     <a href="{{ url_for('dashboard') }}" class="side-link {{ 'active' if request.endpoint == 'dashboard' else '' }}"><span>⌂</span> Dashboard</a>
     {% if current_user.role and current_user.role.is_admin %}<a href="{{ url_for('flow_page') }}" class="side-link {{ 'active' if request.endpoint == 'flow_page' else '' }}"><span>⇶</span> Power House Flow</a>{% endif %}
     {% if can('view_quoting') or can('view_pricing') or can('view_services') %}<div class="side-section">Quoting</div>{% endif %}
@@ -36,6 +36,8 @@
     <a href="{{ url_for('labor_calculator') }}" class="side-link {{ 'active' if request.endpoint in ['labor_calculator', 'upload_labor_reference', 'apply_labor_proposals', 'ask_mike'] else '' }}"><span>◴</span> Labor Calculator</a>
     {% endif %}{% if can('view_services') %}
     <a href="{{ url_for('services') }}" class="side-link {{ 'active' if request.endpoint in ['services', 'create_service', 'service_detail', 'edit_service'] else '' }}"><span>⚡</span> Services</a>
+    {% endif %}{% if current_user.role and current_user.role.is_admin %}
+    <a href="{{ url_for('tools_library') }}" class="side-link {{ 'active' if request.endpoint in ['tools_library', 'create_tool', 'edit_tool', 'delete_tool'] else '' }}"><span>⌁</span> Tools</a>
     {% endif %}{% if can('view_clients') or can('view_jobs') or can('view_schedule') %}<div class="side-section">Clients &amp; Jobs</div>{% endif %}
     {% if can('view_clients') %}
     <a href="{{ url_for('clients') }}" class="side-link {{ 'active' if request.endpoint in ['clients', 'create_client', 'client_detail', 'edit_client'] else '' }}"><span>♙</span> Clients</a>
@@ -60,11 +62,20 @@
     <div class="side-spacer"></div>
     {% if current_user.role and current_user.role.is_admin %}
     <a href="{{ url_for('settings') }}" class="side-link {{ 'active' if request.endpoint in ['settings', 'roles', 'update_role', 'edit_agent'] else '' }}"><span>⚙</span> Settings</a>
-    <a href="{{ url_for('tools_library') }}" class="side-link {{ 'active' if request.endpoint in ['tools_library', 'create_tool', 'edit_tool', 'delete_tool'] else '' }}"><span>⌁</span> Tools</a>
     <a href="{{ url_for('settings_bug_reports') }}" class="side-link {{ 'active' if request.endpoint in ['settings_bug_reports', 'create_bug_report', 'update_bug_report'] else '' }}"><span>⚠</span> Bug Reports</a>
     <a href="{{ url_for('releases_page') }}" class="side-link {{ 'active' if request.endpoint == 'releases_page' else '' }}"><span>⇪</span> Releases</a>
     {% endif %}
   </aside>
+  <script>
+  (function () {           /* the sidebar keeps its scroll position from page to page */
+    var bar = document.getElementById('sidebar'), key = 'powerhouse-sidebar-scroll';
+    if (!bar) return;
+    try { var saved = sessionStorage.getItem(key); if (saved !== null) bar.scrollTop = Number(saved) || 0; } catch (e) {}
+    var save = function () { try { sessionStorage.setItem(key, String(bar.scrollTop)); } catch (e) {} };
+    bar.addEventListener('scroll', save, {passive: true});
+    window.addEventListener('pagehide', save);
+  })();
+  </script>
   {% endif %}
 
   <main class="page {{ 'centered' if not current_user.is_authenticated else 'app-page' }}">
