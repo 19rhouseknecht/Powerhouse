@@ -31,7 +31,7 @@ not downloaded for search pages, and an existing Cooper login is reused.
 from datetime import datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urljoin, urlparse
 from urllib.request import Request, urlopen
 import argparse
 import asyncio
@@ -39,10 +39,11 @@ import base64
 import json
 import os
 import re
+import socket
 import time
 from getpass import getpass
 
-LISTENER_VERSION = "2.1"
+LISTENER_VERSION = "2.2"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -88,31 +89,68 @@ def load_or_create_config(reset: bool = False) -> dict:
     return config
 
 
-def api_request(config: dict, path: str, method: str = "GET", payload=None) -> dict:
+# A blip on the office connection (a DNS hiccup, Wi-Fi dropping, the site reloading after an update) must not end a scan:
+# every call to the website is tried again after these pauses before it counts as failed.
+RETRY_DELAYS = (3, 8, 15, 30)
+RESULT_RETRY_DELAYS = (5, 15, 30, 60, 120)
+RETRY_HTTP = {502, 503, 504}
+
+
+class SiteUnreachable(RuntimeError):
+    """The website could not be reached at all (no answer, as opposed to an answer saying no)."""
+
+
+def unreachable_words(config: dict, reason) -> str:
+    host = urlparse(config["base_url"]).hostname or config["base_url"]
+    words = f"Could not reach Power House Flow at {config['base_url']}: {reason}"
+    if "getaddrinfo" in str(reason) or "Name or service not known" in str(reason) or "nodename nor servname" in str(reason):
+        words += (f" (this computer could not look up {host}: check its internet connection, or run 'nslookup {host}'."
+                  " If that address is wrong, run this script with --reset-config.)")
+    return words
+
+
+def api_request(config: dict, path: str, method: str = "GET", payload=None, delays=None) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = Request(
-        f"{config['base_url']}{path}",
-        data=data,
-        method=method,
-        headers={
-            "Authorization": f"Bearer {config['token']}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": f"PowerHouseFlow-LocalCooperUpdater/{LISTENER_VERSION}",
-        },
-    )
-    try:
-        with urlopen(request, timeout=60) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except HTTPError as error:
-        body = error.read().decode("utf-8", errors="replace")
+    delays = RETRY_DELAYS if delays is None else delays
+    for attempt in range(len(delays) + 1):
+        request = Request(
+            f"{config['base_url']}{path}",
+            data=data,
+            method=method,
+            headers={
+                "Authorization": f"Bearer {config['token']}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": f"PowerHouseFlow-LocalCooperUpdater/{LISTENER_VERSION}",
+            },
+        )
         try:
-            detail = json.loads(body).get("error", body)
-        except json.JSONDecodeError:
-            detail = body
-        raise RuntimeError(f"Power House Flow returned HTTP {error.code}: {detail}") from error
-    except URLError as error:
-        raise RuntimeError(f"Could not reach Power House Flow: {error.reason}") from error
+            with urlopen(request, timeout=60) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            try:
+                detail = json.loads(body).get("error", body)
+            except json.JSONDecodeError:
+                detail = body[:300]
+            if error.code not in RETRY_HTTP or attempt == len(delays):
+                raise RuntimeError(f"Power House Flow returned HTTP {error.code}: {detail}") from error
+            problem = f"HTTP {error.code}"
+        except (URLError, socket.timeout, ConnectionError) as error:
+            reason = getattr(error, "reason", error)
+            if attempt == len(delays):
+                raise SiteUnreachable(unreachable_words(config, reason)) from error
+            problem = str(reason)
+        log(f"Power House Flow did not answer ({problem}); trying again in {delays[attempt]} seconds.")
+        time.sleep(delays[attempt])
+    raise SiteUnreachable(unreachable_words(config, "no answer"))
+
+
+def save_unsent(command_id, payload) -> Path:
+    """Results that could not be uploaded are kept beside the script, never thrown away."""
+    path = CONFIG_PATH.parent / f"unsent_results_{command_id}.json"
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return path
 
 
 # --------------------------------------------------------------------------- reading Cooper's pages
@@ -546,10 +584,14 @@ def main() -> None:
 
     poll_seconds = max(args.poll_seconds, 2)
     log(f"Listener v{LISTENER_VERSION} connected to {config['base_url']}. Checking for Update Prices commands every {poll_seconds} seconds.")
+    waiting = 0
     while True:
         command_id = None
         try:
             response = api_request(config, "/api/local-cooper/commands/next")
+            if waiting:
+                log("Power House Flow is answering again.")
+                waiting = 0
             command = response.get("command")
             if not command:
                 if args.once:
@@ -580,8 +622,11 @@ def main() -> None:
                 raise RuntimeError("The queued command did not contain any Cooper items.")
 
             def heartbeat(current, total, message):
-                api_request(config, f"/api/local-cooper/commands/{command_id}/heartbeat", method="POST",
-                            payload={"current": current, "total": total, "message": message})
+                try:                       # progress only: a missed one never stops the scan
+                    api_request(config, f"/api/local-cooper/commands/{command_id}/heartbeat", method="POST",
+                                payload={"current": current, "total": total, "message": message}, delays=(2, 5))
+                except Exception as error:  # noqa: BLE001
+                    log(f"Progress not sent ({error}); the scan carries on.")
 
             def send_picture(item, data):
                 try:
@@ -592,14 +637,32 @@ def main() -> None:
 
             results = asyncio.run(scan_all_items(items, config, heartbeat, send_picture, tabs=args.tabs, headless=args.headless))
             log("Uploading results for website review.")
-            uploaded = api_request(config, f"/api/local-cooper/commands/{command_id}/results", method="POST",
-                                   payload={"results": [{k: v for k, v in r.items() if k != "image_url"} for r in results]})
+            payload = {"results": [{k: v for k, v in r.items() if k != "image_url"} for r in results]}
+            try:
+                uploaded = api_request(config, f"/api/local-cooper/commands/{command_id}/results", method="POST",
+                                       payload=payload, delays=RESULT_RETRY_DELAYS)
+            except Exception:
+                kept = save_unsent(command_id, payload)
+                log(f"The scan finished but could not be uploaded; the results are kept in {kept.name}.")
+                raise
             log(f"Check #{command_id} ready: {uploaded.get('matched', 0)} matched, {uploaded.get('errors', 0)} errors.")
             log(f"Review it in Power House Flow: {uploaded['preview_url']}")
             if args.once:
                 return
         except KeyboardInterrupt:
             raise
+        except SiteUnreachable as error:
+            if command_id is None:        # nothing was running: keep waiting for the site to come back
+                waiting = min(waiting * 2 if waiting else poll_seconds, 300)
+                log(f"{error} Waiting {waiting} seconds, then trying again.")
+                if args.once:
+                    raise
+                time.sleep(waiting)
+                continue
+            log(f"Price check failed: {error}")
+            if args.once:
+                raise
+            time.sleep(poll_seconds)
         except Exception as error:  # noqa: BLE001
             message = f"{type(error).__name__}: {error}"
             log(f"Price check failed: {message}")
