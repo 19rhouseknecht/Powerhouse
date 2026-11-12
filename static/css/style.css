@@ -940,7 +940,8 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .needs-price-head h3 { margin: 2px 0 4px; font-size: 16px; }
 .needs-price-head p { margin: 0; color: #d6d3d1; font-size: 13px; line-height: 1.5; }
 .needs-price-table { display: grid; gap: 8px; margin-top: 14px; }
-.needs-price-row { display: grid; grid-template-columns: minmax(0, 1fr) 130px 100px 100px 64px; gap: 10px; align-items: center; }
+.needs-price-row { display: grid; grid-template-columns: minmax(0, 1fr) 120px 92px 96px 58px 92px; gap: 10px; align-items: center; }
+.needs-price-row:has([data-not-needed]:checked) .needs-price-item, .needs-price-row:has([data-not-needed]:checked) label:not(:last-child) { opacity: .45; }
 .needs-price-labels { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
 .needs-price-row > input[type="hidden"] { display: none; }
 .needs-price-item { min-width: 0; }

@@ -150,6 +150,26 @@ send(typed)
 st = state()
 check(("8 ft LED strip", 4.0, False) in st["options"][0][1] and not st["missing"], "a price typed in the chat is priced directly")
 
+# 6b. a restatement of something the option already has is not listed as needing a price;
+#     an item the quote already covers can be marked "Not needed" and leaves the quote
+SCRIPT.append(reply([
+    option(tiers[0], "Dimmers", ["Install dimmers"], missing=[{"name": "LED-compatible dimmer switch (kitchen)", "quantity": 1, "unit": "ea"},
+                                                              {"name": "Supply & install LED-compatible dimmer switches", "quantity": 2, "unit": "ea"},
+                                                              {"name": "Ceiling access panel", "quantity": 1, "unit": "ea"}]),
+    option(tiers[1], "B", ["Install LED kits"], items=[{"price_item_id": kit_id, "quantity": 4}]),
+    option(tiers[2], "C", ["Install LED kits throughout"], items=[{"price_item_id": kit_id, "quantity": 9}])],
+    pricing=[{"name": "LED-compatible dimmer switch (kitchen)", "unit": "ea", "suggested_material_price": 55, "suggested_labor_hours": .25, "reason": "Typical."}]))
+send("Add dimmers")
+with app.app_context():
+    rows = m.pricing_needed_rows(db.session.get(m.Quote, quote_id))
+names = [row["name"] for row in rows]
+check(names == ["LED-compatible dimmer switch (kitchen)", "Ceiling access panel"], "a restatement is not listed twice; Caden's priced suggestions come first: %s" % names)
+form = dict(CSRF, count="2", key_0=rows[0]["key"], name_0=rows[0]["name"], price_0="55", labor_0="0.25", unit_0="ea",
+            key_1=rows[1]["key"], name_1=rows[1]["name"], price_1="", labor_1="0", unit_1="ea", skip_1="1")
+client.post("/quotes/%d/use-prices" % quote_id, data=form)
+st = state()
+check(not st["missing"] and not any(name == "Ceiling access panel" for _, lines in st["options"] for name, *_ in lines), "Not needed removes an item the quote already covers; the quote is ready")
+
 # 7. only an unreachable AI service stops a build, and it says so plainly
 SCRIPT.append(ConnectionError("network down"))
 send("One more change")
