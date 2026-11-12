@@ -46,7 +46,7 @@ import threading
 import time
 from getpass import getpass
 
-LISTENER_VERSION = "2.4"
+LISTENER_VERSION = "2.5"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -200,7 +200,7 @@ async def block_extras(route):
 
 HUMAN_WORDS = ("verify you are human", "verify you're human", "verify you are a human", "verify you're a human", "verify that you are human",
                "are you a robot", "are you human", "are you a human", "i am human", "i'm not a robot", "not a robot", "human verification",
-               "additional security check", "security check", "pardon our interruption", "press & hold", "press and hold",
+               "additional security check", "pardon our interruption", "press & hold", "press and hold",
                "request unsuccessful", "checking your browser", "unusual traffic", "incapsula incident")
 SELF_CLEAR_SECONDS = 3           # a flash of Cooper's automatic browser check is let through; anything still showing pauses for a person
 STILL_WAITING_SECONDS = 300      # while waiting for a person, the website hears "still waiting" this often (so the run never times out)
@@ -251,18 +251,36 @@ PROMPT = wait_for_enter          # tests replace this
 HEADLESS = False                 # set by each scan
 
 
+# Cooper's ordinary pages: anything showing these is the real site, never a human check (Incapsula's script and Google's
+# invisible reCAPTCHA badge sit on ordinary pages too, so neither counts on its own).
+REAL_SITE = ('a[href*="/product/category/"], [data-product-id], .productCard, #productSearchResults, input[name="q"], '
+             'input[type="search"], input[type="password"], form[action*="search" i], a[href*="logout" i], a[href*="/account" i]')
+
+
 async def verification_page_is_present(page) -> bool:
-    """Cooper's bot check: the Incapsula page, a captcha frame, or words asking whether this is a person."""
-    if await page.locator('script[src*="_Incapsula_Resource"]').count() or await page.locator("iframe#main-iframe").count():
+    """Cooper's "are you human" page: Incapsula's challenge frame, or a page with none of Cooper's own content that shows a
+    visible captcha or asks whether this is a person."""
+    if await page.locator("iframe#main-iframe").count():            # Incapsula's challenge page is this frame and nothing else
         return True
-    if await page.locator('iframe[src*="captcha"], iframe[title*="challenge" i], iframe[src*="hcaptcha"], iframe[src*="recaptcha"], #px-captcha').count():
-        return True
+    try:
+        if await page.locator(REAL_SITE).count():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
     for frame in page.frames:                       # the question is often inside a frame
         try:
             text = (await frame.locator("body").inner_text(timeout=2_000))[:4000].lower()
         except Exception:  # noqa: BLE001
             continue
         if any(words in text for words in HUMAN_WORDS):
+            return True
+    widgets = page.locator('iframe[src*="hcaptcha"], iframe[src*="recaptcha"]:not([src*="size=invisible"]), iframe[title*="challenge" i], #px-captcha')
+    for index in range(await widgets.count()):
+        try:
+            box = await widgets.nth(index).bounding_box()
+        except Exception:  # noqa: BLE001
+            box = None
+        if box and box["width"] > 60 and box["height"] > 40:
             return True
     return False
 

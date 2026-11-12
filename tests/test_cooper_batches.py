@@ -120,6 +120,14 @@ def framed():
     return "<html><body><p>Cooper Electric</p><iframe src='/check'></iframe></body></html>"
 
 
+@cooper.route("/normal")
+def normal_page():                         # Cooper's ordinary home page, before signing in: never a human check
+    return """<html><head><script src="/_Incapsula_Resource?SWJIYLWA=abc"></script></head><body>
+    <button class="dropdown-toggle">Log In</button><form action="/search"><input name="q"></form>
+    <a href="/product/category/US_1/wire">Wire</a><footer>Protected by an additional security check. I'm not a robot? Privacy</footer>
+    <iframe src="https://www.google.com/recaptcha/api2/anchor?size=invisible" style="width:256px;height:60px"></iframe></body></html>"""
+
+
 @cooper.route("/solved")
 def solved():
     return "yes" if SOLVED["yes"] else "no"
@@ -219,6 +227,22 @@ async def framed_check():
 
 
 check(asyncio.run(framed_check()), "'Verify you are human' inside a frame is recognised")
+
+
+async def normal_check():
+    async with async_playwright() as playwright:
+        browser = await (playwright.chromium.launch(executable_path=exe) if exe else playwright.chromium.launch())
+        page = await browser.new_page()
+        await page.goto("http://127.0.0.1:%d/normal" % pretend.server_port)
+        seen = await listener.verification_page_is_present(page)
+        asked_before = len(asked)
+        await listener.wait_for_verification(page, headless=False)
+        await browser.close()
+        return seen, len(asked) - asked_before
+
+
+seen, prompts = asyncio.run(normal_check())
+check(not seen and prompts == 0, "Cooper's ordinary page (its Incapsula script, an invisible reCAPTCHA badge, 'security check' in the footer) never pauses")
 SOLVED["yes"] = True
 
 # 4b. the real keyboard: Enter during a scan asks for a pause; Enter while waiting carries on; no keyboard is EOFError
