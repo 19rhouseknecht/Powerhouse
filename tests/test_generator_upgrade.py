@@ -102,7 +102,7 @@ check("Estimate</span>" not in crew_page and "Website</div>" not in crew_page, "
 r = owner.post("/generators/upgrade/save", data=dict(CSRF, job_id=job_id, old="generac-20-7039", new="kohler-26rca", fuel="ng", gas_feet="40"))
 check(r.status_code == 302 and "#generator-upgrade" in r.headers["Location"], "Save to job goes to the job's upgrade panel")
 job_page = owner.get("/jobs/%d" % job_id).get_data(as_text=True)
-check("Generator upgrade" in job_page and "26RCA" in job_page and "Open it" in job_page, "the job page lists the upgrade")
+check("Generator work" in job_page and "id=\"generator-upgrade\"" in job_page and "26RCA" in job_page and "Open it" in job_page, "the job page lists the upgrade")
 with app.app_context():
     saved = m.GeneratorUpgrade.query.first()
     check(saved.inputs["new"] == "kohler-26rca" and "Estimate $" in saved.summary, "it keeps the inputs and the estimate")

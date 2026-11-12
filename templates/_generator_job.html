@@ -1,0 +1,12 @@
+{# The job a sizing or upgrade belongs to: picked at the top, carried through the page, saved with one click, read by Caden. #}
+<div class="gen-job">
+  <label><span>Job</span>
+    <select name="job_id">
+      <option value="">No job (just working it out)</option>
+      {% if linked_job and linked_job not in jobs %}<option value="{{ linked_job.id }}" selected>#{{ linked_job.job_number }} · {{ linked_job.client.full_name }} · {{ linked_job.title }}</option>{% endif %}
+      {% for job in jobs %}<option value="{{ job.id }}" {{ 'selected' if linked_job and linked_job.id == job.id }}>#{{ job.job_number }} · {{ job.client.full_name }} · {{ job.title }}</option>{% endfor %}
+    </select>
+  </label>
+  {% if linked_job %}<p class="gen-job-note">Linked to <a href="{{ url_for('job_detail', job_id=linked_job.id) }}">job #{{ linked_job.job_number }} {{ linked_job.title }}</a>. Save it there and Caden uses it when you generate that job's quote.{% if linked_job.generator_sizings or linked_job.generator_upgrades %} Already saved on it: {% if linked_job.generator_sizings %}a sizing ({{ linked_job.generator_sizings[0].created_at.strftime('%b %-d') }}){% endif %}{% if linked_job.generator_sizings and linked_job.generator_upgrades %} and {% endif %}{% if linked_job.generator_upgrades %}an upgrade ({{ linked_job.generator_upgrades[0].created_at.strftime('%b %-d') }}){% endif %}; Caden reads the newest of each.{% endif %}</p>
+  {% else %}<p class="gen-job-note">Pick the job this is for to save it there; Caden then uses it when you generate that job's quote.</p>{% endif %}
+</div>

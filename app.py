@@ -339,7 +339,7 @@ class GeneratorUpgrade(db.Model):
     def inputs(self):
         try:
             value = json.loads(self.inputs_json or "{}")
-            return value if isinstance(value, dict) else {}
+            return {k: v for k, v in value.items() if k != "job_id"} if isinstance(value, dict) else {}
         except ValueError:
             return {}
 
@@ -5334,6 +5334,13 @@ JOB:
 ONSITE_INSPECTION:
 {json.dumps(inspection_context)}
 
+GENERATOR_WORK (saved on this job from Generators -> Sizing / Upgrading):
+{generator_context(job) or "Nothing saved for this job."}
+When the client's request involves a generator, build the generator scope from GENERATOR_WORK: the recommended or new model,
+the transfer switch, the wire, ground, conduit and gas pipe sizes it lists, the pad, and the time to rip out an old unit. Use its
+numbers rather than re-deriving them, and say in your message that you used the saved sizing/upgrade. When the request has nothing
+to do with a generator, ignore GENERATOR_WORK.
+
 SERVICE_LIBRARY:
 {json.dumps(catalog)}
 
@@ -6545,10 +6552,49 @@ def generator_sizing():
             db.session.commit()
             flash(f"Saved the sizing to job #{job.job_number} {job.title}.", "success")
             return redirect(url_for("job_detail", job_id=job.id) + "#generator-sizing")
-    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all()
+    jobs, linked = generator_jobs(values)
     defaults = gen.read_inputs(values)
     return render_template("generator_sizing.html", result=result, fields=gen.FIELDS, choices=gen.CHOICES, values=defaults,
-                           models=gen.KOHLER_MODELS, jobs=jobs, selected_job=request.args.get("job_id", type=int))
+                           models=gen.KOHLER_MODELS, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None)
+
+
+def generator_context(job):
+    """What Generators -> Sizing and Upgrading saved on this job, in words for Caden (the newest of each), or None."""
+    if not getattr(job, "id", None):
+        return None
+    parts = []
+    sizing = job.generator_sizings[0] if job.generator_sizings else None
+    if sizing:
+        i = sizing.inputs
+        parts.append(f"GENERATOR SIZING (saved {sizing.created_at:%b %-d, %Y}): {sizing.summary} "
+                     f"Coverage: {'whole home' if i.get('coverage') != 'essentials' else 'essential circuits only'}; fuel: "
+                     f"{'propane' if i.get('fuel') == 'lp' else 'natural gas'}; electric service: {i.get('service_amps', '200')} A.")
+    upgrade = job.generator_upgrades[0] if job.generator_upgrades else None
+    if upgrade:
+        try:
+            if not upgrade.inputs.get("old") or not upgrade.inputs.get("new"):
+                raise ValueError("the saved upgrade has no units")
+            result = gen.upgrade(upgrade.inputs)
+            estimate = upgrade_estimate(result, upgrade.inputs)
+            parts.append(f"GENERATOR UPGRADE (saved {upgrade.created_at:%b %-d, %Y}):\n" + gen.upgrade_brief(result, estimate)
+                         + f"\nThe upgrade page's own estimate: ${estimate['total']:,.2f} ({estimate['labor_hours']:g} labor hours"
+                         + (", some prices missing" if estimate["missing"] else "") + ").")
+        except Exception:  # noqa: BLE001  (a saved upgrade that no longer reads still gives its summary)
+            app.logger.warning("Generator upgrade %s could not be read for Caden; using its summary", upgrade.id)
+            parts.append(f"GENERATOR UPGRADE (saved {upgrade.created_at:%b %-d, %Y}): {upgrade.summary}")
+    return "\n\n".join(parts) or None
+
+
+def generator_jobs(values):
+    """(open jobs to pick from, the job this page is linked to) for Generators -> Sizing / Upgrading; nothing without Jobs."""
+    if not current_user.can("view_jobs"):
+        return [], None
+    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all()
+    try:
+        linked = db.session.get(Job, int(values.get("job_id") or 0))
+    except (TypeError, ValueError):
+        linked = None
+    return jobs, linked
 
 
 # ---------------- Generators -> Upgrading ----------------
@@ -6686,9 +6732,10 @@ UPGRADE_STATE = (list(gen.UPGRADE_FIELDS) + ["old", "new"] + [f"{side}_{suffix}"
                  + list(gen.UPGRADE_CHOICES) + list(UPGRADE_PRICE_FIELDS) + list(UPGRADE_YES_NO))
 
 
-def upgrade_state(values):
-    """The page's inputs, to carry in hidden fields and links (nothing else)."""
-    return {name: values.get(name) for name in UPGRADE_STATE if values.get(name) not in (None, "")}
+def upgrade_state(values, with_job=True):
+    """The page's inputs, to carry in hidden fields and links (nothing else). A saved upgrade keeps them without the job."""
+    names = UPGRADE_STATE + (["job_id"] if with_job else [])
+    return {name: values.get(name) for name in names if values.get(name) not in (None, "")}
 
 
 @app.route("/generators/upgrade")
@@ -6706,10 +6753,10 @@ def generator_upgrade():
     groups = {}
     for row in gen.UPGRADE_MODELS:
         groups.setdefault(row["brand"], []).append(row)
-    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all() if current_user.can("view_jobs") else []
+    jobs, linked = generator_jobs(values)
     return render_template("generator_upgrade.html", result=result, estimate=estimate, inputs=gen.read_upgrade(values), groups=groups,
                            fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES, price_fields=UPGRADE_PRICE_FIELDS, other_fields=gen.OTHER_FIELDS, yes_no=UPGRADE_YES_NO,
-                           state=state, answer=answer, jobs=jobs, selected_job=request.args.get("job_id", type=int),
+                           state=state, answer=answer, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None,
                            brief=gen.upgrade_brief(result, estimate) if result else "", caleb_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
 
 
@@ -6733,7 +6780,7 @@ def generator_upgrade_save():
         return redirect(url_for("generator_upgrade", calculate=1, **state))
     result = gen.upgrade(request.form)
     estimate = upgrade_estimate(result, request.form) if current_user.can("view_quoting") else None
-    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(state), summary=_upgrade_summary(result, estimate),
+    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form, with_job=False)), summary=_upgrade_summary(result, estimate),
                                     total=estimate["total"] if estimate else None, created_by=current_user))
     db.session.commit()
     flash(f"Saved the upgrade to job #{job.job_number} {job.title}.", "success")
@@ -6751,7 +6798,7 @@ def generator_upgrade_quote():
         return redirect(url_for("generator_upgrade", calculate=1, **upgrade_state(request.form)))
     result = gen.upgrade(request.form)
     estimate = upgrade_estimate(result, request.form)
-    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form)), summary=_upgrade_summary(result, estimate),
+    db.session.add(GeneratorUpgrade(job=job, inputs_json=json.dumps(upgrade_state(request.form, with_job=False)), summary=_upgrade_summary(result, estimate),
                                     total=estimate["total"], created_by=current_user))
     db.session.commit()
     message = ("Quote this generator upgrade. Price the generator, transfer switch, pad, wire, conduit and gas pipe from the Pricing Sheet "
