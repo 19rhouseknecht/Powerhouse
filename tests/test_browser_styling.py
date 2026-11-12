@@ -83,7 +83,7 @@ PAGES = ["/", "/flow", "/quoting/generate", "/quoting/generate/%(draft_job)d", "
          "/jobs/%(job)d/edit", "/jobs/%(job2)d/materials", "/schedule", "/sales/onsite-checklist", "/sales/onsite-checklist/%(job)d", "/sales/reviews",
          "/time-tracking", "/time-tracking/timesheet", "/bookkeeping/tasks", "/bookkeeping/training", "/bookkeeping/training/new",
          "/bookkeeping/training/%(training)d", "/bookkeeping/training/%(training)d/edit", "/finance", "/finance/expenses",
-         "/settings", "/settings/tools", "/settings/bug-reports", "/settings/roles", "/settings/agents/%(agent)d", "/settings/jobber", "/settings/releases", "/generators/sizing?calculate=1", "/caleb", "/generators/upgrade?calculate=1&old=generac-20-7039&new=kohler-26rca&existing_pipe=3/4&existing_wire=4"]
+         "/settings", "/settings/tools", "/settings/bug-reports", "/settings/roles", "/settings/agents/%(agent)d", "/settings/jobber", "/settings/releases", "/generators/sizing?calculate=1", "/caleb", "/generators/upgrade?calculate=1&old=generac-20-7039&new=kohler-26rca&existing_pipe=3/4&existing_wire=4", "/generators/upgrade?calculate=1&old=other&old_kw=7&new=generac-22"]
 AUDIT = r"""() => {
   const bodyFont = getComputedStyle(document.body).fontFamily;
   const found = [];

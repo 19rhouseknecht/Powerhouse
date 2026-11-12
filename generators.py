@@ -186,7 +186,27 @@ UPGRADE_MODELS = [
      "ng_cfh": 316, "lp_cfh": 144, "inlet": "3/4 in (14 in flexible connector)", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 524, "cooling": "air"},
     {"key": "generac-28", "brand": "Generac", "model": "Guardian 28 kW (7282/7329)", "kw_lp": 28, "kw_ng": 25, "amps": 116, "breaker": 125,
      "ng_cfh": 297, "lp_cfh": 144, "inlet": "3/4 in (14 in flexible connector)", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 524, "cooling": "air"},
-    # Generac Guardian, earlier units you will find in the field
+    # Generac Guardian, earlier units you will find in the field (smallest first)
+    {"key": "generac-7-5240", "brand": "Generac", "model": "Guardian 7 kW (05240/05280, about 2008–2012; 6 kW on NG)", "kw_lp": 7, "kw_ng": 6, "amps": 29, "breaker": 30,
+     "ng_cfh": 119, "lp_cfh": 54, "inlet": "1/2 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 336, "cooling": "air"},
+    {"key": "generac-8-6237", "brand": "Generac", "model": "Guardian 8 kW (6237/6245, earlier)", "kw_lp": 8, "kw_ng": 7, "amps": 33, "breaker": 35,
+     "ng_cfh": 121, "lp_cfh": 52, "inlet": "1/2 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 360, "cooling": "air"},
+    {"key": "generac-9-7030", "brand": "Generac", "model": "Guardian 9 kW (7029/7030, earlier)", "kw_lp": 9, "kw_ng": 8, "amps": 38, "breaker": 40,
+     "ng_cfh": 133, "lp_cfh": 54, "inlet": "3/4 in", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 340, "cooling": "air"},
+    {"key": "generac-10-5241", "brand": "Generac", "model": "Guardian 10 kW (05241/05281, about 2008–2012; 9 kW on NG)", "kw_lp": 10, "kw_ng": 9, "amps": 42, "breaker": 45,
+     "ng_cfh": 156, "lp_cfh": 70, "inlet": "1/2 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 375, "cooling": "air"},
+    {"key": "generac-11-6439", "brand": "Generac", "model": "Guardian 11 kW (6437/6438/6439/6720, earlier)", "kw_lp": 11, "kw_ng": 10, "amps": 46, "breaker": 50,
+     "ng_cfh": 195, "lp_cfh": 70, "inlet": "3/4 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 407, "cooling": "air"},
+    {"key": "generac-11-7032", "brand": "Generac", "model": "Guardian 11 kW (7031/7032/7033, earlier)", "kw_lp": 11, "kw_ng": 10, "amps": 46, "breaker": 50,
+     "ng_cfh": 199, "lp_cfh": 73, "inlet": "3/4 in", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 348, "cooling": "air"},
+    {"key": "generac-13-5242", "brand": "Generac", "model": "Guardian 13 kW (05242/05282, about 2008–2012)", "kw_lp": 13, "kw_ng": 13, "amps": 54, "breaker": 55,
+     "ng_cfh": 220, "lp_cfh": 80, "inlet": "3/4 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 426, "cooling": "air"},
+    {"key": "generac-14-6247", "brand": "Generac", "model": "Guardian 14 kW (6240/6241/6247, earlier)", "kw_lp": 14, "kw_ng": 14, "amps": 58, "breaker": 60,
+     "ng_cfh": 279, "lp_cfh": 112, "inlet": "3/4 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 435, "cooling": "air"},
+    {"key": "generac-15-7163", "brand": "Generac", "model": "Guardian 15 kW (7163, earlier)", "kw_lp": 15, "kw_ng": 15, "amps": 63, "breaker": 70,
+     "ng_cfh": 278, "lp_cfh": 100, "inlet": "3/4 in", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 460, "cooling": "air"},
+    {"key": "generac-16-5243", "brand": "Generac", "model": "Guardian 16 kW (05243/05244/05283/05284, about 2008–2012; 15 kW on NG)", "kw_lp": 16, "kw_ng": 15, "amps": 67, "breaker": 65,
+     "ng_cfh": 245, "lp_cfh": 92, "inlet": "3/4 in", "ng_wc": (5, 7), "lp_wc": (10, 12), "lb": 445, "cooling": "air"},
     {"key": "generac-16-7036", "brand": "Generac", "model": "Guardian 16 kW (7035/7036/7037, earlier)", "kw_lp": 16, "kw_ng": 16, "amps": 67, "breaker": 70,
      "ng_cfh": 309, "lp_cfh": 107, "inlet": "3/4 in", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 409, "cooling": "air"},
     {"key": "generac-20-7039", "brand": "Generac", "model": "Guardian 20 kW (7038/7039, earlier)", "kw_lp": 20, "kw_ng": 18, "amps": 83, "breaker": 90,
@@ -206,6 +226,35 @@ UPGRADE_MODELS = [
      "breaker_checked": False, "ng_cfh": 301, "lp_cfh": 113, "inlet": "1 in NPT", "ng_wc": (5, 11), "lp_wc": (5, 11), "lb": 1260, "cooling": "liquid"},
 ]
 MODEL_BY_KEY = {row["key"]: row for row in UPGRADE_MODELS}
+OTHER = "other"                                      # "Not on the list": the person types it from the nameplate
+OTHER_FIELDS = {
+    # suffix: (label, minimum, maximum)
+    "kw": ("Rated kW (on the fuel used)", 1, 150),
+    "breaker": ("Generator breaker (A)", 15, 600),
+    "cfh": ("Full-load fuel use (cfh, blank = estimate)", 0, 3000),
+}
+STANDARD_BREAKER_LIST = [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 600]
+NG_CFH_PER_KW, LP_CFH_PER_KW = 14.0, 5.5           # typical air-cooled full-load use, only when the nameplate figure is not typed
+
+
+def other_model(values, side, fuel):
+    """A generator typed in by hand. Fuel use is estimated from kW when it is left blank (and the page says so)."""
+    def number(suffix):
+        label, low, high = OTHER_FIELDS[suffix]
+        try:
+            value = float(str(values.get(f"{side}_{suffix}", "")).replace(",", "").strip())
+        except ValueError:
+            return None
+        return min(max(value, low), high)
+    kw = number("kw") or 10.0
+    amps = round(kw * 1000 / 240, 1)
+    breaker = int(number("breaker") or next(b for b in STANDARD_BREAKER_LIST if b >= amps))
+    cfh = number("cfh")
+    estimated = not cfh
+    cfh = cfh or round(kw * (LP_CFH_PER_KW if fuel == "lp" else NG_CFH_PER_KW))
+    return {"key": OTHER, "brand": "Other", "model": f"generator, {kw:g} kW (typed in)", "kw_lp": kw, "kw_ng": kw, "amps": amps, "breaker": breaker,
+            "ng_cfh": cfh, "lp_cfh": cfh, "inlet": "see the nameplate", "ng_wc": (3.5, 7), "lp_wc": (10, 12), "lb": 0, "cooling": "air",
+            "typed": True, "fuel_estimated": estimated}
 NG_BTU_PER_CF, LP_BTU_PER_CF, LP_CF_PER_GAL = 1000, 2500, 36.39
 
 # NEC Table 310.16, 75 °C column (generator and transfer switch terminals are rated 75 °C): size -> ampacity
@@ -284,7 +333,9 @@ def _number(values, name):
 def read_upgrade(values):
     inputs = {name: _number(values, name) for name in UPGRADE_FIELDS}
     for name in ("old", "new"):
-        inputs[name] = values.get(name) if values.get(name) in MODEL_BY_KEY else UPGRADE_DEFAULTS[name]
+        inputs[name] = values.get(name) if values.get(name) in MODEL_BY_KEY or values.get(name) == OTHER else UPGRADE_DEFAULTS[name]
+        for suffix in OTHER_FIELDS:
+            inputs[f"{name}_{suffix}"] = str(values.get(f"{name}_{suffix}", "")).strip()[:12]
     for name, options in UPGRADE_CHOICES.items():
         allowed = {value for value, _ in options}
         inputs[name] = values.get(name) if values.get(name) in allowed else UPGRADE_DEFAULTS[name]
@@ -371,8 +422,8 @@ def gas(model, fuel, feet):
 def upgrade(values):
     """Everything the Upgrading page shows."""
     inputs = read_upgrade(values)
-    old, new = MODEL_BY_KEY[inputs["old"]], MODEL_BY_KEY[inputs["new"]]
     fuel, feet_wire, feet_gas = inputs["fuel"], inputs["wire_feet"], inputs["gas_feet"]
+    old, new = (other_model(values, side, fuel) if inputs[side] == OTHER else MODEL_BY_KEY[inputs[side]] for side in ("old", "new"))
     wire_old = wiring(old, inputs["material"], feet_wire, inputs["conduit"])
     wire_new = wiring(new, inputs["material"], feet_wire, inputs["conduit"])
     gas_old, gas_new = gas(old, fuel, feet_gas), gas(new, fuel, feet_gas)
@@ -396,7 +447,13 @@ def upgrade(values):
                         "why": ("it carries %d%% of what the new unit burns at full load over %g ft" % (round(share), feet_gas))}
 
     # the rest an installer has to think about
-    if old["brand"] != new["brand"]:
+    for side, unit in (("there now", old), ("going in", new)):
+        if unit.get("typed"):
+            notes.append(("warn", f"The unit {side} was typed in: check its breaker and fuel use on the nameplate"
+                                  + (f" (fuel use is estimated at {unit['ng_cfh']:g} cfh from its kW)." if unit["fuel_estimated"] else ".")))
+    if "Other" in (old["brand"], new["brand"]):
+        notes.append(("info", "Check that the transfer switch works with the new unit's controller (same maker, compatible control wiring) before reusing it."))
+    elif old["brand"] != new["brand"]:
         notes.append(("warn", f"Brand change ({old['brand']} to {new['brand']}): the transfer switch and its control wiring are not interchangeable. "
                               f"Plan a new {new['brand']} transfer switch rated for the service (and at least the {new['breaker']} A generator breaker)."))
     elif new["breaker"] > old["breaker"]:
@@ -439,7 +496,7 @@ def upgrade(values):
             notes.append(("warn", f"A {inputs['tank_gallons']:g} gal tank may not vaporize {gas_new['btu']:,.0f} Btu/h in cold weather. "
                                   "Both makers size the tank for full load in the coldest weather: confirm with the propane supplier."))
         notes.append(("info", "LP needs a second-stage regulator set to the generator's inlet range; check the first-stage and tank regulators can deliver full-load Btu."))
-    if new["cooling"] != old["cooling"] or new["lb"] - old["lb"] > 100:
+    if old["lb"] and new["lb"] and (new["cooling"] != old["cooling"] or new["lb"] - old["lb"] > 100):
         notes.append(("warn", f"Weight goes from {old['lb']} lb to {new['lb']} lb" + (" and it is liquid-cooled" if new["cooling"] == "liquid" else "") +
                               ": check the pad and the clearances in the new unit's install manual; a new pad is likely."))
     notes.append(("info", "Placement: keep the maker's clearances (Generac air-cooled: 18 in from the wall and 5 ft from operable windows, doors and "
