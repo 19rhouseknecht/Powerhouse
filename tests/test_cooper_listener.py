@@ -89,10 +89,11 @@ r = client.post("/quoting/pricing/remove-selected", data=dict(CSRF, item_ids=str
 with app.app_context():
     check(not db.session.get(m.PriceItem, ids["Wire nuts"]).active and b"Removed 1 item" in r.data, "Remove selected removes them (history kept)")
 
+CURRENT = re.search(r'LISTENER_VERSION = "([\d.]+)"', open(os.path.join(ROOT, "tools", "cooper_price_listener.py")).read()).group(1)
 page = client.get("/settings").get_data(as_text=True)
-check("Download the listener (v2.0)" in page, "Settings offers the current listener to download")
+check("Download the listener (v%s)" % CURRENT in page, "Settings offers the current listener (v%s) to download" % CURRENT)
 r = client.get("/settings/local-cooper/listener.py")
-check(r.status_code == 200 and b'LISTENER_VERSION = "2.0"' in r.data, "and serves the file")
+check(r.status_code == 200 and ('LISTENER_VERSION = "%s"' % CURRENT).encode() in r.data, "and serves the file")
 
 # ---------------------------------------------------------------- the listener against a pretend Cooper
 try:

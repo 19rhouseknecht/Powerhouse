@@ -197,6 +197,7 @@ class PriceSyncRun(db.Model):
     error_message = db.Column(db.String(255), nullable=False, default="")
     only_zero_prices = db.Column(db.Boolean, nullable=False, default=False)
     item_ids_json = db.Column(db.Text, nullable=False, default="")          # "Get selected prices": just these items
+    mode = db.Column(db.String(20), nullable=False, default="")             # '' prices · 'catalog' add Cooper's items
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     @property
@@ -1394,7 +1395,7 @@ def enforce_role_permissions():
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
-        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing",
+        "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
@@ -1506,6 +1507,9 @@ def pricing_sheet():
         query = query.filter(PriceItem.supplier_parts.any(SupplierPartNumber.supplier == supplier))
     if unit:
         query = query.filter_by(unit=unit)
+    unconfirmed_count = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.category == UNCONFIRMED).count()
+    if category != UNCONFIRMED and not search:
+        query = query.filter(PriceItem.category != UNCONFIRMED)       # thousands of catalog items stay out of the way
     items = query.all()
     sort_keys = {
         "name": lambda item: canonical_item_name(item.name),
@@ -1524,7 +1528,18 @@ def pricing_sheet():
     duplicate_pairs = find_near_duplicate_price_items(items) if review_duplicates else []
     active_sync = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).order_by(PriceSyncRun.updated_at.desc()).first()
     latest_sync = PriceSyncRun.query.filter_by(status="complete").order_by(PriceSyncRun.updated_at.desc()).first()
-    return render_template("pricing.html", items=items, categories=categories, suppliers=suppliers, search=search, selected_category=category, selected_supplier=supplier, selected_unit=unit, selected_sort=sort, selected_direction=direction, review_duplicates=review_duplicates, duplicate_pairs=duplicate_pairs, labor_rate=get_labor_rate(), active_sync=active_sync, latest_sync=latest_sync)
+    total_items = len(items)
+    page_count = max(1, -(-total_items // PRICING_PAGE_SIZE))
+    page = min(max(request.args.get("page", 1, type=int) or 1, 1), page_count)
+    items = items[(page - 1) * PRICING_PAGE_SIZE: page * PRICING_PAGE_SIZE]
+    page_args = {k: v for k, v in request.args.items() if k != "page"}
+    last_catalog = PriceSyncRun.query.filter_by(mode="catalog").order_by(PriceSyncRun.id.desc()).first()
+    return render_template("pricing.html", items=items, categories=categories, suppliers=suppliers, search=search, selected_category=category, selected_supplier=supplier, selected_unit=unit, selected_sort=sort, selected_direction=direction, review_duplicates=review_duplicates, duplicate_pairs=duplicate_pairs, labor_rate=get_labor_rate(), active_sync=active_sync, latest_sync=latest_sync,
+                           total_items=total_items, page=page, page_count=page_count, page_args=page_args, unconfirmed_count=unconfirmed_count,
+                           unconfirmed_label=UNCONFIRMED, caden_unconfirmed=caden_uses_unconfirmed(), last_catalog=last_catalog, catalog_done_count=len(catalog_done()))
+
+
+PRICING_PAGE_SIZE = 250
 
 
 @app.route("/quoting/labor-calculator")
@@ -2237,7 +2252,11 @@ def build_ai_pricing_repair(quote, repair_instructions, only_missing_key=""):
     if not missing_groups:
         raise ValueError("That missing pricing issue is no longer available.")
     services = [{"service_id": row.id, "name": row.name, "example_quantity": row.example_quantity, "material_price": round(row.material_total, 2), "labor_hours": round(row.estimated_labor_hours, 4), "installed_price": round(row.example_total, 2)} for row in Service.query.order_by(Service.name).all()]
-    items = [{"price_item_id": row.id, "name": row.name, "unit": row.unit, "material_unit_price": round(row.price, 2), "labor_hours_per_unit": round(row.labor_hours_per_unit, 4)} for row in PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all()]
+    def _repair_row(row):
+        return {"price_item_id": row.id, "name": row.name, "unit": row.unit, "material_unit_price": round(row.price, 2), "labor_hours_per_unit": round(row.labor_hours_per_unit, 4)}
+    items = [_repair_row(row) for row in PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.category != UNCONFIRMED).order_by(PriceItem.name).all()]
+    if caden_uses_unconfirmed():
+        items += [dict(_repair_row(row), unconfirmed=True) for row in relevant_unconfirmed([repair_instructions] + [group["name"] for group in missing_groups], limit=40)]
     agent = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden", AiAgent.active.is_(True)).first()
     instructions = f"""You are Caden's structured pricing-repair tool.
 {build_agent_context(agent)}
@@ -3951,6 +3970,15 @@ def local_cooper_next_command():
     item_query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.cooper_part_number != "")
     if run.only_zero_prices:
         item_query = item_query.filter(PriceItem.price <= 0)
+    if run.mode == "catalog":
+        version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
+        put_listener_version(version.group(1) if version else "1")
+        if not version or tuple(int(x) for x in version.group(1).split(".")[:2]) < (2, 1):
+            run.status = "failed"; run.error_message = "This listener is too old to read Cooper's catalog: download v2.1 or newer from Settings."
+            append_sync_log(run, run.error_message); db.session.commit()
+            return jsonify({"command": None, "state": "idle"})
+        return jsonify({"state": "running", "command": {"id": run.batch_id, "mode": "catalog", "items": [],
+                                                         "known_parts": sorted(known_cooper_parts()), "skip_categories": catalog_done()}})
     if run.item_ids_json:
         item_query = item_query.filter(PriceItem.id.in_(run.item_ids or [0]))
     items = item_query.order_by(PriceItem.name).all()
@@ -4047,6 +4075,159 @@ def put_listener_version(version):
 def download_cooper_listener():
     return send_from_directory(os.path.join(basedir, "tools"), "cooper_price_listener.py", as_attachment=True,
                                download_name="cooper_price_listener.py", mimetype="text/x-python")
+
+
+# ---------------- Cooper's catalog -> Unconfirmed items ----------------
+UNCONFIRMED = "Unconfirmed"
+CATALOG_UNITS = {"ea", "ft", "box", "roll", "lb"}
+
+
+def known_cooper_parts():
+    """Every part number already on the Pricing Sheet (active or not), squashed for comparing."""
+    parts = {canonical_part_number(row[0]) for row in db.session.query(PriceItem.cooper_part_number).filter(PriceItem.cooper_part_number != "")}
+    parts |= {canonical_part_number(row[0]) for row in db.session.query(SupplierPartNumber.part_number)}
+    return {p for p in parts if p}
+
+
+def catalog_done():
+    try:
+        value = json.loads((db.session.get(CompanySetting, "cooper_catalog_done") or CompanySetting(value="[]")).value or "[]")
+        return value if isinstance(value, list) else []
+    except ValueError:
+        return []
+
+
+def add_catalog_product(product, known):
+    """One product from Cooper's catalog as an Unconfirmed Pricing Sheet item. Returns the item, or None (known/unusable)."""
+    part = str(product.get("part_number") or "").strip()[:100]
+    key = canonical_part_number(part)
+    if not key or key in known:
+        return None
+    try:
+        price = float(product.get("source_price"))
+        quantity = float(product.get("source_quantity") or 1)
+    except (TypeError, ValueError):
+        return None
+    unit = normalize_pricing_unit(product.get("source_unit"))
+    if price < 0 or quantity <= 0 or unit not in CATALOG_UNITS:
+        return None
+    name = " ".join(str(product.get("name") or part).split())[:160] or part
+    lookup = normalize_item_name(name)
+    if PriceItem.query.filter_by(lookup_key=lookup).first() is not None:
+        name = f"{name[:150]} ({part})"[:180]
+        lookup = normalize_item_name(name)
+        if PriceItem.query.filter_by(lookup_key=lookup).first() is not None:
+            return None
+    source_category = " ".join(str(product.get("category") or "").split())[:60]
+    item = PriceItem(name=name, lookup_key=lookup, category=UNCONFIRMED, unit=unit, price=round(price / quantity, 5),
+                     labor_hours_per_unit=0, cooper_part_number=part, active=True,
+                     notes=f"Added from Cooper's catalog {datetime.utcnow():%b %-d, %Y}" + (f" · Cooper: {source_category}" if source_category else ""))
+    item.supplier_parts.append(SupplierPartNumber(supplier="Cooper Electric", part_number=part))
+    db.session.add(item)
+    known.add(key)
+    return item
+
+
+@app.route("/quoting/pricing/cooper-catalog", methods=["POST"])
+@login_required
+def start_cooper_catalog():
+    """"Add all items from Cooper": queue a catalog crawl for the office listener."""
+    check_csrf()
+    expire_stale_cooper_runs()
+    active = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).first()
+    if active:
+        return jsonify({"error": "A Cooper job is already queued or running.", "batch_id": active.batch_id,
+                        "status_url": url_for("cooper_sync_status", batch_id=active.batch_id)}), 409
+    if request.form.get("restart"):
+        row = db.session.get(CompanySetting, "cooper_catalog_done") or CompanySetting(key="cooper_catalog_done")
+        row.value = "[]"; db.session.add(row)
+    batch = PriceSyncBatch(supplier="cooper", created_by=current_user)
+    db.session.add(batch); db.session.flush()
+    done = len(catalog_done())
+    db.session.add(PriceSyncRun(batch=batch, mode="catalog", total=0, activity_log=json.dumps([
+        "Catalog run queued: the office listener will read Cooper's categories and add every part number not already on the Pricing Sheet as Unconfirmed."
+        + (f" {done} categories finished earlier are skipped." if done else "")])))
+    db.session.commit()
+    return jsonify({"batch_id": batch.id, "status_url": url_for("cooper_sync_status", batch_id=batch.id),
+                    "preview_url": url_for("pricing_sheet", category=UNCONFIRMED)})
+
+
+@app.route("/api/local-cooper/commands/<int:batch_id>/catalog", methods=["POST"])
+@local_cooper_api_required
+def local_cooper_catalog(batch_id):
+    """Products found by a catalog run, in batches. Only part numbers not already on the sheet are added."""
+    batch = db.get_or_404(PriceSyncBatch, batch_id); run = batch.run
+    if run is None or run.mode != "catalog" or run.status not in ("queued", "running"):
+        return jsonify({"error": "This catalog run is no longer active."}), 409
+    payload = request.get_json(silent=True) or {}
+    products = payload.get("products") or []
+    if not isinstance(products, list) or len(products) > 500:
+        return jsonify({"error": "Send up to 500 products at a time."}), 400
+    known = known_cooper_parts()
+    added = sum(1 for product in products if isinstance(product, dict) and add_catalog_product(product, known) is not None)
+    done = catalog_done()
+    for url in payload.get("categories_done") or []:
+        if isinstance(url, str) and url not in done:
+            done.append(url[:300])
+    row = db.session.get(CompanySetting, "cooper_catalog_done") or CompanySetting(key="cooper_catalog_done")
+    row.value = json.dumps(done); db.session.add(row)
+    run.status = "running"; run.current += added
+    if isinstance(payload.get("categories_total"), int):
+        run.total = payload["categories_total"]
+    message = str(payload.get("message") or "").strip()
+    if added or message:
+        append_sync_log(run, (f"Added {added} new item{'s' if added != 1 else ''}. " if added else "") + message[:300])
+    if payload.get("finished"):
+        run.status = "complete"
+        append_sync_log(run, f"Catalog run finished: {run.current} new Unconfirmed item{'s' if run.current != 1 else ''} on the Pricing Sheet.")
+    run.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"added": added, "skipped": len(products) - added, "total_added": run.current}), 201
+
+
+@app.route("/quoting/pricing/unconfirmed-switch", methods=["POST"])
+@login_required
+def unconfirmed_switch():
+    check_csrf()
+    row = db.session.get(CompanySetting, "caden_unconfirmed") or CompanySetting(key="caden_unconfirmed")
+    row.value = "1" if request.form.get("on") == "1" else "0"
+    db.session.add(row); db.session.commit()
+    flash("Caden will " + ("use matching Unconfirmed items (up to 60 per quote)." if row.value == "1" else "not use Unconfirmed items.") , "success")
+    return redirect(url_for("pricing_sheet"))
+
+
+@app.route("/quoting/pricing/move-selected", methods=["POST"])
+@login_required
+def move_selected_price_items():
+    check_csrf()
+    category = " ".join(request.form.get("category", "").split())[:100]
+    ids = {int(v) for v in request.form.get("item_ids", "").split(",") if v.strip().isdigit()}
+    if not category or not ids:
+        flash("Select items and type a category.", "error")
+        return redirect(request.referrer or url_for("pricing_sheet"))
+    moved = PriceItem.query.filter(PriceItem.id.in_(ids), PriceItem.active.is_(True)).update({"category": category}, synchronize_session=False)
+    db.session.commit()
+    flash(f"Moved {moved} item{'s' if moved != 1 else ''} to {category}.", "success")
+    return redirect(request.referrer or url_for("pricing_sheet"))
+
+
+def caden_uses_unconfirmed():
+    row = db.session.get(CompanySetting, "caden_unconfirmed")
+    return row is None or row.value != "0"
+
+
+def relevant_unconfirmed(texts, limit=60):
+    """The Unconfirmed items whose names share the most words with the job and the conversation."""
+    words = {w for w in re.findall(r"[a-z0-9]{3,}", " ".join(texts).lower()) if w not in SCOPE_FILLER}
+    if not words:
+        return []
+    scored = []
+    for item in PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.category == UNCONFIRMED).all():
+        name_words = set(re.findall(r"[a-z0-9]{3,}", item.name.lower()))
+        score = len(words & name_words)
+        if score:
+            scored.append((score, item.name, item))
+    return [item for score, name, item in sorted(scored, key=lambda row: (-row[0], row[1]))[:limit]]
 
 
 @app.route("/api/local-cooper/results", methods=["POST"])
@@ -4995,7 +5176,14 @@ def build_ai_quote_response(job, quote):
             "labor_hours": round(service.estimated_labor_hours, 4),
             "materials": [{"name": item.current_name, "quantity": item.quantity, "unit": item.current_unit} for item in service.items],
         })
-    price_catalog = [{"price_item_id": item.id, "name": item.name, "unit": item.unit, "material_unit_price": round(item.price, 2), "labor_hours_per_unit": round(item.labor_hours_per_unit, 4), "category": item.category, "supplier_parts": [{"supplier": row.supplier, "part_number": row.part_number} for row in item.supplier_parts]} for item in PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all()]
+    def _price_row(item):
+        return {"price_item_id": item.id, "name": item.name, "unit": item.unit, "material_unit_price": round(item.price, 2), "labor_hours_per_unit": round(item.labor_hours_per_unit, 4), "category": item.category, "supplier_parts": [{"supplier": row.supplier, "part_number": row.part_number} for row in item.supplier_parts]}
+    # Confirmed items always; from Cooper's Unconfirmed catalog only the ones matching this job (never the whole catalog)
+    price_catalog = [_price_row(item) for item in PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.category != UNCONFIRMED).order_by(PriceItem.name).all()]
+    unconfirmed_rows = []
+    if caden_uses_unconfirmed():
+        texts = [job.title or "", job.description or ""] + [message.content for message in quote.messages[-8:] if message.role == "user"]
+        unconfirmed_rows = [dict(_price_row(item), unconfirmed=True) for item in relevant_unconfirmed(texts)]
     conversation = [{"role": message.role, "content": message.content} for message in quote.messages[-14:]]
     agent = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden", AiAgent.active.is_(True)).first()
     agent_context = build_agent_context(agent)
@@ -5024,7 +5212,8 @@ SERVICE_LIBRARY:
 {json.dumps(catalog)}
 
 PRICE_LIBRARY:
-{json.dumps(price_catalog)}
+{json.dumps(price_catalog + unconfirmed_rows)}
+Items marked "unconfirmed" come from Cooper's catalog: real Cooper prices that nobody here has reviewed yet. Prefer a confirmed item when one fits; use an unconfirmed one when it is the right part, and with no labor hours stored, give it a labor suggestion in pricing_needed.
 
 MIKE_LABOR_ADVISOR:
 {mike_context}
@@ -5125,8 +5314,23 @@ Use direct_priced_items only when an administrator message in this conversation 
     }
     client = OpenAI()
     response_args = {"model": os.environ.get("OPENAI_MODEL", "gpt-5-mini"), "instructions": instructions, "text": {"format": {"type": "json_schema", "name": "powerhouse_quote_plan", "schema": schema, "strict": True}}}
-    response = client.responses.create(input=conversation, **response_args)
+    stopped_unconfirmed = False
+    try:
+        response = client.responses.create(input=conversation, **response_args)
+    except Exception as error:  # noqa: BLE001
+        too_big = any(word in str(error).lower() for word in ("context", "too long", "maximum", "tokens"))
+        if not (unconfirmed_rows and too_big):
+            raise
+        # the safety stop: quoting must keep working, so Unconfirmed items are switched off and the quote is built without them
+        row = db.session.get(CompanySetting, "caden_unconfirmed") or CompanySetting(key="caden_unconfirmed")
+        row.value = "0"; db.session.add(row); db.session.commit()
+        instructions = instructions.replace(json.dumps(price_catalog + unconfirmed_rows), json.dumps(price_catalog))
+        response_args["instructions"] = instructions
+        response = client.responses.create(input=conversation, **response_args)
+        stopped_unconfirmed = True
     result = json.loads(response.output_text)
+    if stopped_unconfirmed:
+        result["message"] = (str(result.get("message") or "") + "\n\nNote: the quote was too big with Cooper's Unconfirmed items, so I built it with confirmed items only and switched Unconfirmed items off for quoting. You can turn them back on from the Pricing Sheet.").strip()
     if not result.get("ready") and not [q for q in result.get("questions", []) if str(q).strip()]:
         # "not ready" with nothing to ask is a dead end: build it with stated assumptions instead
         proceed = conversation + [{"role": "user", "content": "Build all the options now using clearly stated assumptions. Put anything unpriced in missing_services and pricing_needed with a suggested price."}]
@@ -6732,6 +6936,7 @@ with app.app_context():
         ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
     ]:
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")

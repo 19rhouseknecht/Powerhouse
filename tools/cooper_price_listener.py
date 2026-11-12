@@ -19,6 +19,10 @@ Options:
     --reset-config     forget the saved token and Cooper login
     --poll-seconds 5   how often to ask the website for work
 
+Version 2.1 can also read Cooper's whole catalog ("Add all items from Cooper" on the Pricing Sheet): it walks
+Cooper's product categories and sends every part number the Pricing Sheet does not have yet. It remembers
+which categories are finished, so a stopped run carries on where it left off.
+
 Version 2 is much faster than version 1: no artificial slow-down, the cookie
 banner is handled once, several tabs scan at once, pictures/fonts/trackers are
 not downloaded for search pages, and an existing Cooper login is reused.
@@ -38,7 +42,7 @@ import re
 import time
 from getpass import getpass
 
-LISTENER_VERSION = "2.0"
+LISTENER_VERSION = "2.1"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -367,6 +371,168 @@ async def scan_all_items(items: list, config: dict, progress=None, send_picture=
     return results
 
 
+# --------------------------------------------------------------------------- Cooper's whole catalog
+DEBUG_DIRECTORY = SCRIPT_DIRECTORY / "catalog_debug"
+MAX_PAGES_PER_CATEGORY = 200
+BATCH_SIZE = 40
+READ_CARDS = """() => Array.from(document.querySelectorAll('div.productCard[data-product-id], div.product[data-product-id]')).map(card => {
+  const price = card.querySelector('span.pricerPerQty, span.pricePerQty, [data-analytics-price]');
+  const named = card.querySelector('[data-analytics-description]');
+  const title = card.querySelector('h2, h3, h4, .product-title, .productTitle, a[title]');
+  return {id: (card.getAttribute('data-product-id') || '').trim(),
+          price: price ? (price.getAttribute('data-analytics-price') || '').trim() : '',
+          name: named ? named.getAttribute('data-analytics-description') : (title ? (title.getAttribute('title') || title.textContent || '').trim() : ''),
+          uom: Array.from(card.querySelectorAll('small.priceUOM')).map(e => e.textContent.trim()).filter(Boolean).join(' ')};
+})"""
+NEXT_PAGE = """() => {
+  const pick = document.querySelector('a[rel="next"], link[rel="next"], li.next:not(.disabled) > a, a[aria-label*="Next" i], a[title*="Next" i]')
+    || Array.from(document.querySelectorAll('.pagination a, nav a')).find(a => /^(next|›|»|>)$/i.test(a.textContent.trim()));
+  return pick && pick.getAttribute('href') ? new URL(pick.getAttribute('href'), location.href).href : '';
+}"""
+
+
+def category_code(url: str) -> str:
+    found = re.search(r"/product/category/US_(\d*)", url)
+    return found.group(1) if found else ""
+
+
+def leaf_categories(urls: list) -> list:
+    """Only the most specific categories (a parent lists its children's products again)."""
+    codes = {url: category_code(url).rstrip("0") for url in urls}
+    leaves = []
+    for url, prefix in codes.items():
+        if prefix and any(other != url and code != prefix and code.startswith(prefix) for other, code in codes.items()):
+            continue
+        leaves.append(url)
+    return sorted(set(leaves))
+
+
+async def read_category_page(page) -> list:
+    """Every product on the page once its prices have arrived (they come a moment after the page)."""
+    try:
+        await page.locator("div.productCard[data-product-id], div.product[data-product-id]").first.wait_for(state="attached", timeout=12_000)
+    except Exception:  # noqa: BLE001 — an empty category is fine
+        return []
+    cards = []
+    for _ in range(50):                     # up to 10 seconds for the prices
+        cards = await page.evaluate(READ_CARDS)
+        if cards and all(card["price"] for card in cards if card["id"]):
+            break
+        await page.wait_for_timeout(200)
+    return [card for card in cards if card["id"]]
+
+
+def card_to_product(card: dict, category: str):
+    try:
+        quantity, unit = parse_source_quantity_and_unit(card["uom"])
+        price = float(card["price"].replace(",", ""))
+    except (ValueError, AttributeError):
+        return None
+    return {"part_number": card["id"], "name": " ".join((card.get("name") or card["id"]).split()), "source_price": price,
+            "source_quantity": quantity, "source_unit": unit, "source_uom": card["uom"], "category": category}
+
+
+async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: int = 3, headless: bool = False) -> dict:
+    """Walk Cooper's categories and send every product whose part number is not known yet.
+    send(products, categories_done, categories_total, message, finished) posts a batch to the website."""
+    from playwright.async_api import async_playwright
+
+    known = {re.sub(r"[^a-z0-9]", "", part.lower()) for part in known_parts}
+    totals = {"seen": 0, "sent": 0, "empty": 0, "pages": 0, "categories": 0}
+    pending, finished_categories = [], []
+    lock = asyncio.Lock()
+
+    async def flush(final=False, message=""):
+        nonlocal pending, finished_categories
+        products, done_now = pending, finished_categories
+        pending, finished_categories = [], []
+        if products or done_now or final or message:
+            await asyncio.to_thread(send, products, done_now, total_categories, message, final)
+            totals["sent"] += len(products)
+
+    async with async_playwright() as playwright:
+        options = {"user_data_dir": str(PROFILE_DIRECTORY), "headless": headless, "no_viewport": not headless}
+        if BROWSER_CHANNEL:
+            options["channel"] = BROWSER_CHANNEL
+        if os.environ.get("COOPER_BROWSER_PATH"):
+            options["executable_path"] = os.environ["COOPER_BROWSER_PATH"]
+        context = await playwright.chromium.launch_persistent_context(**options)
+        try:
+            first = context.pages[0] if context.pages else await context.new_page()
+            await first.goto(COOPER_HOME, wait_until="domcontentloaded", timeout=60_000)
+            await wait_for_verification(first)
+            await accept_cookies(first, wait_seconds=8)
+            await login_to_cooper(first, config)
+            links = await first.evaluate("() => Array.from(document.querySelectorAll('a[href*=\"/product/category/\"]')).map(a => a.href)")
+            categories = [url for url in leaf_categories(links) if url not in skip]
+            total_categories = len(categories) + len(skip)
+            log(f"Cooper lists {len(set(links))} categories; {len(categories)} to read ({len(skip)} finished before).")
+            if not categories:
+                await flush(final=True, message="Every category was already finished. Tick Start over to read them again.")
+                return totals
+            await context.route("**/*", block_extras)
+            queue = asyncio.Queue()
+            for url in categories:
+                queue.put_nowait(url)
+            tab_count = max(1, min(tabs, 6, len(categories)))
+            pages = [first] + [await context.new_page() for _ in range(tab_count - 1)]
+
+            async def worker(page, number):
+                while True:
+                    try:
+                        url = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    name = url.rstrip("/").rsplit("/", 1)[-1].replace("-", " ")
+                    found = 0
+                    visited, target = set(), url
+                    try:
+                        while target and target not in visited and len(visited) < MAX_PAGES_PER_CATEGORY:
+                            visited.add(target)
+                            await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+                            await wait_for_verification(page)
+                            await accept_cookies(page)
+                            cards = await read_category_page(page)
+                            totals["pages"] += 1
+                            found += len(cards)
+                            async with lock:
+                                for card in cards:
+                                    key = re.sub(r"[^a-z0-9]", "", card["id"].lower())
+                                    if key in known:
+                                        continue
+                                    product = card_to_product(card, name)
+                                    if product:
+                                        known.add(key)
+                                        pending.append(product)
+                                if len(pending) >= BATCH_SIZE:
+                                    await flush()
+                            target = await page.evaluate(NEXT_PAGE) if cards else ""
+                    except Exception as error:  # noqa: BLE001 — one category's problem never stops the run
+                        log(f"[tab {number}] {name}: {type(error).__name__}: {error}")
+                        continue
+                    async with lock:
+                        totals["categories"] += 1
+                        totals["seen"] += found
+                        if not found:
+                            totals["empty"] += 1
+                            if totals["empty"] <= 3:
+                                DEBUG_DIRECTORY.mkdir(exist_ok=True)
+                                (DEBUG_DIRECTORY / f"empty-{totals['empty']}.html").write_text(await page.content(), encoding="utf-8")
+                        finished_categories.append(url)
+                        log(f"[{totals['categories']}/{len(categories)} tab {number}] {name}: {found} products on {len(visited)} page(s)")
+                        if totals["categories"] >= 8 and totals["seen"] == 0:
+                            raise RuntimeError("Read 8 categories and found no products: Cooper's category pages look different from what this "
+                                               f"listener expects. Copies of those pages are in {DEBUG_DIRECTORY.name}/; send them to whoever maintains Power House.")
+                        await flush(message=f"{totals['categories']} of {len(categories)} categories read.")
+
+            await asyncio.gather(*(worker(page, number) for number, page in enumerate(pages, 1)))
+            async with lock:
+                await flush(final=True, message=f"Read {totals['categories']} categories ({totals['pages']} pages, {totals['seen']} products seen).")
+        finally:
+            await context.close()
+    return totals
+
+
 # --------------------------------------------------------------------------- the loop
 def main() -> None:
     parser = argparse.ArgumentParser(description="Listen for Power House Flow Cooper price commands.")
@@ -392,6 +558,22 @@ def main() -> None:
                 time.sleep(poll_seconds)
                 continue
             command_id = command["id"]
+            if command.get("mode") == "catalog":
+                log(f"Received catalog run #{command_id}: adding Cooper items the Pricing Sheet does not have yet.")
+
+                def send_catalog(products, done, total, message, finished):
+                    reply = api_request(config, f"/api/local-cooper/commands/{command_id}/catalog", method="POST",
+                                        payload={"products": products, "categories_done": done, "categories_total": total,
+                                                 "message": message, "finished": finished})
+                    if products:
+                        log(f"Sent {len(products)} new item(s); {reply.get('added', 0)} added ({reply.get('total_added', 0)} this run).")
+
+                totals = asyncio.run(crawl_catalog(config, set(command.get("known_parts") or []), set(command.get("skip_categories") or []),
+                                                   send_catalog, tabs=args.tabs, headless=args.headless))
+                log(f"Catalog run #{command_id} finished: {totals['categories']} categories, {totals['sent']} new item(s) sent.")
+                if args.once:
+                    return
+                continue
             items = command.get("items", [])
             log(f"Received price check #{command_id} with {len(items)} Cooper item(s).")
             if not items:
