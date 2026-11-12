@@ -240,7 +240,7 @@ except EOFError:
 proc = subprocess.Popen([sys.executable, "-c", probe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(1.2)
 proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(0.3); proc.stdin.close()
-out = proc.communicate(timeout=20)[0]
+out = proc.stdout.read(); proc.wait(timeout=20)
 check("PAUSE True" in out, "pressing Enter during a scan asks for a pause")
 check("LINE '\\n'" in out, "pressing Enter while it waits carries on")
 check("EOF" in out, "with the keyboard gone it never hangs (it watches the page instead)")
