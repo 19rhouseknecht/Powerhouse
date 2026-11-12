@@ -1,4 +1,4 @@
-"""Add all items from Cooper in batches (200 new items a run unless changed; never a part number already on the sheet), the
+"""Add all items from Cooper in batches (5,000 new items a run unless changed; never a part number already on the sheet), the
 listener pausing for a person when Cooper asks "are you human" (until Enter is pressed), and the live status window's review
 button (hidden until there is something to review, then going somewhere)."""
 import asyncio
@@ -30,7 +30,7 @@ def product(n):
 
 # 1. the batch: 200 by default, the size typed, never past it
 page = client.get("/quoting/pricing").get_data(as_text=True)
-check('name="batch" value="200"' in page, "the catalog button offers 200 new items a run")
+check('name="batch" value="5000"' in page, "the catalog button offers 5,000 new items a run")
 client.post("/quoting/pricing/cooper-catalog", data=dict(CSRF, batch="3"), headers=JSON)
 cmd = client.get("/api/local-cooper/commands/next", headers=api).json["command"]
 check(cmd["limit"] == 3 and "qo130l200pg" in cmd["known_parts"], "the listener is told the batch size and every part number already there")
@@ -48,7 +48,7 @@ with app.app_context():
     check(m.PriceItem.query.filter(m.PriceItem.cooper_part_number.like("NEW%")).count() == 3, "exactly 3 were added")
 client.post("/quoting/pricing/cooper-catalog", data=CSRF, headers=JSON)
 cmd = client.get("/api/local-cooper/commands/next", headers=api).json["command"]
-check(cmd["limit"] == 200 and "new003" in cmd["known_parts"], "the next run is another 200, and knows the ones just added")
+check(cmd["limit"] == 5000 and "new003" in cmd["known_parts"], "the next run is another 5,000, and knows the ones just added")
 r = client.post("/api/local-cooper/commands/%d/catalog" % cmd["id"], json={"products": [product(n) for n in range(1, 8)], "finished": True}, headers=api)
 check(r.json["added"] == 4, "it carries on with only the new ones (4 of 7)")
 client.post("/quoting/pricing/cooper-catalog", data=dict(CSRF, batch="99999"), headers=JSON)
@@ -113,6 +113,11 @@ def check_page():
         return "<html><body><div class='product'>Products</div></body></html>"
     return """<html><body><h1>Verify you are human</h1><p>Complete the security check to continue.</p>
     <script>setInterval(() => fetch('/solved').then(r => r.text()).then(t => { if (t === 'yes') location.reload(); }), 200)</script></body></html>"""
+
+
+@cooper.route("/framed")
+def framed():
+    return "<html><body><p>Cooper Electric</p><iframe src='/check'></iframe></body></html>"
 
 
 @cooper.route("/solved")
@@ -192,6 +197,53 @@ except RuntimeError as error:
 SOLVED["yes"] = True
 took, html = asyncio.run(run_check(person))
 check(took < 1.5, "no check showing: no pause at all")
+
+# the person pauses the scan themselves (Enter during a scan), and the check inside a frame is seen
+SOLVED["yes"], asked[:] = True, []
+listener.PAUSE_REQUESTED.set()
+took, html = asyncio.run(run_check(person))
+check(len(asked) == 1 and not listener.PAUSE_REQUESTED.is_set() and any("Paused at the office" in line for line in told), "Enter during a scan pauses it until Enter again")
+check("SELF_CLEAR_SECONDS = 3 " in open(os.path.join(ROOT, "tools", "cooper_price_listener.py")).read(), "a check still showing after 3 seconds pauses for a person")
+
+
+async def framed_check():
+    async with async_playwright() as playwright:
+        browser = await (playwright.chromium.launch(executable_path=exe) if exe else playwright.chromium.launch())
+        page = await browser.new_page()
+        SOLVED["yes"] = False
+        await page.goto("http://127.0.0.1:%d/framed" % pretend.server_port)
+        await page.wait_for_timeout(300)
+        seen = await listener.verification_page_is_present(page)
+        await browser.close()
+        return seen
+
+
+check(asyncio.run(framed_check()), "'Verify you are human' inside a frame is recognised")
+SOLVED["yes"] = True
+
+# 4b. the real keyboard: Enter during a scan asks for a pause; Enter while waiting carries on; no keyboard is EOFError
+import subprocess  # noqa: E402
+probe = f"""
+import importlib.util, time
+spec = importlib.util.spec_from_file_location("kb", {os.path.join(ROOT, "tools", "cooper_price_listener.py")!r})
+kb = importlib.util.module_from_spec(spec); spec.loader.exec_module(kb)
+kb.log = lambda message: None
+kb.start_keyboard()
+time.sleep(0.6)
+print("PAUSE", kb.PAUSE_REQUESTED.is_set())
+print("LINE", repr(kb.wait_for_enter("go? ")))
+try:
+    kb.wait_for_enter("again? ")
+except EOFError:
+    print("EOF")
+"""
+proc = subprocess.Popen([sys.executable, "-c", probe], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(1.2)
+proc.stdin.write("\n"); proc.stdin.flush(); time.sleep(0.3); proc.stdin.close()
+out = proc.stdout.read(); proc.wait(timeout=20)
+check("PAUSE True" in out, "pressing Enter during a scan asks for a pause")
+check("LINE '\\n'" in out, "pressing Enter while it waits carries on")
+check("EOF" in out, "with the keyboard gone it never hangs (it watches the page instead)")
 
 # 5. the catalog walk stops when the site says the batch is full
 spec = importlib.util.spec_from_file_location("listener_walk", os.path.join(ROOT, "tools", "cooper_price_listener.py"))

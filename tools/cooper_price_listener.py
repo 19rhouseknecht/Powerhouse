@@ -39,11 +39,14 @@ import base64
 import json
 import os
 import re
+import queue
 import socket
+import sys
+import threading
 import time
 from getpass import getpass
 
-LISTENER_VERSION = "2.3"
+LISTENER_VERSION = "2.4"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -195,13 +198,56 @@ async def block_extras(route):
         await route.continue_()
 
 
-HUMAN_WORDS = ("verify you are human", "are you a robot", "are you human", "i am human", "i'm not a robot", "additional security check",
-               "pardon our interruption", "complete the security check", "press & hold", "press and hold", "request unsuccessful")
-SELF_CLEAR_SECONDS = 20          # Cooper's own browser check often finishes by itself; a person is asked only after this
+HUMAN_WORDS = ("verify you are human", "verify you're human", "verify you are a human", "verify you're a human", "verify that you are human",
+               "are you a robot", "are you human", "are you a human", "i am human", "i'm not a robot", "not a robot", "human verification",
+               "additional security check", "security check", "pardon our interruption", "press & hold", "press and hold",
+               "request unsuccessful", "checking your browser", "unusual traffic", "incapsula incident")
+SELF_CLEAR_SECONDS = 3           # a flash of Cooper's automatic browser check is let through; anything still showing pauses for a person
 STILL_WAITING_SECONDS = 300      # while waiting for a person, the website hears "still waiting" this often (so the run never times out)
 NOTIFY = None                    # set per command: NOTIFY(message) puts a line in the website's live status
 HUMAN_LOCK = None                # one question to the person at a time, however many tabs hit the check
-PROMPT = input                   # tests replace this
+# The keyboard: one reader for the whole run. Enter while a scan is going pauses it before its next page; Enter while
+# the listener is waiting (Cooper's human check, or a pause) carries on.
+KEYBOARD_LINES = queue.Queue()
+KEYBOARD_WAITING = threading.Event()
+PAUSE_REQUESTED = threading.Event()
+KEYBOARD = None
+
+
+def _read_keyboard() -> None:
+    for line in sys.stdin:
+        if KEYBOARD_WAITING.is_set():
+            KEYBOARD_LINES.put(line)
+        elif not PAUSE_REQUESTED.is_set():
+            PAUSE_REQUESTED.set()
+            log("Pause requested: the scan stops before its next page.")
+    KEYBOARD_LINES.put(None)                      # the keyboard went away (running as a service)
+
+
+def start_keyboard() -> None:
+    global KEYBOARD
+    if KEYBOARD is None and sys.stdin is not None:
+        KEYBOARD = threading.Thread(target=_read_keyboard, name="keyboard", daemon=True)
+        KEYBOARD.start()
+
+
+def wait_for_enter(prompt: str) -> str:
+    """Block until the person presses Enter. EOFError when there is no keyboard."""
+    start_keyboard()
+    if KEYBOARD is None:
+        raise EOFError
+    print(prompt, end="", flush=True)
+    KEYBOARD_WAITING.set()
+    try:
+        line = KEYBOARD_LINES.get()
+    finally:
+        KEYBOARD_WAITING.clear()
+    if line is None:
+        raise EOFError
+    return line
+
+
+PROMPT = wait_for_enter          # tests replace this
 HEADLESS = False                 # set by each scan
 
 
@@ -211,11 +257,38 @@ async def verification_page_is_present(page) -> bool:
         return True
     if await page.locator('iframe[src*="captcha"], iframe[title*="challenge" i], iframe[src*="hcaptcha"], iframe[src*="recaptcha"], #px-captcha').count():
         return True
-    try:
-        text = (await page.locator("body").inner_text(timeout=2_000))[:4000].lower()
-    except Exception:  # noqa: BLE001
-        return False
-    return any(words in text for words in HUMAN_WORDS)
+    for frame in page.frames:                       # the question is often inside a frame
+        try:
+            text = (await frame.locator("body").inner_text(timeout=2_000))[:4000].lower()
+        except Exception:  # noqa: BLE001
+            continue
+        if any(words in text for words in HUMAN_WORDS):
+            return True
+    return False
+
+
+async def paused_by_person(page) -> None:
+    """Enter was pressed during the scan: hold every tab until Enter is pressed again."""
+    global HUMAN_LOCK
+    HUMAN_LOCK = HUMAN_LOCK or asyncio.Lock()
+    async with HUMAN_LOCK:
+        if not PAUSE_REQUESTED.is_set():
+            return                                 # another tab already waited it out
+        try:
+            await page.bring_to_front()
+        except Exception:  # noqa: BLE001
+            pass
+        log("=" * 60)
+        log("PAUSED BY YOU. Do what you need in Chrome, then press Enter here to carry on.")
+        log("=" * 60)
+        notify("Paused at the office computer. Press Enter in the listener to carry on.")
+        try:
+            await asyncio.to_thread(PROMPT, "Press Enter to carry on... ")
+        except EOFError:
+            pass
+        PAUSE_REQUESTED.clear()
+        log("Carrying on.")
+        notify("Carrying on.")
 
 
 def notify(message: str) -> None:
@@ -230,6 +303,8 @@ async def wait_for_verification(page, headless=None) -> None:
     """Let Cooper's browser check finish by itself; when it asks for a person, pause until they finish it and press Enter."""
     global HUMAN_LOCK
     headless = HEADLESS if headless is None else headless
+    if PAUSE_REQUESTED.is_set():
+        await paused_by_person(page)
     if not await verification_page_is_present(page):
         return
     log("Cooper is checking the browser. Giving it a moment to finish by itself.")
@@ -665,6 +740,9 @@ def main() -> None:
 
     poll_seconds = max(args.poll_seconds, 2)
     log(f"Listener v{LISTENER_VERSION} connected to {config['base_url']}. Checking for Update Prices commands every {poll_seconds} seconds.")
+    log("If Cooper asks whether you're human, the scan pauses until you finish it in Chrome and press Enter here.")
+    log("Press Enter at any time to pause a scan yourself; press Enter again to carry on.")
+    start_keyboard()
     waiting = 0
     while True:
         command_id = None
