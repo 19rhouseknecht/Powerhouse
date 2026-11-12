@@ -1,6 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ quote.title|plain_terms }} — {{ quote.job.client.full_name }}<script src="{{ url_for('static', filename='js/lighting3d.js') }}?v={{ asset_version }}" defer></script>
-{% endblock %}
+{% block title %}{{ quote.title|plain_terms }} — {{ quote.job.client.full_name }}{% endblock %}
 {% block content %}
 <div class="client-presentation">
   <div class="presentation-controls"><a href="{{ url_for('job_detail', job_id=quote.job.id) }}">← Return to job</a><a href="{{ url_for('edit_saved_quote', quote_id=quote.id) }}">Manual edit</a><form method="POST" action="{{ url_for('reopen_quote', quote_id=quote.id) }}" onsubmit="return confirm('Reopen quote version {{ quote.revision }} in the autoquoter? It will need to be confirmed again before presentation.');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button type="submit">Reopen in autoquoter</button></form><div class="presentation-tabs"><a class="{{ 'active' if view == 'without-pricing' else '' }}" href="{{ url_for('quote_presentation', quote_id=quote.id, view='without-pricing') }}">Without pricing</a><a class="{{ 'active' if view == 'with-pricing' else '' }}" href="{{ url_for('quote_presentation', quote_id=quote.id, view='with-pricing') }}">With pricing</a></div><button type="button" onclick="window.print()">Print</button></div>

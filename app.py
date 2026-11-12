@@ -1561,7 +1561,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "use_sheet_item":"view_quoting", "find_pricing_items":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "find_pricing_items":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2764,6 +2764,28 @@ def repair_quote_missing(quote_id):
     quote.messages.append(QuoteMessage(role="assistant", content=mapping_message))
     db.session.commit()
     return redirect(url_for("quote_assistant", job_id=quote.job_id))
+
+
+@app.route("/quotes/<int:quote_id>/start-over", methods=["POST"])
+@login_required
+def start_quote_over(quote_id):
+    """Start over: this draft is deleted with everything in it (the conversation with Caden, every option and line, what
+    needed a price, the lighting room) and a fresh, empty draft takes its place. Only a draft; confirmed versions stay."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    job_id = quote.job_id
+    if quote.status != "draft":
+        flash("Only a draft can be started over; confirmed versions are kept.", "error")
+        return redirect(url_for("quote_presentation", quote_id=quote.id))
+    if request.form.get("start_over") != "yes":
+        flash("Start over was not confirmed, so nothing changed.", "error")
+        return redirect(url_for("quote_assistant", job_id=job_id))
+    for upload in list(quote.manual_outcomes):          # its files on disk are kept; only the draft's records go
+        db.session.delete(upload)
+    db.session.delete(quote)                           # messages, options and lines go with it
+    db.session.commit()
+    flash("Started over: the draft and everything Caden had on it are gone. This is a fresh start.", "success")
+    return redirect(url_for("quote_assistant", job_id=job_id))
 
 
 @app.route("/quotes/<int:quote_id>/use-sheet-item", methods=["POST"])

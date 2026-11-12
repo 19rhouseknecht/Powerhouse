@@ -1269,3 +1269,12 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .sheet-results { display:grid; gap:6px; margin-top:6px; }
 .needs-price-foot { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 12px; align-items:center; }
 .needs-price-add { color:var(--accent-hover); font-size:12px; white-space:nowrap; }
+
+/* Quote: Start over */
+.start-over-panel { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px 20px; margin-top:16px; border-color:rgba(220,38,38,.45); }
+.start-over-panel > div { flex:1 1 320px; display:grid; gap:4px; min-width:0; }
+.start-over-panel strong { color:#fca5a5; }
+.start-over-panel span { color:var(--muted); font-size:12px; line-height:1.5; }
+.start-over-panel form { margin:0; }
+.start-over-panel .btn-danger { background:#dc2626; color:#fff; border-color:#dc2626; }
+.start-over-panel .btn-danger:hover, .start-over-panel .btn-danger:focus-visible { background:#b91c1c; border-color:#b91c1c; }
