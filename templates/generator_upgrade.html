@@ -1,7 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Generator upgrade — Power House{% endblock %}
+{% block title %}Generator upgrade — Power House<script>
+document.querySelectorAll('[data-other-toggle]').forEach(function (select) {
+  var box = document.getElementById(select.getAttribute('data-other-toggle'));
+  select.addEventListener('change', function () { box.hidden = select.value !== 'other'; if (!box.hidden) { var first = box.querySelector('input'); if (first) first.focus(); } });
+});
+</script>
+{% endblock %}
 {% macro hidden_state() %}{% for name, value in state.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}{% endmacro %}
-{% macro model_select(name) %}<select name="{{ name }}" id="up-{{ name }}">{% for brand, rows in groups.items() %}<optgroup label="{{ brand }}">{% for row in rows %}<option value="{{ row.key }}" {{ 'selected' if inputs[name] == row.key }}>{{ brand }} {{ row.model }}</option>{% endfor %}</optgroup>{% endfor %}</select>{% endmacro %}
+{% macro model_select(name) %}<select name="{{ name }}" id="up-{{ name }}" data-other-toggle="up-{{ name }}-other">{% for brand, rows in groups.items() %}<optgroup label="{{ brand }}">{% for row in rows %}<option value="{{ row.key }}" {{ 'selected' if inputs[name] == row.key }}>{{ brand }} {{ row.model }}</option>{% endfor %}</optgroup>{% endfor %}<optgroup label="Something else"><option value="other" {{ 'selected' if inputs[name] == 'other' }}>Not on the list: type it from the nameplate</option></optgroup></select>
+<div class="upgrade-other" id="up-{{ name }}-other" {{ 'hidden' if inputs[name] != 'other' }}>{% for suffix, (label, low, high) in other_fields.items() %}<label><span>{{ label }}</span><input type="number" name="{{ name }}_{{ suffix }}" value="{{ inputs[name ~ '_' ~ suffix] }}" min="{{ low }}" max="{{ high }}" step="any" inputmode="decimal"></label>{% endfor %}</div>{% endmacro %}
 {% macro seg(name, legend) %}<fieldset><legend>{{ legend }}</legend><div class="flow-seg">{% for value, label in choices[name] %}<label class="seg-option"><input type="radio" name="{{ name }}" value="{{ value }}" {{ 'checked' if inputs[name] == value }}><span>{{ label }}</span></label>{% endfor %}</div></fieldset>{% endmacro %}
 {% block content %}
 <div class="page-heading"><span class="eyebrow">Generators</span><h1>Generator upgrade</h1><p>Pick the generator that's there and the one going in. You get the wiring and gas line each one needs, whether what's there can stay, what else to plan for, and a priced estimate you can hand to Caden as a quote.</p></div>
@@ -43,7 +50,7 @@
 <section class="panel section-panel upgrade-compare">
   <span class="eyebrow">Side by side</span>
   <div class="item-table-wrap"><table class="item-table upgrade-table">
-    <thead><tr><th></th><th>There now<br><strong>{{ o.brand }} {{ o.model }}</strong></th><th>Going in<br><strong>{{ n.brand }} {{ n.model }}</strong></th></tr></thead>
+    <thead><tr><th></th><th>There now<br><strong>{{ '' if o.brand == 'Other' else o.brand }} {{ o.model }}</strong></th><th>Going in<br><strong>{{ '' if n.brand == 'Other' else n.brand }} {{ n.model }}</strong></th></tr></thead>
     <tbody>
       <tr><th>Output (LP / NG)</th><td>{{ '%g'|format(o.kw_lp) }} / {{ '%g'|format(o.kw_ng) }} kW</td><td>{{ '%g'|format(n.kw_lp) }} / {{ '%g'|format(n.kw_ng) }} kW</td></tr>
       <tr><th>Rated current at 240 V</th><td>{{ o.amps }} A</td><td>{{ n.amps }} A</td></tr>
@@ -57,7 +64,7 @@
       <tr><th>Gas pipe ({{ '%g'|format(result.inputs.gas_feet) }} ft, Sch 40)</th><td>{{ result.gas_old.size or 'over 2' }} in</td><td class="{{ 'up-change' if result.gas_new.size != result.gas_old.size }}">{{ result.gas_new.size or 'over 2' }} in</td></tr>
       <tr><th>Fuel inlet</th><td>{{ o.inlet }}</td><td>{{ n.inlet }}</td></tr>
       <tr><th>Inlet pressure</th>{% for m in (o, n) %}{% set wc = m.lp_wc if result.inputs.fuel == 'lp' else m.ng_wc %}<td>{{ '%g'|format(wc[0]) }}–{{ '%g'|format(wc[1]) }} in. w.c.</td>{% endfor %}</tr>
-      <tr><th>Weight</th><td>{{ o.lb }} lb</td><td class="{{ 'up-change' if n.lb - o.lb > 100 }}">{{ n.lb }} lb{% if n.cooling == 'liquid' %} · liquid-cooled{% endif %}</td></tr>
+      <tr><th>Weight</th><td>{{ '%g lb'|format(o.lb) if o.lb else 'see the nameplate' }}</td><td class="{{ 'up-change' if o.lb and n.lb - o.lb > 100 }}">{{ '%g lb'|format(n.lb) if n.lb else 'see the nameplate' }}{% if n.cooling == 'liquid' %} · liquid-cooled{% endif %}</td></tr>
     </tbody>
   </table></div>
   <p class="upgrade-wire-words"><strong>New feeder:</strong> {{ result.wire_new.text }}, in {{ result.wire_new.conduit }} in {{ result.wire_new.conduit_kind }}, plus the control/communication cable.</p>
@@ -115,4 +122,10 @@
   <span class="eyebrow">Where the numbers come from</span>
   <p class="muted">Each model's output, current, line breaker, full-load fuel use, inlet and pressure are from the maker's spec sheet. Wire: NEC 310.16 (75 °C), 240.4(B), 250.122 and Chapter 9 conduit fill, voltage drop held to 3% at rated current. Gas: Schedule 40 steel capacity tables (IFGC 402.4 / NFPA 54), natural gas at low pressure with a 0.5 in. w.c. drop, propane at 11 in. w.c. with a 0.5 in. drop. Read the nameplate and the install manual before ordering; the inspector and the gas utility have the final word.</p>
 </section>
+<script>
+document.querySelectorAll('[data-other-toggle]').forEach(function (select) {
+  var box = document.getElementById(select.getAttribute('data-other-toggle'));
+  select.addEventListener('change', function () { box.hidden = select.value !== 'other'; if (!box.hidden) { var first = box.querySelector('input'); if (first) first.focus(); } });
+});
+</script>
 {% endblock %}

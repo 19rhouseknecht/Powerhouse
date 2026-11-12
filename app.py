@@ -6661,7 +6661,8 @@ def upgrade_estimate(result, values):
             "chosen": chosen, "found": found, "prices": prices, "hours": hours, "run_hours": run_hours}
 
 
-UPGRADE_STATE = list(gen.UPGRADE_FIELDS) + ["old", "new"] + list(gen.UPGRADE_CHOICES) + list(UPGRADE_PRICE_FIELDS) + list(UPGRADE_YES_NO)
+UPGRADE_STATE = (list(gen.UPGRADE_FIELDS) + ["old", "new"] + [f"{side}_{suffix}" for side in ("old", "new") for suffix in gen.OTHER_FIELDS]
+                 + list(gen.UPGRADE_CHOICES) + list(UPGRADE_PRICE_FIELDS) + list(UPGRADE_YES_NO))
 
 
 def upgrade_state(values):
@@ -6686,7 +6687,7 @@ def generator_upgrade():
         groups.setdefault(row["brand"], []).append(row)
     jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(200).all() if current_user.can("view_jobs") else []
     return render_template("generator_upgrade.html", result=result, estimate=estimate, inputs=gen.read_upgrade(values), groups=groups,
-                           fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES, price_fields=UPGRADE_PRICE_FIELDS, yes_no=UPGRADE_YES_NO,
+                           fields=gen.UPGRADE_FIELDS, choices=gen.UPGRADE_CHOICES, price_fields=UPGRADE_PRICE_FIELDS, other_fields=gen.OTHER_FIELDS, yes_no=UPGRADE_YES_NO,
                            state=state, answer=answer, jobs=jobs, selected_job=request.args.get("job_id", type=int),
                            brief=gen.upgrade_brief(result, estimate) if result else "", caleb_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
 

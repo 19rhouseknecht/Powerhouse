@@ -43,6 +43,20 @@ check(any("liquid-cooled" in t for _, t in gen.upgrade({"old": "kohler-20rca", "
 check(gen.read_upgrade({"old": "nope", "wire_feet": "-4", "fuel": "x"})["old"] == "generac-20-7039", "odd input falls back to defaults")
 check(all(row[0] != "24RCLA" for row in gen.KOHLER_MODELS), "the Sizing page's air-cooled list no longer holds the liquid-cooled 24RCLA")
 
+# 3b. the older, smaller Generac units, and anything not on the list
+seven = gen.MODEL_BY_KEY["generac-7-5240"]
+check((seven["kw_lp"], seven["kw_ng"], seven["breaker"], seven["ng_cfh"], seven["lp_cfh"]) == (7, 6, 30, 119, 54), "Generac 7 kW (6 kW NG): 30 A breaker, 119 cfh NG, 54 cfh LP (its manual)")
+check(all(key in gen.MODEL_BY_KEY for key in ("generac-8-6237", "generac-9-7030", "generac-10-5241", "generac-11-6439", "generac-11-7032",
+                                            "generac-13-5242", "generac-14-6247", "generac-15-7163", "generac-16-5243")), "and the other earlier 8 to 16 kW units")
+r = gen.upgrade({"old": "generac-7-5240", "new": "generac-22", "fuel": "ng", "gas_feet": "40", "wire_feet": "30"})
+check(r["wire_old"]["size"] == "10" and r["gas_old"]["size"] == "3/4" and r["wire_new"]["size"] == "3" and r["gas_new"]["size"] == "1",
+      "7 kW to 22 kW: 10 AWG on 30 A and 3/4 in becomes 3 AWG on 100 A and 1 in")
+typed = gen.upgrade({"old": "other", "old_kw": "7", "old_breaker": "30", "new": "generac-22", "fuel": "lp"})
+check(typed["old"]["breaker"] == 30 and typed["old"]["lp_cfh"] == round(7 * gen.LP_CFH_PER_KW) and typed["wire_old"]["size"] == "10", "a unit not on the list is typed in")
+check(any("typed in" in t and "estimated" in t for _, t in typed["notes"]), "and the page says its fuel use is an estimate until typed")
+check(gen.upgrade({"old": "other", "old_kw": "12", "old_cfh": "190", "new": "generac-22"})["old"]["ng_cfh"] == 190, "a typed fuel figure is used as typed")
+check(gen.upgrade({"old": "other", "old_kw": "9"})["old"]["breaker"] == 40, "no breaker typed: the next standard size above its current")
+
 # 4. the page, the sidebar
 with app.app_context():
     person = m.Client(first_name="Pat", last_name="Reyes"); db.session.add(person); db.session.flush()
@@ -62,6 +76,9 @@ check(all(x in website for x in ("Settings</a>", "Bug Reports</a>", "Releases</a
 query = "calculate=1&old=generac-20-7039&new=kohler-26rca&fuel=ng&wire_feet=30&gas_feet=50&existing_pipe=3/4"
 page = owner.get("/generators/upgrade?" + query).get_data(as_text=True)
 check("Side by side" in page and "125 A" in page and "1-1/4 in" in page, "the comparison shows the new breaker and pipe")
+check('value="generac-7-5240"' in page and "Guardian 7 kW" in page and 'value="other"' in page, "the 7 kW and 'Not on the list' are in both menus")
+page7 = owner.get("/generators/upgrade?calculate=1&old=other&old_kw=7&old_breaker=30&new=generac-22").get_data(as_text=True)
+check("generator, 7 kW (typed in)" in page7 and 'name="old_kw" value="7"' in page7 and 'id="up-new-other" hidden' in page7, "a typed-in unit works on the page and keeps its numbers")
 check("Pricing Sheet: 2 AWG THHN copper wire" in page and "#2/0" not in page.split("Estimate")[1], "2 AWG wire is priced from the sheet (2/0 is not mistaken for it)")
 check("Pricing Sheet: 1-1/4 in black iron gas pipe" in page and "Pricing Sheet: Kohler 26RCA generator" in page, "the pipe (not a fitting) and the generator too")
 check("needs a price" in page and "New Kohler automatic transfer switch" in page, "what has no price is marked")
