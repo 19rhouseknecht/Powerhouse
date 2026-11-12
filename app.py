@@ -20,7 +20,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
-    login_required, current_user,
+    login_required, current_user, login_url,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
@@ -1245,6 +1245,45 @@ def check_csrf():
 
 
 app.jinja_env.globals["csrf_token"] = get_csrf_token
+
+
+# A page's fetch() asks for JSON. When it gets the login page or an error page instead, the button can only say
+# 'Unexpected token "<"'. So a request that asks for JSON is always answered in JSON, with the reason in words.
+def wants_json():
+    return request.accept_mimetypes.best == "application/json" or request.headers.get("X-Requested-With") == "fetch"
+
+
+@login_manager.unauthorized_handler
+def json_aware_unauthorized():
+    if wants_json():
+        return jsonify({"error": "You were signed out. Refresh the page, sign in, and try again.", "signed_out": True}), 401
+    flash(login_manager.login_message, "message")                 # what Flask-Login does by itself
+    return redirect(login_url(login_manager.login_view, request.url))
+
+
+@app.errorhandler(400)
+@app.errorhandler(403)
+@app.errorhandler(404)
+@app.errorhandler(405)
+def json_aware_http_error(error):
+    if wants_json():
+        message = {400: "This page is out of date (your session expired). Refresh the page and try again.",
+                   403: "Your role does not allow this.", 404: "That record no longer exists. Refresh the page.",
+                   405: "The site could not take that request. Refresh the page and try again."}[error.code]
+        return jsonify({"error": message}), error.code
+    return error
+
+
+@app.errorhandler(500)
+def json_aware_server_error(error):
+    original = getattr(error, "original_exception", None) or error
+    try:
+        db.session.rollback()
+    except Exception:  # noqa: BLE001
+        pass
+    if wants_json():
+        return jsonify({"error": "The site hit an error (%s). Try again; if it keeps happening, report it from Bug Reports." % original.__class__.__name__}), 500
+    return error
 
 
 # ---------------- Local Cooper updater API ----------------

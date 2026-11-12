@@ -125,6 +125,16 @@ document.addEventListener("DOMContentLoaded", () => {
   if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
   const formatDuration = seconds => { seconds = Math.max(Math.floor(seconds), 0); const h = Math.floor(seconds / 3600); const m = Math.floor((seconds % 3600) / 60); const s = seconds % 60; return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`; };
   document.querySelectorAll(".live-timer[data-start]").forEach(timer => { const start = new Date(`${timer.dataset.start}Z`); const update = () => { timer.textContent = formatDuration((Date.now() - start.getTime()) / 1000); }; update(); setInterval(update, 1000); });
+  // Read a fetch() reply as JSON; when the site sent a page instead (signed out, an old page, an error), say so in words.
+  const readJson = async response => {
+    const text = await response.text();
+    try { return JSON.parse(text); } catch (error) {
+      if (response.redirected && /\/login/.test(response.url)) return {error: "You were signed out. Refresh the page, sign in, and try again."};
+      if (response.status === 400) return {error: "This page is out of date. Refresh the page and try again."};
+      if (response.status >= 500) return {error: `The site hit an error (${response.status}). Try again in a minute; the site may have been updating.`};
+      return {error: `The site sent back a page instead of an answer (${response.status}). Refresh the page and try again.`};
+    }
+  };
   const cooperForms = document.querySelectorAll("[data-cooper-sync-form]");
   const cooperBot = document.querySelector("[data-cooper-bot]");
   let cooperPoll = null;
@@ -137,8 +147,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const poll = async () => {
       try {
         const response = await fetch(statusUrl, {headers:{"Accept":"application/json"}});
-        if (!response.ok) throw new Error(`Status request failed (${response.status})`);
-        const data = await response.json();
+        const data = await readJson(response);
+        if (!response.ok || data.error && !data.status) throw new Error(data.error || `Status request failed (${response.status})`);
         const percent = data.total ? Math.round((data.current / data.total) * 100) : (data.status === "complete" ? 100 : 4);
         progress.style.width = `${Math.max(4, percent)}%`;
         log.replaceChildren(...data.logs.map(message => { const line = document.createElement("p"); line.textContent = message; return line; }));
@@ -153,14 +163,14 @@ document.addEventListener("DOMContentLoaded", () => {
   };
   cooperForms.forEach(cooperForm => cooperForm.addEventListener("submit", async event => {
     event.preventDefault();
-    const button = cooperForm.querySelector("button"); button.disabled = true; button.textContent = "Starting Cooper…";
+    const button = cooperForm.querySelector("button"), label = button.textContent; button.disabled = true; button.textContent = "Starting Cooper…";
     try {
       const response = await fetch(cooperForm.action, {method:"POST", body:new FormData(cooperForm), headers:{"Accept":"application/json"}});
-      const data = await response.json();
-      if (!response.ok && response.status !== 409) throw new Error(data.error || `Could not start (${response.status})`);
+      const data = await readJson(response);
+      if (!data.status_url || (!response.ok && response.status !== 409)) throw new Error(data.error || `Could not start (${response.status})`);
       showCooperBot(data.status_url); button.textContent = response.status === 409 ? "Update already in progress" : "Price check queued";
     } catch (error) {
-      button.disabled = false; button.textContent = "Check Cooper prices"; alert(`Cooper price check could not start: ${error.message}`);
+      button.disabled = false; button.textContent = label; alert(`Cooper could not start: ${error.message}`);
     }
   }));
   if (cooperBot) {
