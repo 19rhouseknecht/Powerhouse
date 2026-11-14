@@ -2,7 +2,7 @@
 {% block title %}Material Order — Job #{{ job.job_number }}{% endblock %}
 {% block content %}
 <div class="breadcrumb"><a href="{{ url_for('jobs') }}">Jobs</a><span>/</span><a href="{{ url_for('job_detail', job_id=job.id) }}">Job #{{ job.job_number }}</a><span>/</span>Material order</div>
-<div class="page-heading heading-actions material-order-heading"><div><span class="eyebrow">Job #{{ job.job_number }} · PO {{ job.purchase_order }}</span><h1>Order the materials</h1><p>{{ job.client.full_name }} · {{ order.quote_option.tier if order.quote_option else 'Selected option' }}{% if order.quote_option %} — {{ order.quote_option.title }}{% endif %}</p></div><div class="material-order-total"><small>Estimated materials</small><strong>${{ '{:,.2f}'.format(order.material_total) }}</strong><span>{{ order.items|length }} line item{{ '' if order.items|length == 1 else 's' }}</span></div></div>
+<div class="page-heading heading-actions material-order-heading"><div><span class="eyebrow">Job #{{ job.job_number }} · PO {{ job.purchase_order }}</span><h1>Order the materials</h1><p>{{ job.client.full_name }} · {{ order.quote_option.tier if order.quote_option else 'Selected option' }}{% if order.quote_option %} — {{ order.quote_option.title }}{% endif %}</p></div><div class="material-order-total"><small>Estimated materials</small><strong data-order-total>${{ '{:,.2f}'.format(order.material_total) }}</strong><span>{{ order.items|length }} line item{{ '' if order.items|length == 1 else 's' }}</span></div></div>
 <div class="material-order-notice"><span>↳</span><div><strong>This is a job-specific copy</strong><p>Quantity, item, and pricing changes here do not alter the original Service, Pricing Sheet, or confirmed quote.</p></div></div>
 {% set cart_words = {'queued': 'Waiting for the office listener', 'running': 'The office listener is filling the Cooper cart', 'saved': 'In the Cooper cart, saved', 'partial': 'Saved in the Cooper cart, with items to check', 'not_saved': 'Items added, but the cart was not saved', 'failed': 'The Cooper cart was not filled'} %}
 {% if order.cart_status %}<section class="panel section-panel cooper-cart-panel cart-{{ order.cart_status }}" id="cooper-cart" data-cart-status="{{ order.cart_status }}" {% if order.cart_status in ('queued', 'running') and order.cart_batch_id %}data-cart-poll="{{ url_for('cooper_sync_status', batch_id=order.cart_batch_id) }}"{% endif %}>
@@ -12,14 +12,36 @@
     {% for row in order.cart_results %}<tr class="cart-row-{{ row.status }}"><td>{{ row.name }}</td><td>{{ row.part_number }}</td><td>{{ '%g'|format(row.quantity) }} {{ row.unit }}{% if row.added_quantity and row.added_quantity != row.quantity %}<small>{{ row.added_quantity }} added at Cooper</small>{% endif %}</td><td>{{ {'added': 'Added', 'waiting': 'Waiting', 'error': 'Not added'}.get(row.status, row.status) }}{% if row.message %}<small>{{ row.message }}</small>{% endif %}</td></tr>{% endfor %}
   </tbody></table></div>{% endif %}
 </section>{% endif %}
-<form method="POST" action="{{ url_for('update_job_material_order', job_id=job.id) }}" class="panel material-order-form">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  {% if order.items %}<div class="item-table-wrap"><table class="item-table material-order-table"><thead><tr><th>Material</th><th>Source</th><th>Quantity</th><th>Unit</th><th>Unit price</th><th>Supplier / Part #</th><th>Notes</th><th>Remove</th></tr></thead><tbody>
-  {% for item in order.items %}<tr><td><input type="hidden" name="item_id[]" value="{{ item.id }}"><input name="item_name[]" value="{{ item.name }}" required>{% if item.price_item_id %}<small>Pricing Sheet item #{{ item.price_item_id }}</small>{% else %}<small>Job-only item</small>{% endif %}</td><td><span class="material-source">{{ item.source_services or 'Added manually' }}</span></td><td><input type="number" min="0.01" step="0.01" name="item_quantity[]" value="{{ '%g'|format(item.quantity) }}" required></td><td><select name="item_unit[]">{% for value, label in [('ea','each'),('ft','foot'),('roll','roll'),('box','box'),('lb','pound'),('job','job')] %}<option value="{{ value }}" {{ 'selected' if item.unit == value }}>{{ label }}</option>{% endfor %}</select></td><td><div class="money-input"><span>$</span><input type="number" min="0" step="0.01" name="item_unit_price[]" value="{{ '%.2f'|format(item.unit_price) }}"></div><small>${{ '{:,.2f}'.format(item.total) }} total</small></td><td><div class="supplier-part-list"><input name="item_supplier[]" value="{{ item.supplier }}" placeholder="Supplier"><input name="item_part_number[]" value="{{ item.part_number }}" placeholder="Part #"></div></td><td><input name="item_notes[]" value="{{ item.notes }}" placeholder="Order note"></td><td class="material-remove"><label><input type="checkbox" name="remove_item_id[]" value="{{ item.id }}"><span>×</span></label></td></tr>{% endfor %}
-  </tbody></table></div><div class="material-order-save"><span>Save after changing quantities, prices, notes, or removals.</span><button class="btn btn-primary">Save order changes</button></div>{% else %}<div class="empty-state compact"><span>□</span><h2>No materials yet</h2><p>Add a Pricing Sheet or job-only item below.</p></div>{% endif %}
-</form>
-<details class="panel add-price-panel material-order-add" open><summary>＋ Add another material</summary><form method="POST" action="{{ url_for('add_job_material_order_item', job_id=job.id) }}" class="material-add-form" id="material-add-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="price_item_id" id="material-price-item-id"><label class="wide">Material<input name="name" id="material-name" list="material-catalog" required placeholder="Search Pricing Sheet or enter a job-only item" autocomplete="off"></label><label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" value="1" required></label><label>Unit<select name="unit" id="material-unit"><option value="ea">each</option><option value="ft">foot</option><option value="roll">roll</option><option value="box">box</option><option value="lb">pound</option><option value="job">job</option></select></label><label>Unit price<input type="number" name="unit_price" id="material-price" min="0" step="0.01" value="0.00" required></label><label>Supplier<input name="supplier" id="material-supplier" placeholder="Optional"></label><label>Part #<input name="part_number" id="material-part-number" placeholder="Optional"></label><label class="wide">Notes<input name="notes" placeholder="Optional order note"></label><button class="btn btn-primary">Add material</button></form></details>
-<datalist id="material-catalog">{% for item in pricing_items %}<option value="{{ item.name }}"></option>{% endfor %}</datalist>
+<section class="panel material-list" id="materials">
+  <div class="section-title"><div><span class="eyebrow">What will be ordered</span><h2>{{ order.items|length }} material{{ 's' if order.items|length != 1 }} · <span data-order-total>${{ '{:,.2f}'.format(order.material_total) }}</span></h2><p class="muted">Change a quantity and it saves. Remove takes an item off at once. Add more below.</p></div></div>
+  <input type="hidden" id="material-csrf" value="{{ csrf_token() }}">
+  {% for item in order.items %}<article class="material-row {{ 'material-in-cart' if item.id in cart_line_ids else 'material-not-cart' }}" id="material-{{ item.id }}">
+    <div class="material-thumb">{% if item.price_item and item.price_item.image_path %}<img src="{{ url_for('static', filename=item.price_item.image_path) }}" alt="" loading="lazy">{% else %}<span aria-hidden="true">▢</span>{% endif %}</div>
+    <div class="material-what">
+      <strong>{{ item.name }}</strong>
+      <small>{% if item.id in cart_line_ids %}<span class="material-cart-yes">Cooper #{{ cart_line_ids[item.id] }} · goes in the Cooper cart</span>{% else %}<span class="material-cart-no">Not in the Cooper cart: no Cooper part number</span>{% endif %}{% if item.source_services %} · for {{ item.source_services }}{% endif %}</small>
+    </div>
+    <form method="POST" action="{{ url_for('set_job_material_order_quantity', job_id=job.id, item_id=item.id) }}" class="material-qty" data-qty-form>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label><span class="sr-only">Quantity of {{ item.name }}</span><input type="number" name="quantity" value="{{ '%g'|format(item.quantity) }}" min="0.01" step="any" inputmode="decimal" required></label>
+      <span class="material-unit">{{ item.unit }}</span>
+      <button class="btn btn-small btn-secondary" data-qty-save>Update</button>
+      <small class="material-saved" data-qty-status aria-live="polite"></small>
+    </form>
+    <div class="material-cost"><strong data-row-total>${{ '{:,.2f}'.format(item.total) }}</strong><small>${{ '{:,.2f}'.format(item.unit_price) }} / {{ item.unit }}</small></div>
+    <form method="POST" action="{{ url_for('remove_job_material_order_item', job_id=job.id, item_id=item.id) }}" class="material-remove">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-small btn-danger" aria-label="Remove {{ item.name }}">Remove</button>
+    </form>
+  </article>{% else %}<div class="empty-state compact"><span>□</span><h2>Nothing to order yet</h2><p>Add materials from the Pricing Sheet below.</p></div>{% endfor %}
+</section>
+<section class="panel material-add" id="add-material">
+  <span class="eyebrow">Add materials</span>
+  <div class="sheet-search material-search">
+    <input type="search" placeholder="Search the Pricing Sheet (name, Cooper part number)…" aria-label="Search the Pricing Sheet to add a material" data-material-find="{{ url_for('find_pricing_items', items=1) }}" data-material-add="{{ url_for('add_job_material_order_item', job_id=job.id) }}" autocomplete="off">
+    <div class="sheet-results" data-material-results></div>
+  </div>
+  <p class="muted material-add-note">Everything ordered comes from the Pricing Sheet, so it carries its Cooper part number and price. <a href="{{ url_for('pricing_sheet', add='', next=request.path ~ '#add-material') }}#add-item">Not on the Pricing Sheet? Add it there ↗</a></p>
+</section>
 <div class="material-cart-actions"><a class="btn btn-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Back to job</a>
   <div class="cart-send"><small>{% if cart_lines %}{{ cart_lines|length }} item{{ 's' if cart_lines|length != 1 }} with a Cooper part number go in the cart, saved as <strong>{{ next_cart_name }}</strong>.{% if cart_left_out %} Left out (no Cooper part number): {{ cart_left_out|map(attribute='name')|join(', ') }}.{% endif %}{% else %}None of these materials has a Cooper part number.{% endif %}</small>
   <form method="POST" action="{{ url_for('add_job_material_order_to_cart', job_id=job.id) }}" onsubmit="return window.confirm('The office listener will add {{ cart_lines|length }} item(s) to the Cooper cart at their quantities and save the cart as {{ next_cart_name }}. Go ahead?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if not cart_lines or order.cart_status in ('queued', 'running') }}>{{ 'Add all items to the Cooper cart again' if order.cart_status in ('saved', 'partial', 'not_saved') else 'Add all items to the Cooper cart' }}</button></form></div></div>
@@ -36,28 +58,59 @@
   }, 2000);
 })();
 </script>
-<script id="material-catalog-data" type="application/json">{{ pricing_items|map_price_items|tojson }}</script>
 <script>
-document.addEventListener('DOMContentLoaded', () => {
-  const catalog = JSON.parse(document.getElementById('material-catalog-data').textContent || '[]');
-  const name = document.getElementById('material-name');
-  const id = document.getElementById('material-price-item-id');
-  const unit = document.getElementById('material-unit');
-  const price = document.getElementById('material-price');
-  const supplier = document.getElementById('material-supplier');
-  const part = document.getElementById('material-part-number');
-  const selectMatch = () => {
-    const match = catalog.find(item => item.name.toLowerCase() === name.value.trim().toLowerCase());
-    id.value = match ? match.id : '';
-    if (!match) return;
-    unit.value = match.unit;
-    price.value = Number(match.price || 0).toFixed(2);
-    const preferred = match.supplier_parts.find(row => row.supplier.toLowerCase().includes('cooper')) || match.supplier_parts[0];
-    supplier.value = preferred ? preferred.supplier : '';
-    part.value = preferred ? preferred.part_number : '';
-  };
-  name.addEventListener('input', selectMatch);
-  name.addEventListener('change', selectMatch);
-});
+(function () {           /* quantities save as they are typed */
+  document.querySelectorAll('[data-qty-form]').forEach(function (form) {
+    var input = form.querySelector('input[name="quantity"]'), status = form.querySelector('[data-qty-status]'), timer = null;
+    var row = form.closest('.material-row');
+    form.querySelector('[data-qty-save]').hidden = true;
+    function save() {
+      if (!(Number(input.value) > 0)) { status.textContent = 'More than 0, or Remove'; return; }
+      status.textContent = 'Saving…';
+      fetch(form.action, {method: 'POST', body: new FormData(form), headers: {'X-Requested-With': 'fetch'}})
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) { status.textContent = data.error || 'Not saved'; return; }
+          status.textContent = 'Saved';
+          row.querySelector('[data-row-total]').textContent = '$' + data.total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+          document.querySelectorAll('[data-order-total]').forEach(function (el) { el.textContent = '$' + data.order_total.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}); });
+        })
+        .catch(function () { status.textContent = 'Not saved: check the connection'; });
+    }
+    input.addEventListener('input', function () { clearTimeout(timer); status.textContent = ''; timer = setTimeout(save, 600); });
+    form.addEventListener('submit', function (e) { e.preventDefault(); clearTimeout(timer); save(); });
+  });
+})();
+(function () {           /* add from the Pricing Sheet: search, quantity, Add */
+  var input = document.querySelector('[data-material-find]');
+  if (!input) return;
+  var out = document.querySelector('[data-material-results]'), token = document.getElementById('material-csrf').value, timer = null;
+  input.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+  input.addEventListener('input', function () {
+    clearTimeout(timer);
+    var q = input.value.trim();
+    if (q.length < 2) { out.replaceChildren(); return; }
+    timer = setTimeout(function () {
+      fetch(input.getAttribute('data-material-find') + '&q=' + encodeURIComponent(q), {headers: {'Accept': 'application/json'}})
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          out.replaceChildren();
+          if (!data.results || !data.results.length) { var none = document.createElement('small'); none.className = 'muted'; none.textContent = 'Nothing on the Pricing Sheet matches. Add it there first, then add it here.'; out.append(none); return; }
+          data.results.forEach(function (r) {
+            var form = document.createElement('form'); form.method = 'POST'; form.action = input.getAttribute('data-material-add'); form.className = 'sheet-pick material-pick';
+            var words = document.createElement('span'), name = document.createElement('b'); name.textContent = r.name;
+            words.append(name, document.createTextNode(' · $' + Number(r.price).toFixed(2) + ' / ' + r.unit + (r.part ? ' · Cooper #' + r.part : ' · no Cooper part number')));
+            var fields = document.createElement('span'); fields.className = 'material-pick-fields';
+            [['csrf_token', token], ['price_item_id', r.id], ['name', r.name], ['unit_price', r.price]].forEach(function (pair) { var h = document.createElement('input'); h.type = 'hidden'; h.name = pair[0]; h.value = pair[1]; fields.append(h); });
+            var qty = document.createElement('input'); qty.type = 'number'; qty.name = 'quantity'; qty.value = '1'; qty.min = '0.01'; qty.step = 'any'; qty.setAttribute('aria-label', 'Quantity of ' + r.name);
+            var unit = document.createElement('small'); unit.textContent = r.unit;
+            var add = document.createElement('button'); add.className = 'btn btn-small btn-primary'; add.textContent = 'Add';
+            fields.append(qty, unit, add);
+            form.append(words, fields); out.append(form);
+          });
+        });
+    }, 250);
+  });
+})();
 </script>
 {% endblock %}

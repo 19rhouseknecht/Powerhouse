@@ -1585,9 +1585,9 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "find_pricing_items":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
-        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "schedule":"view_schedule",
+        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
         "finance_dashboard":"view_finance", "expenses":"view_expenses", "create_expense":"view_expenses", "expense_receipt":"view_expenses",
         "onsite_checklist":"view_sales", "onsite_checklist_job":"view_sales", "save_onsite_checklist":"view_sales", "refresh_inspection_tip":"view_sales", "inspection_photo":"view_sales", "delete_inspection_photo":"view_sales", "sales_reviews":"view_sales",
@@ -2869,16 +2869,17 @@ def use_service_for_missing(quote, key, service):
 def find_pricing_items():
     """Pricing Sheet items (Unconfirmed included) and Services matching what was typed, for matching an item on a quote."""
     words = [w for w in re.split(r"\s+", request.args.get("q", "").strip()) if w][:6]
-    if not words or not current_user.can("view_quoting"):
+    if not words or not (current_user.can("view_quoting") or current_user.can("view_jobs")):
         return jsonify({"results": []})
+    only_items = request.args.get("items") == "1" or not current_user.can("view_quoting")      # a job's materials: Pricing Sheet items only
     items = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
     services = Service.query
     for word in words:
         like = f"%{word}%"
         items = items.filter(db.or_(PriceItem.name.ilike(like), PriceItem.cooper_part_number.ilike(like), PriceItem.category.ilike(like)))
         services = services.filter(db.or_(Service.name.ilike(like), Service.category.ilike(like)))
-    found = [{"id": f"s{s.id}", "name": s.name, "kind": "Service", "price": round(s.example_total, 2), "unit": s.example_quantity}
-             for s in services.order_by(Service.name).limit(5).all()]
+    found = [] if only_items else [{"id": f"s{s.id}", "name": s.name, "kind": "Service", "price": round(s.example_total, 2), "unit": s.example_quantity}
+                                   for s in services.order_by(Service.name).limit(5).all()]
     found += [{"id": str(i.id), "name": i.name, "kind": "Pricing Sheet" + (" (Unconfirmed)" if i.category == UNCONFIRMED else ""),
                "price": round(i.price, 2), "unit": i.unit, "part": i.cooper_part_number}
               for i in items.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(20).all()]
@@ -3495,8 +3496,8 @@ def job_material_order(job_id):
     sync_cart_state(order)
     lines, left_out = cooper_cart_lines(order)
     run = PriceSyncRun.query.filter_by(batch_id=order.cart_batch_id).first() if order.cart_batch_id else None
-    return render_template("job_material_order.html", job=job, order=order, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(),
-                           cart_lines=lines, cart_left_out=left_out, next_cart_name=cart_name_for(job), cart_run=run)
+    return render_template("job_material_order.html", job=job, order=order, cart_lines=lines, cart_left_out=left_out, next_cart_name=cart_name_for(job),
+                           cart_run=run, cart_line_ids={line["order_item_id"]: line["part_number"] for line in lines})
 
 
 def sync_cart_state(order):
@@ -3591,6 +3592,13 @@ def add_job_material_order_item(job_id):
         unit = price_item.unit
         unit_price = price_item.price
         supplier, part_number = preferred_supplier_snapshot(price_item)
+        same = next((row for row in order.items if row.price_item_id == price_item.id), None)
+        if same:                                  # already on the list: more of it, not a second line
+            same.quantity = round((same.quantity or 0) + quantity, 3)
+            material_list_changed(order)
+            db.session.commit()
+            flash(f'"{name}" was already on the list: it is now {same.quantity:g} {same.unit}.', "success")
+            return redirect(url_for("job_material_order", job_id=job.id) + f"#material-{same.id}")
     else:
         unit = request.form.get("unit", "ea").strip() or "ea"
     order.items.append(JobMaterialOrderItem(
@@ -3605,11 +3613,68 @@ def add_job_material_order_item(job_id):
         notes=request.form.get("notes", "").strip(),
         position=len(order.items),
     ))
+    material_list_changed(order)
+    db.session.commit()
+    flash(f'Added {quantity:g} {unit} of "{name}" to the order.', "success")
+    return redirect(url_for("job_material_order", job_id=job.id) + "#materials")
+
+
+def material_list_changed(order):
+    """The list changed: it is a draft again, and a cart already sent to Cooper no longer matches it (and says so)."""
     order.status = "draft"
     order.cart_ready_at = None
+    if order.cart_status in ("saved", "partial", "not_saved"):
+        order.cart_message = "The list changed after it went to the Cooper cart. Add all items to the Cooper cart again to update it."
+
+
+def _order_item(job_id, item_id):
+    job = db.get_or_404(Job, job_id)
+    order = job.material_order
+    item = db.session.get(JobMaterialOrderItem, item_id)
+    if not order or item is None or item.order_id != order.id:
+        abort(404)
+    return job, order, item
+
+
+@app.route("/jobs/<int:job_id>/materials/items/<int:item_id>/remove", methods=["POST"])
+@login_required
+def remove_job_material_order_item(job_id, item_id):
+    """Take one material off the order, at once."""
+    check_csrf()
+    job, order, item = _order_item(job_id, item_id)
+    name = item.name
+    order.items.remove(item)
+    for position, row in enumerate(order.items):
+        row.position = position
+    material_list_changed(order)
     db.session.commit()
-    flash(f'Added "{name}" to the job order.', "success")
-    return redirect(url_for("job_material_order", job_id=job.id))
+    flash(f'Removed "{name}" from the order.', "success")
+    return redirect(url_for("job_material_order", job_id=job.id) + "#materials")
+
+
+@app.route("/jobs/<int:job_id>/materials/items/<int:item_id>/quantity", methods=["POST"])
+@login_required
+def set_job_material_order_quantity(job_id, item_id):
+    """Change one material's quantity (saved as it is typed on the page)."""
+    check_csrf()
+    job, order, item = _order_item(job_id, item_id)
+    try:
+        quantity = round(float(request.form.get("quantity", "")), 3)
+    except ValueError:
+        quantity = 0
+    wants_json = request.headers.get("X-Requested-With") == "fetch"
+    if quantity <= 0:
+        if wants_json:
+            return jsonify({"ok": False, "error": "The quantity must be more than zero (use Remove to take it off)."}), 400
+        flash("The quantity must be more than zero; use Remove to take an item off.", "error")
+        return redirect(url_for("job_material_order", job_id=job.id) + "#materials")
+    if quantity != item.quantity:
+        item.quantity = quantity
+        material_list_changed(order)
+        db.session.commit()
+    if wants_json:
+        return jsonify({"ok": True, "quantity": quantity, "total": round(item.total, 2), "order_total": round(order.material_total, 2)})
+    return redirect(url_for("job_material_order", job_id=job.id) + f"#material-{item.id}")
 
 
 @app.route("/jobs/<int:job_id>/materials/add-to-cart", methods=["POST"])
