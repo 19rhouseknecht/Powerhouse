@@ -141,9 +141,15 @@ def search():
     try:
         time.sleep(0.4)                                  # a slow page, so parallel tabs show
         q = request.args.get("q", "")
+        if q == "DIRECT1":                               # an exact part number: Cooper goes straight to the product's page
+            return redirect("/product/direct-1-wire-nut")
+        if q == "NOTHING1":
+            return HEAD % "<h2>No products were found matching NOTHING1</h2>"
+        if q == "BLANK1":
+            return HEAD % "<div>Loading…</div>"
         cards = []
         for part, (name, price, uom) in PRODUCTS.items():
-            if part.startswith(q[:3]):
+            if part.startswith(q.upper().replace("-", "")[:3]):
                 priced = request.cookies.get("auth")
                 cards.append(f"""<div class="product productCard" data-product-id="{part}"><img data-src="/img/{part}.png" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
                 <span data-analytics-description="{name}">{name}</span><span class="pricerPerQty" data-price="{price if priced else ''}"></span><small class="priceUOM">{uom}</small></div>""")
@@ -153,6 +159,14 @@ def search():
     finally:
         with LOCK:
             HITS["inflight"] -= 1
+
+
+@cooper.route("/product/direct-1-wire-nut")
+def product_page():
+    priced = request.cookies.get("auth")
+    return HEAD % f"""<meta property="og:image" content="/img/DIRECT1.png"><h1>Yellow wire nut, box of 100</h1>
+    <div class="productDetail" data-product-id="DIRECT1"><span class="pricePerQty" data-price="{'12.50' if priced else ''}"></span><small class="priceUOM">(100 ea)</small></div>
+    <script>setTimeout(() => document.querySelectorAll('.pricePerQty').forEach(e => e.setAttribute('data-analytics-price', e.dataset.price)), 300)</script>"""
 
 
 @cooper.route("/img/<part>.png")
@@ -173,6 +187,7 @@ if os.environ.get("PW_CHROMIUM"):
     os.environ["COOPER_BROWSER_PATH"] = os.environ["PW_CHROMIUM"]
 spec = importlib.util.spec_from_file_location("cooper_price_listener", os.path.join(ROOT, "tools", "cooper_price_listener.py"))
 listener = importlib.util.module_from_spec(spec); spec.loader.exec_module(listener)
+listener.DEBUG_DIRECTORY = __import__("pathlib").Path(tempfile.mkdtemp(prefix="cooper-debug-"))
 listener.PROFILE_DIRECTORY = __import__("pathlib").Path(tempfile.mkdtemp(prefix="cooper-profile-"))
 check(listener.parse_source_quantity_and_unit("(250 ft)") == (250.0, "ft") and listener.parse_source_quantity_and_unit("/ea") == (1.0, "ea"), "package sizes are read as before")
 check(listener.picture_url({"src": "data:x", "data-src": "/img/a.png"}, "https://cooper.test/search") == "https://cooper.test/img/a.png", "a lazy-loaded picture's real address is found")
@@ -195,13 +210,25 @@ check([r["part_number"] for r in results] == [w["part_number"] for w in wanted],
 panel = results[0]
 check(panel["status"] == "matched" and panel["source_price"] == 389.0 and panel["source_unit"] == "ea", "a price is read off the card once it appears")
 check(results[1]["source_quantity"] == 250 and results[1]["source_unit"] == "ft", "and the package size (250 ft)")
-check(results[3]["status"] == "error" and "No exact product ID match" in results[3]["error"], "a part Cooper does not list is an error for that item only")
+check(results[3]["status"] == "error" and "no exact match for ZZZ999" in results[3]["error"], "a part Cooper does not list is an error for that item only")
 check(sorted(progress) == list(range(1, 9)), "progress is reported after every item")
 check(HITS["login_posts"] == 1, "it signed in once")
 check(HITS["max_inflight"] >= 2, "tabs really scan at the same time (%d at once)" % HITS["max_inflight"])
 check(sorted(pictures) == sorted(["QO130L200PG", "122NMB250", "GF20W"] * 2) and HITS["pictures"] == 6, "each product picture is fetched once and sent; pages never load pictures themselves (%d fetched)" % HITS["pictures"])
 check(took < 8 * 0.9 + 6, "8 items took %.1fs (one tab with the old slow-down would take far longer)" % took)
 
+listener.FIND_WAIT_SECONDS = 3
+odd = [{"id": 11, "name": "Wire nut", "part_number": "DIRECT1"}, {"id": 12, "name": "Nothing", "part_number": "NOTHING1"},
+       {"id": 13, "name": "Never loads", "part_number": "BLANK1"}, {"id": 14, "name": "GFCI", "part_number": "gf-20w"}]
+results = asyncio.run(listener.scan_all_items(odd, {"cooper_username": "office", "cooper_password": "secret"}, tabs=2, headless=True))
+direct = results[0]
+check(direct["status"] == "matched" and direct["source_price"] == 12.5 and direct["source_quantity"] == 100 and direct["name"] == "Yellow wire nut, box of 100",
+      "when Cooper goes straight to the product's page, the price, package and name are read there")
+check(direct["image_url"].endswith("/img/DIRECT1.png") and "/product/direct-1-wire-nut" in direct["product_url"], "with its picture and its page")
+check(results[1]["status"] == "error" and "found nothing for NOTHING1" in results[1]["error"], "Cooper's \"no results\" is said plainly, not as a timeout")
+check(results[2]["status"] == "error" and "neither results nor a product" in results[2]["error"] and "Timeout" not in results[2]["error"],
+      "a page that never shows either is said plainly, and a copy is kept")
+check(results[3]["status"] == "matched" and results[3]["source_price"] == 21.15, "a part number typed with a dash or in lower case still matches")
 results = asyncio.run(listener.scan_all_items(wanted[:1], {"cooper_username": "office", "cooper_password": "secret"}, tabs=1, headless=True))
 check(results[0]["status"] == "matched" and HITS["login_posts"] == 1, "the next run reuses the saved login instead of signing in again")
 cooper_server.shutdown()

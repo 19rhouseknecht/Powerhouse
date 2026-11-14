@@ -19,3 +19,6 @@ static/uploads/
 Thumbs.db
 .vscode/
 .idea/
+
+# the Cooper listener's copies of pages it could not read (office computer)
+tools/catalog_debug/

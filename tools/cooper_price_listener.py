@@ -48,7 +48,7 @@ import time
 import traceback
 from getpass import getpass
 
-LISTENER_VERSION = "2.9"
+LISTENER_VERSION = "2.10"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -487,34 +487,82 @@ async def login_to_cooper(page, config: dict) -> None:
     log("Signed in. Account pricing is available.")
 
 
-async def scan_item(page, item: dict, label: str) -> dict:
-    part_number = str(item["part_number"]).strip()
+SEARCH_CARDS = "#productSearchResults div.product.productCard"
+NO_RESULTS = re.compile(r"(no|0)\s+(products?|results?|items?|matches)\s+(were\s+)?(found|match)|did not match any|no results for|we couldn.t find", re.IGNORECASE)
+FIND_WAIT_SECONDS = 45
+FIND_DEBUG_LIMIT = 3
+
+
+def same_part(a: str, b: str) -> bool:
+    """Cooper's id and ours name the same part when they match ignoring case, spaces and dashes."""
+    squash = lambda t: re.sub(r"[^0-9a-z]", "", str(t or "").casefold())  # noqa: E731
+    return bool(squash(a)) and squash(a) == squash(b)
+
+
+async def find_product(page, part_number: str):
+    """Search Cooper for a part number. Cooper answers in one of three ways: a list of results, the product's own page
+    (an exact part number often goes straight there), or "no results". Returns (where, locator): ('card', the exact
+    result card), ('page', the product page's main block) or ('none', None). Anything else after FIND_WAIT_SECONDS is
+    saved to catalog_debug/ and raised in plain words."""
     await page.goto(f"{COOPER_HOME.rstrip('/')}/product/search?q={quote_plus(part_number)}", wait_until="domcontentloaded", timeout=60_000)
     await wait_for_verification(page)
     await accept_cookies(page)
+    cards = page.locator(SEARCH_CARDS)
+    deadline = time.monotonic() + FIND_WAIT_SECONDS
+    while True:
+        count = await cards.count()
+        if count:
+            returned = []
+            for index in range(count):
+                candidate = cards.nth(index)
+                candidate_id = ((await candidate.get_attribute("data-product-id")) or "").strip()
+                returned.append(candidate_id)
+                if same_part(candidate_id, part_number):
+                    return "card", candidate
+            raise RuntimeError(f"Cooper has no exact match for {part_number}. Its search returned {[r for r in returned if r][:10]}.")
+        if "/search" not in page.url.lower():                      # Cooper went straight to the product's page
+            exact = page.locator(f'[data-product-id="{part_number}" i]').first
+            if await exact.count():
+                return "page", exact
+            if await page.locator("[data-analytics-price], span.pricerPerQty, span.pricePerQty, [itemprop=price]").count():
+                return "page", page.locator("body")
+        try:
+            words = await page.locator("body").inner_text(timeout=2_000)
+        except Exception:  # noqa: BLE001
+            words = ""
+        if NO_RESULTS.search(words or ""):
+            return "none", None
+        if time.monotonic() >= deadline:
+            global FIND_DEBUG_LIMIT
+            if FIND_DEBUG_LIMIT > 0:
+                FIND_DEBUG_LIMIT -= 1
+                DEBUG_DIRECTORY.mkdir(exist_ok=True)
+                (DEBUG_DIRECTORY / f"search-{re.sub(r'[^0-9A-Za-z_-]', '_', part_number)[:40]}.html").write_text(await page.content(), encoding="utf-8")
+            raise RuntimeError(f"Cooper's page for {part_number} showed neither results nor a product after {FIND_WAIT_SECONDS} seconds "
+                               f"(it was {page.url}). A copy is saved in catalog_debug/ to fit the listener to it.")
+        await wait_for_verification(page)
+        await page.wait_for_timeout(500)
 
-    cards = page.locator("#productSearchResults div.product.productCard")
-    await cards.first.wait_for(state="attached", timeout=45_000)
-    exact_card, returned_ids = None, []
-    for index in range(await cards.count()):
-        candidate = cards.nth(index)
-        candidate_id = ((await candidate.get_attribute("data-product-id")) or "").strip()
-        if candidate_id:
-            returned_ids.append(candidate_id)
-        if candidate_id.casefold() == part_number.casefold():
-            exact_card = candidate
-            break
-    if exact_card is None:
-        raise RuntimeError(f"No exact product ID match. Returned IDs included {returned_ids[:10]}.")
 
-    price_node = exact_card.locator("span.pricerPerQty, span.pricePerQty, [data-analytics-price]").first
+async def read_price(page, scope) -> str:
+    """The price Cooper shows inside a result card or a product page (it arrives a moment after the page)."""
+    price_node = scope.locator("span.pricerPerQty, span.pricePerQty, [data-analytics-price], [itemprop=price]").first
     await price_node.wait_for(state="attached", timeout=PRICE_WAIT_SECONDS * 1000)
-    raw_price = ""
     for _ in range(PRICE_WAIT_SECONDS * 5):
-        raw_price = ((await price_node.get_attribute("data-analytics-price")) or "").strip()
-        if raw_price:
-            break
+        for attribute in ("data-analytics-price", "content"):
+            raw = ((await price_node.get_attribute(attribute)) or "").strip()
+            if re.fullmatch(r"[\d,]+(\.\d+)?", raw):
+                return raw
         await page.wait_for_timeout(200)
+    return ""
+
+
+async def scan_item(page, item: dict, label: str) -> dict:
+    part_number = str(item["part_number"]).strip()
+    where, exact_card = await find_product(page, part_number)
+    if where == "none":
+        raise RuntimeError(f"Cooper's search found nothing for {part_number}. Check the Cooper part number on the Pricing Sheet.")
+    raw_price = await read_price(page, exact_card)
     if not raw_price:
         raise RuntimeError(f"The product appeared, but its price stayed blank for {PRICE_WAIT_SECONDS} seconds.")
 
@@ -522,16 +570,23 @@ async def scan_item(page, item: dict, label: str) -> dict:
     source_uom = " ".join(text.strip() for text in await exact_card.locator("small.priceUOM").all_text_contents() if text.strip())
     source_quantity, source_unit = parse_source_quantity_and_unit(source_uom)
     name_node = exact_card.locator("[data-analytics-description]").first
-    matched_name = (await name_node.get_attribute("data-analytics-description")) if await name_node.count() else item["name"]
-    product_url = ""
+    matched_name = (await name_node.get_attribute("data-analytics-description")) if await name_node.count() else ""
+    if not matched_name and where == "page":
+        heading = page.locator("h1").first
+        matched_name = (await heading.inner_text()).strip() if await heading.count() else ""
+    matched_name = matched_name or item["name"]
+    product_url = page.url if where == "page" else ""
     for link in await exact_card.locator("a[href]").all():
         href = (await link.get_attribute("href")) or ""
         if "/product/" in href and "/category/" not in href and "search" not in href:
             product_url = urljoin(page.url, href)
             break
     image = ""
+    if where == "page":
+        og = page.locator('meta[property="og:image"]').first
+        image = urljoin(page.url, (await og.get_attribute("content")) or "") if await og.count() else ""
     img = exact_card.locator("img").first
-    if await img.count():
+    if not image and await img.count():
         attrs = await img.evaluate("e => Object.fromEntries(Array.from(e.attributes).map(a => [a.name, a.value]))")
         image = picture_url(attrs, page.url)
     log(f"{label} {part_number}: ${source_price:,.2f} {source_uom} → ${source_price / source_quantity:,.4f}/{source_unit}")
@@ -933,19 +988,12 @@ async def find_add(scope):
 async def add_line(page, line: dict) -> dict:
     """Find the item by its Cooper part number, set the quantity (in Cooper's packages when it sells in them) and add it."""
     part = str(line["part_number"]).strip()
-    await page.goto(f"{COOPER_HOME.rstrip('/')}/product/search?q={quote_plus(part)}", wait_until="domcontentloaded", timeout=60_000)
-    await wait_for_verification(page)
-    await accept_cookies(page)
-    cards = page.locator("#productSearchResults div.product.productCard")
-    await cards.first.wait_for(state="attached", timeout=45_000)
-    card = None
-    for index in range(await cards.count()):
-        candidate = cards.nth(index)
-        if ((await candidate.get_attribute("data-product-id")) or "").strip().casefold() == part.casefold():
-            card = candidate
-            break
-    if card is None:
-        return {"status": "error", "message": f"Cooper has no exact match for {part}"}
+    try:
+        where, card = await find_product(page, part)
+    except RuntimeError as error:
+        return {"status": "error", "message": str(error)[:300]}
+    if where == "none":
+        return {"status": "error", "message": f"Cooper's search found nothing for {part}"}
     quantity = float(line.get("quantity") or 1)
     uom = " ".join(text.strip() for text in await card.locator("small.priceUOM").all_text_contents() if text.strip())
     package, package_unit = parse_source_quantity_and_unit(uom) if uom else (1.0, "")
@@ -954,7 +1002,9 @@ async def add_line(page, line: dict) -> dict:
     else:
         to_add, note = max(1, math.ceil(quantity)), ""
     box, button = await find_add(card)
-    if button is None:                    # no Add on the search listing: the product's own page
+    if button is None and where == "page":    # already on the product's page: its Add is anywhere on it
+        box, button = await find_add(page.locator("body"))
+    if button is None and where == "card":    # no Add on the search listing: the product's own page
         link = None
         for candidate in await card.locator("a[href]").all():
             href = (await candidate.get_attribute("href")) or ""
