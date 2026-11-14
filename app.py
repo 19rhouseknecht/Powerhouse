@@ -1271,6 +1271,7 @@ class JobMaterialOrder(db.Model):
     cart_batch_id = db.Column(db.Integer, nullable=True)                      # the office listener's run that is filling it
     cart_status = db.Column(db.String(30), nullable=False, default="")        # '' · queued · running · saved · partial · not_saved · failed
     cart_message = db.Column(db.String(400), nullable=False, default="")
+    update_batch_id = db.Column(db.Integer, nullable=True)                    # the latest "Update from Cooper" for ticked materials
     cart_results_json = db.Column(db.Text, nullable=False, default="")        # [{order_item_id, part_number, name, quantity, status, message}]
     job = db.relationship("Job", back_populates="material_order")
 
@@ -1587,7 +1588,7 @@ def enforce_role_permissions():
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
-        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
+        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
         "finance_dashboard":"view_finance", "expenses":"view_expenses", "create_expense":"view_expenses", "expense_receipt":"view_expenses",
         "onsite_checklist":"view_sales", "onsite_checklist_job":"view_sales", "save_onsite_checklist":"view_sales", "refresh_inspection_tip":"view_sales", "inspection_photo":"view_sales", "delete_inspection_photo":"view_sales", "sales_reviews":"view_sales",
@@ -1922,9 +1923,10 @@ def cooper_sync_status(batch_id):
 @login_required
 def cooper_sync_preview(batch_id):
     batch = db.get_or_404(PriceSyncBatch, batch_id)
+    order = JobMaterialOrder.query.filter_by(update_batch_id=batch.id).first()
     if batch.run and batch.run.status in ("queued", "running"):
-        return redirect(url_for("pricing_sheet", sync=batch.id))
-    return render_template("cooper_sync_preview.html", batch=batch)
+        return redirect(url_for("job_material_order", job_id=order.job_id) + "#cooper-update" if order else url_for("pricing_sheet", sync=batch.id))
+    return render_template("cooper_sync_preview.html", batch=batch, job_order=order)
 
 
 @app.route("/quoting/pricing/cooper-sync/<int:batch_id>/apply", methods=["POST"])
@@ -1938,9 +1940,18 @@ def apply_cooper_prices(batch_id):
     for row in batch.rows:
         if row.id in selected and row.status == "matched" and row.new_price is not None:
             row.price_item.price = row.new_price; row.status = "applied"; changed += 1
-    batch.applied_at = datetime.utcnow(); db.session.commit()
-    flash(f"Applied {changed} Cooper price update(s). Linked services now use the new prices.", "success")
-    return redirect(url_for("pricing_sheet"))
+    batch.applied_at = datetime.utcnow()
+    order = JobMaterialOrder.query.filter_by(update_batch_id=batch.id).first()
+    if order:                                   # the job's own list takes the new prices of the materials it updated
+        applied = {row.price_item_id: row.new_price for row in batch.rows if row.status == "applied"}
+        for item in order.items:
+            if item.price_item_id in applied:
+                item.unit_price = applied[item.price_item_id]
+        if applied:
+            material_list_changed(order)
+    db.session.commit()
+    flash(f"Applied {changed} Cooper price update(s). Linked services now use the new prices." + (" The job's material list uses them too." if order else ""), "success")
+    return redirect(url_for("job_material_order", job_id=order.job_id) if order else url_for("pricing_sheet"))
 
 
 @app.route("/quoting/pricing/labor-rate", methods=["POST"])
@@ -3497,7 +3508,9 @@ def job_material_order(job_id):
     lines, left_out = cooper_cart_lines(order)
     run = PriceSyncRun.query.filter_by(batch_id=order.cart_batch_id).first() if order.cart_batch_id else None
     return render_template("job_material_order.html", job=job, order=order, cart_lines=lines, cart_left_out=left_out, next_cart_name=cart_name_for(job),
-                           cart_run=run, cart_line_ids={line["order_item_id"]: line["part_number"] for line in lines})
+                           cart_run=run, cart_line_ids={line["order_item_id"]: line["part_number"] for line in lines},
+                           update_run=PriceSyncRun.query.filter_by(batch_id=order.update_batch_id).first() if order.update_batch_id else None,
+                           unconfirmed_names=sorted({item.price_item.name for item in order.items if item.price_item and item.price_item.category == UNCONFIRMED}))
 
 
 def sync_cart_state(order):
@@ -3774,6 +3787,56 @@ def set_job_material_order_quantity(job_id, item_id):
     return redirect(url_for("job_material_order", job_id=job.id) + f"#material-{item.id}")
 
 
+@app.route("/jobs/<int:job_id>/materials/update-from-cooper", methods=["POST"])
+@login_required
+def update_job_materials_from_cooper(job_id):
+    """Update from Cooper for the ticked materials: the office listener reads each one's price and picture at Cooper. Pictures
+    are saved as they are found; prices come back for review (as on the Pricing Sheet), and once applied the job's list uses them."""
+    check_csrf()
+    job = db.get_or_404(Job, job_id)
+    order = job.material_order
+    if not order:
+        abort(404)
+    back = url_for("job_material_order", job_id=job.id)
+    ticked = {int(v) for v in request.form.getlist("order_item_id") if str(v).isdigit()}
+    chosen = [item for item in order.items if item.id in ticked]
+    if not chosen:
+        flash("Tick the materials to update from Cooper first.", "error"); return redirect(back)
+    sheet = {item.price_item.id: item.price_item for item in chosen if item.price_item and item.price_item.active and (item.price_item.cooper_part_number or "").strip()}
+    if not sheet:
+        flash("None of the ticked materials has a Cooper part number on the Pricing Sheet, so there is nothing to look up.", "error"); return redirect(back)
+    expire_stale_cooper_runs()
+    if PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).first():
+        flash("The office listener is busy with another Cooper job. Try again when it finishes.", "error"); return redirect(back)
+    skipped = len(chosen) - len(sheet)
+    batch = PriceSyncBatch(supplier="cooper", created_by=current_user)
+    db.session.add(batch); db.session.flush()
+    db.session.add(PriceSyncRun(batch=batch, total=len(sheet), item_ids_json=json.dumps(sorted(sheet)),
+                                activity_log=json.dumps([f"Cooper update queued for {len(sheet)} material(s) on job #{job.job_number}"
+                                                         + (f" ({skipped} without a Cooper part number left out)" if skipped else "")
+                                                         + ": pictures are saved as they are found, prices come back for your review. Waiting for the office listener."])))
+    order.update_batch_id = batch.id
+    db.session.commit()
+    flash(f"Sent to the office listener: {len(sheet)} material(s) to update from Cooper." + (f" {skipped} ticked without a Cooper part number were left out." if skipped else ""), "success")
+    return redirect(back + "#cooper-update")
+
+
+def confirm_cart_items(order):
+    """Sending a list to the Cooper cart confirms every Unconfirmed Pricing Sheet item on it: it becomes a normal item, in
+    the sheet's category that matches Cooper's own category when there is one, else General. Returns the names confirmed."""
+    categories = {c.lower(): c for (c,) in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct()}
+    confirmed = []
+    for item in order.items:
+        sheet = item.price_item
+        if not sheet or sheet.category != UNCONFIRMED or sheet in confirmed:
+            continue
+        cooper = re.search(r"Cooper: ([^·]+)", sheet.notes or "")
+        sheet.category = categories.get(cooper.group(1).strip().lower(), "General") if cooper else "General"
+        sheet.notes = ((sheet.notes or "") + f" · Confirmed when sent to the Cooper cart by {current_user.username} {datetime.utcnow():%b %-d, %Y}")[:255]
+        confirmed.append(sheet)
+    return [sheet.name for sheet in confirmed]
+
+
 @app.route("/jobs/<int:job_id>/materials/add-to-cart", methods=["POST"])
 @login_required
 def add_job_material_order_to_cart(job_id):
@@ -3802,8 +3865,10 @@ def add_job_material_order_to_cart(job_id):
     order.cart_name, order.cart_batch_id, order.cart_status = name, batch.id, "queued"
     order.cart_message = (f"{len(left_out)} item(s) have no Cooper part number and were left out: " + ", ".join(item.name for item in left_out[:8])) if left_out else ""
     order.cart_results_json = json.dumps([dict(line, status="waiting", message="") for line in lines])
+    confirmed = confirm_cart_items(order)
     db.session.commit()
-    flash(f"Sent to the office listener: {len(lines)} item(s) go in the Cooper cart, saved as {name}.", "success")
+    flash(f"Sent to the office listener: {len(lines)} item(s) go in the Cooper cart, saved as {name}."
+          + (f" {len(confirmed)} Unconfirmed item(s) are now normal Pricing Sheet items: {', '.join(confirmed[:6])}{'…' if len(confirmed) > 6 else ''}." if confirmed else ""), "success")
     return redirect(url_for("job_material_order", job_id=job.id) + "#cooper-cart")
 
 
@@ -8326,7 +8391,7 @@ with app.app_context():
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "limit_items", "INTEGER NOT NULL DEFAULT 0"),
         ("price_sync_run", "cart_json", "TEXT NOT NULL DEFAULT ''"),
-        ("job_material_order", "cart_name", "VARCHAR(120) NOT NULL DEFAULT ''"), ("job_material_order", "cart_batch_id", "INTEGER"),
+        ("job_material_order", "cart_name", "VARCHAR(120) NOT NULL DEFAULT ''"), ("job_material_order", "cart_batch_id", "INTEGER"), ("job_material_order", "update_batch_id", "INTEGER"),
         ("job_material_order", "cart_status", "VARCHAR(30) NOT NULL DEFAULT ''"), ("job_material_order", "cart_message", "VARCHAR(400) NOT NULL DEFAULT ''"),
         ("job_material_order", "cart_results_json", "TEXT NOT NULL DEFAULT ''"),
     ]:
