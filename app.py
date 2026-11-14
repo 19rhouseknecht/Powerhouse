@@ -1587,7 +1587,7 @@ def enforce_role_permissions():
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
-        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
+        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
         "finance_dashboard":"view_finance", "expenses":"view_expenses", "create_expense":"view_expenses", "expense_receipt":"view_expenses",
         "onsite_checklist":"view_sales", "onsite_checklist_job":"view_sales", "save_onsite_checklist":"view_sales", "refresh_inspection_tip":"view_sales", "inspection_photo":"view_sales", "delete_inspection_photo":"view_sales", "sales_reviews":"view_sales",
@@ -3634,6 +3634,103 @@ def _order_item(job_id, item_id):
     if not order or item is None or item.order_id != order.id:
         abort(404)
     return job, order, item
+
+
+MATERIAL_HELP_ROUNDS = 5
+
+
+def search_sheet_for_ai(query, limit=15):
+    """Pricing Sheet items (Unconfirmed included) whose name, part number or category hold every word of the query."""
+    words = [w for w in re.split(r"\s+", str(query or "").strip()) if w][:6]
+    if not words:
+        return []
+    rows = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
+    for word in words:
+        like = f"%{word}%"
+        rows = rows.filter(db.or_(PriceItem.name.ilike(like), PriceItem.cooper_part_number.ilike(like), PriceItem.category.ilike(like)))
+    return [{"price_item_id": item.id, "name": item.name, "unit": item.unit, "price": round(item.price, 2), "cooper_part_number": item.cooper_part_number,
+             "category": item.category} for item in rows.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(limit).all()]
+
+
+def suggest_materials(job, description):
+    """What material(s) a loose description means, chosen ONLY from the Pricing Sheet: the AI searches it (as many times as
+    it needs, a few words each) and answers with Pricing Sheet item ids, a quantity and why. Returns (suggestions, message)."""
+    order = job.material_order
+    instructions = ("You help an electrician add materials to a job's order. They describe what they need loosely. Find the matching "
+                    "item(s) on the company's Pricing Sheet with search_pricing_sheet (a few words at a time; try the trade name, a synonym, a "
+                    "size such as 12/2 or 20A, or a Cooper part number; search several times if the first finds nothing). Suggest ONLY items "
+                    "the search returned, best match first, at most 5, each with a sensible quantity in the item's own unit and a short "
+                    "reason in plain words. If nothing on the Pricing Sheet fits, return no suggestions and say what to add to the Pricing "
+                    "Sheet. Never invent an item, a price or a part number.\n\nJOB: " + json.dumps({"title": job.title, "request": job.description})
+                    + "\nALREADY ON THE ORDER: " + json.dumps([f"{item.quantity:g} {item.unit} {item.name}" for item in (order.items if order else [])][:40]))
+    tools = [{"type": "function", "name": "search_pricing_sheet", "strict": True, "description": "Search the Pricing Sheet. Every word must appear in the item.",
+              "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False}}]
+    schema = {"type": "object", "additionalProperties": False, "required": ["message", "suggestions"], "properties": {
+        "message": {"type": "string"},
+        "suggestions": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["price_item_id", "quantity", "why"],
+                                                   "properties": {"price_item_id": {"type": "integer"}, "quantity": {"type": "number"}, "why": {"type": "string"}}}}}}
+    client = OpenAI()
+    model = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    conversation = [{"role": "user", "content": description}]
+    seen = set()
+    for round_number in range(MATERIAL_HELP_ROUNDS + 1):
+        args = {"model": model, "instructions": instructions, "input": conversation,
+                "text": {"format": {"type": "json_schema", "name": "material_suggestions", "schema": schema, "strict": True}}}
+        if round_number < MATERIAL_HELP_ROUNDS:
+            args["tools"] = tools
+        response = client.responses.create(**args)
+        calls = [item for item in (getattr(response, "output", None) or []) if getattr(item, "type", "") == "function_call"]
+        if not calls:
+            break
+        conversation += [_caleb_item(item) for item in response.output]
+        for call in calls:
+            try:
+                query = json.loads(call.arguments or "{}").get("query", "")
+            except ValueError:
+                query = ""
+            found = search_sheet_for_ai(query)
+            seen.update(row["price_item_id"] for row in found)
+            conversation.append({"type": "function_call_output", "call_id": call.call_id, "output": json.dumps(found)})
+    try:
+        answer = json.loads(response.output_text or "{}")
+    except ValueError:
+        answer = {}
+    suggestions = []
+    for row in answer.get("suggestions") or []:
+        item = db.session.get(PriceItem, row.get("price_item_id") or 0) if isinstance(row, dict) else None
+        if item is None or not item.active or item.id not in seen or any(s["id"] == item.id for s in suggestions):
+            continue                              # only real items the search actually returned
+        try:
+            quantity = max(round(float(row.get("quantity") or 1), 3), 0.01)
+        except (TypeError, ValueError):
+            quantity = 1
+        suggestions.append({"id": item.id, "name": item.name, "price": round(item.price, 2), "unit": item.unit, "part": item.cooper_part_number,
+                            "quantity": quantity, "why": str(row.get("why") or "")[:240], "image": url_for("static", filename=item.image_path) if item.image_path else "",
+                            "unconfirmed": item.category == UNCONFIRMED})
+        if len(suggestions) == 5:
+            break
+    return suggestions, str(answer.get("message") or "")[:400]
+
+
+@app.route("/jobs/<int:job_id>/materials/suggest", methods=["POST"])
+@login_required
+def suggest_job_materials(job_id):
+    """The "Describe what you need" box: the Pricing Sheet item(s) the AI thinks are meant, to add with one click."""
+    check_csrf()
+    job = db.get_or_404(Job, job_id)
+    description = request.form.get("description", "").strip()[:600]
+    if not description:
+        return jsonify({"suggestions": [], "message": "Describe the material you need."}), 400
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"suggestions": [], "message": "The AI isn't connected (no OpenAI key), so use the search above."}), 503
+    try:
+        suggestions, message = suggest_materials(job, description)
+    except Exception as error:  # noqa: BLE001
+        app.logger.exception("Material suggestion failed")
+        return jsonify({"suggestions": [], "message": f"Couldn't find it just now. {describe_ai_error(error)}"}), 502
+    if not suggestions and not message:
+        message = "Nothing on the Pricing Sheet looks like that. Add it to the Pricing Sheet, or describe it another way."
+    return jsonify({"suggestions": suggestions, "message": message})
 
 
 @app.route("/jobs/<int:job_id>/materials/items/<int:item_id>/remove", methods=["POST"])

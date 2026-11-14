@@ -40,6 +40,13 @@
     <input type="search" placeholder="Search the Pricing Sheet (name, Cooper part number)…" aria-label="Search the Pricing Sheet to add a material" data-material-find="{{ url_for('find_pricing_items', items=1) }}" data-material-add="{{ url_for('add_job_material_order_item', job_id=job.id) }}" autocomplete="off">
     <div class="sheet-results" data-material-results></div>
   </div>
+  <form class="material-ai" data-material-suggest="{{ url_for('suggest_job_materials', job_id=job.id) }}">
+    <label for="material-describe"><strong>Not sure what it's called?</strong> Describe what you need and the AI finds it on the Pricing Sheet.</label>
+    <div class="material-ai-row"><textarea id="material-describe" name="description" rows="2" maxlength="600" placeholder="e.g. the plastic box for one switch in an existing wall, or wire for a 20 amp circuit about 50 ft"></textarea>
+    <button class="btn btn-secondary" data-suggest-go>Find it</button></div>
+    <small class="material-ai-message" data-suggest-message aria-live="polite"></small>
+    <div class="sheet-results" data-suggest-results></div>
+  </form>
   <p class="muted material-add-note">Everything ordered comes from the Pricing Sheet, so it carries its Cooper part number and price. <a href="{{ url_for('pricing_sheet', add='', next=request.path ~ '#add-material') }}#add-item">Not on the Pricing Sheet? Add it there ↗</a></p>
 </section>
 <div class="material-cart-actions"><a class="btn btn-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Back to job</a>
@@ -80,6 +87,42 @@
     input.addEventListener('input', function () { clearTimeout(timer); status.textContent = ''; timer = setTimeout(save, 600); });
     form.addEventListener('submit', function (e) { e.preventDefault(); clearTimeout(timer); save(); });
   });
+})();
+(function () {           /* "Describe what you need": the AI's picks from the Pricing Sheet, each with a quantity and Add */
+  var form = document.querySelector('[data-material-suggest]');
+  if (!form) return;
+  var out = form.querySelector('[data-suggest-results]'), say = form.querySelector('[data-suggest-message]'), go = form.querySelector('[data-suggest-go]');
+  var addUrl = document.querySelector('[data-material-find]').getAttribute('data-material-add'), token = document.getElementById('material-csrf').value;
+  var money = function (n) { return '$' + Number(n).toFixed(2); };
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var text = form.querySelector('textarea').value.trim();
+    if (!text) { say.textContent = 'Describe the material you need.'; return; }
+    go.disabled = true; go.textContent = 'Looking…'; say.textContent = 'Searching the Pricing Sheet…'; out.replaceChildren();
+    var body = new FormData(); body.append('csrf_token', token); body.append('description', text);
+    fetch(form.getAttribute('data-material-suggest'), {method: 'POST', body: body, headers: {'X-Requested-With': 'fetch', 'Accept': 'application/json'}})
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        say.textContent = data.message || (data.suggestions.length ? 'Here is what it found on the Pricing Sheet:' : '');
+        (data.suggestions || []).forEach(function (r) {
+          var pick = document.createElement('form'); pick.method = 'POST'; pick.action = addUrl; pick.className = 'sheet-pick material-pick material-ai-pick';
+          var words = document.createElement('span');
+          if (r.image) { var img = document.createElement('img'); img.src = r.image; img.alt = ''; img.className = 'line-thumb'; words.append(img); }
+          var name = document.createElement('b'); name.textContent = r.name;
+          words.append(name, document.createTextNode(' · ' + money(r.price) + ' / ' + r.unit + (r.part ? ' · Cooper #' + r.part : ' · no Cooper part number') + (r.unconfirmed ? ' · Unconfirmed' : '')));
+          if (r.why) { var why = document.createElement('small'); why.className = 'material-ai-why'; why.textContent = r.why; words.append(why); }
+          var fields = document.createElement('span'); fields.className = 'material-pick-fields';
+          [['csrf_token', token], ['price_item_id', r.id], ['name', r.name], ['unit_price', r.price]].forEach(function (p) { var h = document.createElement('input'); h.type = 'hidden'; h.name = p[0]; h.value = p[1]; fields.append(h); });
+          var qty = document.createElement('input'); qty.type = 'number'; qty.name = 'quantity'; qty.value = r.quantity; qty.min = '0.01'; qty.step = 'any'; qty.setAttribute('aria-label', 'Quantity of ' + r.name);
+          var unit = document.createElement('small'); unit.textContent = r.unit;
+          var add = document.createElement('button'); add.className = 'btn btn-small btn-primary'; add.textContent = 'Add';
+          fields.append(qty, unit, add); pick.append(words, fields); out.append(pick);
+        });
+      })
+      .catch(function () { say.textContent = "Couldn't reach the AI just now. Try again, or use the search above."; })
+      .then(function () { go.disabled = false; go.textContent = 'Find it'; });
+  });
+  form.querySelector('textarea').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit')); } });
 })();
 (function () {           /* add from the Pricing Sheet: search, quantity, Add */
   var input = document.querySelector('[data-material-find]');
