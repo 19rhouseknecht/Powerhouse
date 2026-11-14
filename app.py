@@ -6335,26 +6335,64 @@ def lighting_plans_for(quote):
     return (room, lighting.plans(room, lighting_fixtures())) if room else (None, [])
 
 
+def lighting_picks(plans, count):
+    """A light from the layout for each of `count` options, lowest tier first: lights that reach the room's target (RAB first
+    when there are any), from the most economical up, spread so the tiers differ. Without one that reaches it: the brightest."""
+    good = [plan for plan in plans if plan["footcandles"] >= plan["target"] * 0.95] or sorted(plans, key=lambda p: -p["footcandles"])[:3]
+    good = [plan for plan in good if "rab" in plan["name"].lower()] or good
+    good = sorted(good, key=lambda plan: (plan["material"], plan["count"]))
+    if not good or count <= 0:
+        return []
+    if count == 1 or len(good) == 1:
+        return [good[0]] * count
+    return [good[round(i * (len(good) - 1) / (count - 1))] for i in range(count)]
+
+
+def _looks_like_light(line):
+    name = line.service_name or ""
+    return any(word in name.lower() for word in LIGHT_WORDS) and not NOT_A_LIGHT.search(name)
+
+
 def apply_lighting_plan(quote):
-    """Hold each option's light to the layout: its count is the layout's, and the layout is kept for the 3D view."""
+    """Every option gets its own lighting layout (its light, how many, where they go) for its own 3D view. Caden's light
+    keeps its place with the layout's count; an option without a light that can be laid out gets one from the layout."""
     room, plans = lighting_plans_for(quote)
     if not room:
         return []
     by_item = {plan["id"]: plan for plan in plans}
+    options = list(quote.options)
+    picks = lighting_picks(plans, len(options))
+    rate = get_labor_rate()
     notes = []
-    for option in quote.options:
+    for index, option in enumerate(options):
         option.lighting_json = ""
         line = next((line for line in option.lines if line.price_item_id in by_item), None)
         if line is not None:
             plan = by_item[line.price_item_id]
-        else:                                 # a light Caden recommends that is not on the sheet: laid out from the lumens in its name
+        else:
             line = next((line for line in option.lines if line.is_missing and lighting.lumens_from_name(line.service_name)), None)
-            if line is None:
+            if line is not None:            # a light Caden recommends that is not on the sheet: laid out from the lumens in its name
+                plan = lighting.layout(lighting.lumens_from_name(line.service_name), room)
+                plan.update({"name": line.service_name, "lumens": lighting.lumens_from_name(line.service_name), "image": ""})
+            elif picks:                     # no light the layout knows: the layout's own pick for this tier
+                plan = picks[index]
+                item = db.session.get(PriceItem, plan["id"])
+                line = next((line for line in option.lines if _looks_like_light(line)), None)
+                if line is not None:
+                    notes.append(f"{option.tier}: {line.service_name} has no lumens on the Pricing Sheet, so it can't be laid out; "
+                                 f"used {item.name} ({plan['lumens']:,.0f} lm) instead.")
+                    price_line_from_item(line, item)
+                else:
+                    line = QuoteOptionService(service=None, price_item=item, service_name=item.name, example_quantity=f"1 {item.unit}", multiplier=plan["count"],
+                                              unit_price=item.price + item.labor_hours_per_unit * rate, material_unit_price=item.price,
+                                              labor_hours_per_unit=item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines))
+                    option.lines.append(line)
+                    notes.append(f"{option.tier}: added {plan['count']} × {item.name} for the lighting layout.")
+            else:
                 continue
-            plan = lighting.layout(lighting.lumens_from_name(line.service_name), room)
-            plan.update({"name": line.service_name, "lumens": lighting.lumens_from_name(line.service_name), "image": ""})
         if line.multiplier != plan["count"]:
-            notes.append(f"{option.tier}: {line.service_name} set to {plan['count']} (the layout for {room['name']}; Caden had {line.multiplier:g}).")
+            if line.multiplier:
+                notes.append(f"{option.tier}: {line.service_name} set to {plan['count']} (the layout for {room['name']}; Caden had {line.multiplier:g}).")
             line.multiplier = plan["count"]
         option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "shape": room.get("shape", "rect"), "lumens": plan["lumens"], "count": plan["count"],
                                            "rows": plan["rows"], "cols": plan["cols"], "positions": plan["positions"], "spacing": plan["spacing"],
@@ -6383,6 +6421,8 @@ We use RAB lighting for almost everything (sold through Cooper): prefer RAB ligh
 tier is not on LIGHTING_PLAN (often a RAB part not on the Pricing Sheet yet), put it in missing_services named with its RAB
 part number and its lumens, for example "RAB SLIM6 6in LED wafer 1200 lm": it is listed at the top of the quote to be priced, and
 the app lays it out and sets its quantity from those lumens. Never invent a lumen figure: use the maker's.
+The room is known and the app does the layout, so never ask about the number of lights, their spacing or which light to use:
+set ready to true and build every option now, stating any assumption in its description. Each option is drawn in 3D with its own lights.
 """
 
 

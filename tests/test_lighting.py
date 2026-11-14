@@ -75,12 +75,13 @@ with app.app_context():
           "the room is read from the message: kitchen, 14 x 12, 9 ft ceiling")
     check("Lighting layout: Kitchen, 14 × 12 ft, 9 ft ceiling, kitchen (30 foot-candles)." in q.messages[-1].content, "and Caden's chat says what it read")
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
-check("Kitchen · 14 × 12 ft, 9 ft ceiling · 30 fc" in page and "read from your message" in page, "the lighting summary shows the room")
+check('id="lighting"' not in page and "lighting-plans" not in page and "Juno trimless downlight" not in page,
+      "there is no lighting box listing the Pricing Sheet's lights: each option shows its own layout instead")
 check('name="lighting" value="1" checked' in page, "and the checkbox stays ticked")
-for name in ("4in LED wafer 650 lm", "Halo 6in LED wafer 1200 lm", "Juno trimless downlight", "Surface mount LED flush mount light"):
-    check(name in page.split('class="item-table lighting-plans"')[1].split("</table>")[0], f"plans list {name}")
-check("LED dimmer switch" not in page.split('id="lighting"')[1].split("</details>")[0], "a dimmer switch is not mistaken for a light that needs lumens")
-check("9 (3 × 3" in page, "with how many and the grid (9 of the 1,200 lm wafers, 3 × 3)")
+with app.app_context():
+    names = [plan["name"] for plan in m.lighting_plans_for(db.session.get(m.Quote, quote_id))[1]]
+    check(sorted(names) == sorted(["4in LED wafer 650 lm", "Halo 6in LED wafer 1200 lm", "Juno trimless downlight", "Surface mount LED flush mount light"]),
+          "every light with lumens can be laid out (a dimmer switch is not mistaken for a light)")
 
 # 3. Caden picks a light per option; the count is the layout's
 SEEN = []
@@ -141,6 +142,40 @@ with app.app_context():
     line = q.options[0].lines[0]
     check(line.is_missing and line.multiplier == L.layout(1500, kitchen)["count"], "the RAB light is still to price (top of the quote), with the layout's count, not Caden's 3")
     check(q.options[0].lighting and q.options[0].lighting["fixture"].startswith("RAB RDLED6"), "and it gets its 3D layout")
+
+
+# 3c. Caden leaves the lights out (or picks one with no lumens): every option still gets its own light and its own 3D view
+class NoLightOpenAI(FakeOpenAI):
+    def create(self, **kwargs):
+        SEEN.append(kwargs)
+        options = []
+        for index, tier in enumerate(tiers):
+            items = [{"price_item_id": ids["dimmer"], "quantity": 1}]
+            if index == 1:
+                items.append({"price_item_id": NOLUMEN, "quantity": 4})
+            options.append({"tier": tier, "title": "Kitchen lighting %d" % index, "description": "Even light.", "bullets": ["Lights, tier %d" % index],
+                            "services": [], "items": items, "direct_priced_items": [], "missing_services": []})
+        return SimpleNamespace(output_text=json.dumps({"ready": True, "message": "Built.", "questions": [], "quote_title": "Kitchen lighting",
+                                                       "introduction": "Hi.", "mike_question": "", "options": options, "pricing_needed": []}))
+
+
+with app.app_context():
+    plain = m.PriceItem(name="RAB 6in LED wafer", lookup_key="rabplain", category="Lighting", unit="ea", price=19); db.session.add(plain); db.session.commit()
+    NOLUMEN = plain.id
+m.OpenAI = NoLightOpenAI
+owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Lights, three choices.", lighting="1"))
+with app.app_context():
+    q = db.session.get(m.Quote, quote_id)
+    layouts = [option.lighting for option in q.options]
+    check(len(q.options) == 3 and all(layouts), "an option Caden built without a light still gets a light from the layout and its own 3D view")
+    check(len({layout["fixture"] for layout in layouts}) == 3 and layouts[0]["fixture"] == "4in LED wafer 650 lm",
+          "the tiers get different lights, the most economical one that meets the target first")
+    check(all(layout["footcandles"] >= layout["target"] * 0.95 for layout in layouts), "each one meets the room's target")
+    middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],)]
+    check(len(middle) == 1 and middle[0].price_item_id != NOLUMEN and middle[0].multiplier == layouts[1]["count"],
+          "a light with no lumens is swapped for one that can be laid out (not a second set of lights)")
+    check(any("has no lumens" in msg.content for msg in q.messages if msg.role == "assistant"), "and Caden's message says so")
+check("never ask about the number of lights" in SEEN[-1]["instructions"], "Caden is told to build the options rather than ask about the lights")
 m.OpenAI = FakeOpenAI
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Back to the Pricing Sheet lights.", lighting="1"))
 
@@ -157,7 +192,6 @@ with app.app_context():
 m.OpenAI = FakeOpenAI
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Actually it's a sunroom, 16 ft round, 9 ft ceiling", lighting="1"))
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
-check("Sunroom · 16 ft round" in page and "in rings" in page, "a round room is set on the quote and laid out in rings")
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     check(all(option.lighting and option.lighting["shape"] == "circle" for option in q.options), "every option's layout is round now")
