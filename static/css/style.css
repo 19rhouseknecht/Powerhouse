@@ -1295,7 +1295,7 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 
 /* Job materials: what will be ordered */
 .material-list { margin:14px 0; }
-.material-row { display:grid; grid-template-columns:48px minmax(0,1fr) auto 110px auto; gap:12px; align-items:center; padding:10px 0; border-top:1px solid var(--border); }
+.material-row { display:grid; grid-template-columns:22px 48px minmax(0,1fr) auto 110px auto; gap:12px; align-items:center; padding:10px 0; border-top:1px solid var(--border); }
 .material-thumb { width:48px; height:48px; border-radius:8px; background:#fff; display:grid; place-items:center; overflow:hidden; border:1px solid var(--border); }
 .material-thumb img { width:100%; height:100%; object-fit:contain; }
 .material-thumb span { color:#a8a29e; }
@@ -1322,10 +1322,10 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .material-add-note { margin:10px 0 0; font-size:12px; }
 .material-add-note a { color:var(--accent-hover); }
 @media (max-width:760px) {
-  .material-row { grid-template-columns:44px minmax(0,1fr) auto; }
-  .material-qty { grid-column:2; }
-  .material-cost { grid-column:3; grid-row:2; }
-  .material-remove { grid-column:3; grid-row:1; }
+  .material-row { grid-template-columns:22px 44px minmax(0,1fr) auto; }
+  .material-qty { grid-column:3; }
+  .material-cost { grid-column:4; grid-row:2; }
+  .material-remove { grid-column:4; grid-row:1; }
 }
 .material-ai { display:grid; gap:6px; margin:14px 0 0; padding:12px; border:1px dashed var(--border); border-radius:10px; }
 .material-ai label { color:#d6d3d1; font-size:13px; }
@@ -1335,3 +1335,11 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .material-ai-pick > span:first-child { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; }
 .material-ai-why { display:block; flex-basis:100%; color:var(--muted); font-size:11px; }
 @media (max-width:620px) { .material-ai-row { flex-direction:column; align-items:stretch; } }
+
+.material-tick { display:flex; align-items:center; justify-content:center; cursor:pointer; }
+.material-tick input, .material-tick-all input { width:16px; height:16px; accent-color:var(--accent); }
+.material-tick-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin:4px 0 6px; }
+.material-tick-all { display:flex; align-items:center; gap:6px; font-size:13px; color:#d6d3d1; cursor:pointer; }
+.material-tick-bar small { font-size:12px; }
+.cooper-update-panel .section-title { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; }
+.cooper-update-panel.upd-failed h2 { color:#fca5a5; }

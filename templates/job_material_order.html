@@ -12,13 +12,27 @@
     {% for row in order.cart_results %}<tr class="cart-row-{{ row.status }}"><td>{{ row.name }}</td><td>{{ row.part_number }}</td><td>{{ '%g'|format(row.quantity) }} {{ row.unit }}{% if row.added_quantity and row.added_quantity != row.quantity %}<small>{{ row.added_quantity }} added at Cooper</small>{% endif %}</td><td>{{ {'added': 'Added', 'waiting': 'Waiting', 'error': 'Not added'}.get(row.status, row.status) }}{% if row.message %}<small>{{ row.message }}</small>{% endif %}</td></tr>{% endfor %}
   </tbody></table></div>{% endif %}
 </section>{% endif %}
+{% if update_run %}{% set upd_words = {'queued': 'Waiting for the office listener', 'running': 'The office listener is reading Cooper', 'complete': 'Cooper has answered', 'failed': 'The Cooper update stopped', 'cancelled': 'The Cooper update was cancelled'} %}
+<section class="panel section-panel cooper-update-panel upd-{{ update_run.status }}" id="cooper-update" {% if update_run.status in ('queued', 'running') %}data-update-poll="{{ url_for('cooper_sync_status', batch_id=update_run.batch_id) }}"{% endif %}>
+  <div class="section-title"><div><span class="eyebrow">Update from Cooper · {{ update_run.total }} material{{ 's' if update_run.total != 1 }}</span><h2>{{ upd_words.get(update_run.status, update_run.status) }}</h2>
+  <p class="muted">{% if update_run.status == 'complete' %}{% if update_run.batch.applied_at %}Prices applied {{ update_run.batch.applied_at.strftime('%b %-d at %-I:%M %p') }}; pictures were saved as they were found.{% else %}Pictures are saved. Review the prices to use them on the Pricing Sheet and on this list.{% endif %}{% elif update_run.status == 'failed' %}{{ update_run.error_message }}{% else %}Pictures are saved as they are found; prices come back for your review.{% endif %}</p></div>
+  {% if update_run.status == 'complete' and not update_run.batch.applied_at %}{% if can('view_pricing') %}<a class="btn btn-primary" href="{{ url_for('cooper_sync_preview', batch_id=update_run.batch_id) }}">Review the prices</a>{% else %}<span class="muted">Someone with the Pricing Sheet reviews the prices.</span>{% endif %}{% endif %}</div>
+  {% if update_run.status in ('queued', 'running') %}<div class="cart-log" data-update-log>{% for line in (update_run.activity_log|fromjson)[-8:] %}<p>{{ line }}</p>{% endfor %}</div>{% endif %}
+</section>{% endif %}
 <section class="panel material-list" id="materials">
   <div class="section-title"><div><span class="eyebrow">What will be ordered</span><h2>{{ order.items|length }} material{{ 's' if order.items|length != 1 }} · <span data-order-total>${{ '{:,.2f}'.format(order.material_total) }}</span></h2><p class="muted">Change a quantity and it saves. Remove takes an item off at once. Add more below.</p></div></div>
+  {% if order.items %}<form method="POST" action="{{ url_for('update_job_materials_from_cooper', job_id=job.id) }}" id="cooper-update-form" class="material-tick-bar" data-tick-bar>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label class="material-tick-all"><input type="checkbox" data-tick-all> Select all</label>
+    <button class="btn btn-small btn-secondary" data-tick-go disabled {{ 'title="The office listener is busy"' if update_run and update_run.status in ('queued', 'running') }}>Update from Cooper</button>
+    <small class="muted">Tick materials to bring in their Cooper price and picture.</small>
+  </form>{% endif %}
   <input type="hidden" id="material-csrf" value="{{ csrf_token() }}">
   {% for item in order.items %}<article class="material-row {{ 'material-in-cart' if item.id in cart_line_ids else 'material-not-cart' }}" id="material-{{ item.id }}">
+    <label class="material-tick"><input type="checkbox" name="order_item_id" value="{{ item.id }}" form="cooper-update-form" data-tick aria-label="Tick {{ item.name }}"{% if not (item.price_item and item.price_item.cooper_part_number) %} data-no-part{% endif %}></label>
     <div class="material-thumb">{% if item.price_item and item.price_item.image_path %}<img src="{{ url_for('static', filename=item.price_item.image_path) }}" alt="" loading="lazy">{% else %}<span aria-hidden="true">▢</span>{% endif %}</div>
     <div class="material-what">
-      <strong>{{ item.name }}</strong>
+      <strong>{{ item.name }}</strong>{% if item.price_item and item.price_item.category == 'Unconfirmed' %} <span class="price-source src-unconfirmed">Unconfirmed</span>{% endif %}
       <small>{% if item.id in cart_line_ids %}<span class="material-cart-yes">Cooper #{{ cart_line_ids[item.id] }} · goes in the Cooper cart</span>{% else %}<span class="material-cart-no">Not in the Cooper cart: no Cooper part number</span>{% endif %}{% if item.source_services %} · for {{ item.source_services }}{% endif %}</small>
     </div>
     <form method="POST" action="{{ url_for('set_job_material_order_quantity', job_id=job.id, item_id=item.id) }}" class="material-qty" data-qty-form>
@@ -50,8 +64,35 @@
   <p class="muted material-add-note">Everything ordered comes from the Pricing Sheet, so it carries its Cooper part number and price. <a href="{{ url_for('pricing_sheet', add='', next=request.path ~ '#add-material') }}#add-item">Not on the Pricing Sheet? Add it there ↗</a></p>
 </section>
 <div class="material-cart-actions"><a class="btn btn-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Back to job</a>
-  <div class="cart-send"><small>{% if cart_lines %}{{ cart_lines|length }} item{{ 's' if cart_lines|length != 1 }} with a Cooper part number go in the cart, saved as <strong>{{ next_cart_name }}</strong>.{% if cart_left_out %} Left out (no Cooper part number): {{ cart_left_out|map(attribute='name')|join(', ') }}.{% endif %}{% else %}None of these materials has a Cooper part number.{% endif %}</small>
-  <form method="POST" action="{{ url_for('add_job_material_order_to_cart', job_id=job.id) }}" onsubmit="return window.confirm('The office listener will add {{ cart_lines|length }} item(s) to the Cooper cart at their quantities and save the cart as {{ next_cart_name }}. Go ahead?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if not cart_lines or order.cart_status in ('queued', 'running') }}>{{ 'Add all items to the Cooper cart again' if order.cart_status in ('saved', 'partial', 'not_saved') else 'Add all items to the Cooper cart' }}</button></form></div></div>
+  <div class="cart-send"><small>{% if cart_lines %}{{ cart_lines|length }} item{{ 's' if cart_lines|length != 1 }} with a Cooper part number go in the cart, saved as <strong>{{ next_cart_name }}</strong>.{% if cart_left_out %} Left out (no Cooper part number): {{ cart_left_out|map(attribute='name')|join(', ') }}.{% endif %}{% else %}None of these materials has a Cooper part number.{% endif %}{% if unconfirmed_names %} Sending it confirms {{ unconfirmed_names|length }} Unconfirmed item{{ 's' if unconfirmed_names|length != 1 }} as normal Pricing Sheet items.{% endif %}</small>
+  <form method="POST" action="{{ url_for('add_job_material_order_to_cart', job_id=job.id) }}" onsubmit="return window.confirm('The office listener will add {{ cart_lines|length }} item(s) to the Cooper cart at their quantities and save the cart as {{ next_cart_name }}.{% if unconfirmed_names %} {{ unconfirmed_names|length }} Unconfirmed item(s) become normal Pricing Sheet items.{% endif %} Go ahead?');"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if not cart_lines or order.cart_status in ('queued', 'running') }}>{{ 'Add all items to the Cooper cart again' if order.cart_status in ('saved', 'partial', 'not_saved') else 'Add all items to the Cooper cart' }}</button></form></div></div>
+<script>
+(function () {           /* ticked materials: Select all, the button counts them */
+  var bar = document.querySelector('[data-tick-bar]');
+  if (!bar) return;
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('[data-tick]')), all = bar.querySelector('[data-tick-all]'), go = bar.querySelector('[data-tick-go]');
+  var busy = go.hasAttribute('title');
+  function count() {
+    var n = boxes.filter(function (b) { return b.checked; }).length;
+    go.disabled = busy || !n; go.textContent = n ? 'Update ' + n + ' from Cooper' : 'Update from Cooper';
+    all.checked = n && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length;
+  }
+  boxes.forEach(function (b) { b.addEventListener('change', count); });
+  all.addEventListener('change', function () { boxes.forEach(function (b) { b.checked = all.checked; }); count(); });
+  count();
+})();
+(function () {           /* while the office listener reads Cooper for the ticked materials */
+  var panel = document.querySelector('[data-update-poll]');
+  if (!panel) return;
+  var log = panel.querySelector('[data-update-log]');
+  var timer = setInterval(function () {
+    fetch(panel.getAttribute('data-update-poll'), {headers: {'Accept': 'application/json'}}).then(function (r) { return r.json(); }).then(function (data) {
+      if (log && data.logs) { log.replaceChildren.apply(log, data.logs.slice(-8).map(function (line) { var p = document.createElement('p'); p.textContent = line; return p; })); }
+      if (data.status === 'complete' || data.status === 'failed' || data.status === 'cancelled') { clearInterval(timer); location.reload(); }
+    }).catch(function () {});
+  }, 2500);
+})();
+</script>
 <script>
 (function () {           /* while the office listener fills the cart: its activity, then the results */
   var panel = document.querySelector('[data-cart-poll]');
