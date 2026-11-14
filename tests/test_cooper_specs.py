@@ -170,5 +170,5 @@ check(sent[1]["specs"] == {"Light Output (Lumens)": "1,200", "Wattage": "12 W", 
 check(sent[2]["specs"] == {"Lumens": "5,000", "Voltage": "120-277 V"}, "and 'Label: value' lines in a specifications box")
 check(sent[3]["specs"] == {} and list(listener.DEBUG_DIRECTORY.glob("product-*.html")), "a page with nothing readable is kept in catalog_debug for fitting the reader")
 check(4 not in sent, "an item that does not want details is not opened")
-check(listener.LISTENER_VERSION == "2.8", "the listener is v2.8")
+check(tuple(int(x) for x in listener.LISTENER_VERSION.split(".")) >= (2, 8), "the listener is v2.8 or newer (product details need 2.8)")
 done()

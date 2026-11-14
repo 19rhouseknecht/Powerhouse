@@ -12,7 +12,8 @@ local config file beside this script. The listener then waits for Update Prices
 commands from the website. Chrome opens only while a scan is running. Results
 always require review and approval in Power House Flow; this program never
 applies prices directly. Product pictures are sent as each item is scanned, and for Update from Cooper (and lights without
-lumens) the product's own page is read too: lumens, watts, color temperature and whatever else Cooper lists.
+lumens) the product's own page is read too: lumens, watts, color temperature and whatever else Cooper lists. A job's
+"Add all items to the Cooper cart" puts its materials in the Cooper cart and saves the cart as Lastname-MAT-JobNumber.
 
 Options:
     --tabs 3           how many Cooper tabs scan at once (1-6, default 3)
@@ -38,6 +39,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 import socket
@@ -46,7 +48,7 @@ import time
 import traceback
 from getpass import getpass
 
-LISTENER_VERSION = "2.8"
+LISTENER_VERSION = "2.9"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -852,6 +854,216 @@ async def crawl_catalog(config: dict, known_parts: set, skip: set, send, tabs: i
     return totals
 
 
+# --------------------------------------------------------------------------- the Cooper cart (a job's materials)
+# "Add all items to the Cooper cart" on a job: every material with a Cooper part number goes in the cart at its quantity, and
+# the cart is saved under the job's name (Lastname-MAT-JobNumber). Cooper's cart pages were not seen when this was written, so
+# every step looks for the usual controls, and when one cannot be found the listener asks the person at the office to do that
+# step in Chrome (then press Enter) instead of guessing. Pages it cannot work with are copied to catalog_debug/.
+QTY_INPUT = ('input[type="number"], input[name*="qty" i], input[name*="quantity" i], input[id*="qty" i], input[id*="quantity" i], '
+             'input[class*="qty" i], input[class*="quantity" i]')
+ADD_BUTTON = re.compile(r"^\s*(add to cart|add to order|add)\s*$", re.IGNORECASE)
+SAVE_CART = re.compile(r"(save|stash)\s*(this\s*)?(cart|for later|as)|saved cart|save to list", re.IGNORECASE)
+CONFIRM_SAVE = re.compile(r"^\s*(save|ok|submit|create|continue|confirm|save cart)\s*$", re.IGNORECASE)
+EMPTY_CART = re.compile(r"(cart|basket) is (currently )?empty|no items in (your|the) (cart|basket)|empty cart", re.IGNORECASE)
+
+
+async def debug_copy(page, name: str) -> None:
+    try:
+        DEBUG_DIRECTORY.mkdir(exist_ok=True)
+        (DEBUG_DIRECTORY / f"{name}.html").write_text(await page.content(), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def ask_person(page, words: str, status: str) -> bool:
+    """Pause for the person at the office: bring Chrome forward, say what to do, wait for Enter. False when nobody can answer."""
+    if HEADLESS:
+        return False
+    try:
+        await page.bring_to_front()
+    except Exception:  # noqa: BLE001
+        pass
+    print("\a", end="", flush=True)
+    log("=" * 60)
+    log(words)
+    log("=" * 60)
+    notify(status)
+    try:
+        await asyncio.to_thread(PROMPT, "Press Enter when that is done... ")
+        return True
+    except EOFError:
+        return False
+
+
+async def open_cart(page) -> str:
+    """Go to Cooper's cart page (its own link when the page has one). Returns the cart page's address."""
+    link = page.locator('a[href*="cart" i]:not([href*="add" i])').first
+    href = (await link.get_attribute("href")) if await link.count() else None
+    target = urljoin(page.url, href) if href else f"{COOPER_HOME.rstrip('/')}/cart"
+    await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+    await wait_for_verification(page)
+    await accept_cookies(page)
+    await page.wait_for_timeout(800)
+    return page.url
+
+
+async def cart_text(page) -> str:
+    try:
+        return (await page.locator("body").inner_text(timeout=5_000)).lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def find_add(scope):
+    """(quantity box or None, Add to cart button or None) inside a listing or a product page."""
+    box = scope.locator(QTY_INPUT).first
+    box = box if await box.count() else None
+    for candidate in await scope.locator('button, a, input[type="submit"], input[type="button"]').all():
+        try:
+            is_input = await candidate.evaluate("e => e.tagName === 'INPUT'")
+            label = ((await candidate.get_attribute("value")) if is_input else (await candidate.inner_text())) or ""
+        except Exception:  # noqa: BLE001
+            continue
+        cls = ((await candidate.get_attribute("class")) or "") + " " + ((await candidate.get_attribute("data-action")) or "")
+        if ADD_BUTTON.match(label.strip()) or re.search(r"add.?to.?cart", cls, re.IGNORECASE):
+            return box, candidate
+    return box, None
+
+
+async def add_line(page, line: dict) -> dict:
+    """Find the item by its Cooper part number, set the quantity (in Cooper's packages when it sells in them) and add it."""
+    part = str(line["part_number"]).strip()
+    await page.goto(f"{COOPER_HOME.rstrip('/')}/product/search?q={quote_plus(part)}", wait_until="domcontentloaded", timeout=60_000)
+    await wait_for_verification(page)
+    await accept_cookies(page)
+    cards = page.locator("#productSearchResults div.product.productCard")
+    await cards.first.wait_for(state="attached", timeout=45_000)
+    card = None
+    for index in range(await cards.count()):
+        candidate = cards.nth(index)
+        if ((await candidate.get_attribute("data-product-id")) or "").strip().casefold() == part.casefold():
+            card = candidate
+            break
+    if card is None:
+        return {"status": "error", "message": f"Cooper has no exact match for {part}"}
+    quantity = float(line.get("quantity") or 1)
+    uom = " ".join(text.strip() for text in await card.locator("small.priceUOM").all_text_contents() if text.strip())
+    package, package_unit = parse_source_quantity_and_unit(uom) if uom else (1.0, "")
+    if package > 1 and package_unit == line.get("unit"):
+        to_add, note = max(1, math.ceil(quantity / package)), f"{max(1, math.ceil(quantity / package))} x {package:g} {package_unit} for {quantity:g} {package_unit}"
+    else:
+        to_add, note = max(1, math.ceil(quantity)), ""
+    box, button = await find_add(card)
+    if button is None:                    # no Add on the search listing: the product's own page
+        link = None
+        for candidate in await card.locator("a[href]").all():
+            href = (await candidate.get_attribute("href")) or ""
+            if "/product/" in href and "/category/" not in href and "search" not in href:
+                link = urljoin(page.url, href)
+                break
+        if link:
+            await page.goto(link, wait_until="domcontentloaded", timeout=60_000)
+            await wait_for_verification(page)
+            await accept_cookies(page)
+            box, button = await find_add(page.locator("body"))
+    if button is None:
+        await debug_copy(page, f"cart-add-{re.sub(r'[^A-Za-z0-9]', '', part)}")
+        return {"status": "error", "message": "No Add to cart button on Cooper's listing (a copy is in catalog_debug)", "added_quantity": 0}
+    if box is not None:
+        await box.fill(str(to_add))
+    elif to_add != 1:
+        return {"status": "error", "message": f"No quantity box on Cooper's listing (needed {to_add})", "added_quantity": 0}
+    await button.click()
+    await page.wait_for_timeout(1_500)
+    return {"status": "added", "message": note, "added_quantity": to_add}
+
+
+async def save_cart(page, name: str) -> tuple:
+    """Save (stash) the cart under this name. Returns (saved, how)."""
+    await open_cart(page)
+    trigger = None
+    for candidate in await page.locator('button, a, input[type="submit"], input[type="button"]').all():
+        try:
+            if not await candidate.is_visible():
+                continue
+            label = ((await candidate.inner_text()) if await candidate.evaluate("e => e.tagName !== 'INPUT'") else (await candidate.get_attribute("value"))) or ""
+        except Exception:  # noqa: BLE001
+            continue
+        if SAVE_CART.search(label):
+            trigger = candidate
+            break
+    if trigger is not None:
+        await trigger.click()
+        await page.wait_for_timeout(1_000)
+        scope = page.locator('[role="dialog"]:visible, .modal:visible, .modal.show, dialog[open]').first
+        if not await scope.count():
+            scope = page.locator("body")
+        field = scope.locator('input[type="text"]:visible, input:not([type]):visible, input[name*="name" i]:visible, input[placeholder*="name" i]:visible').first
+        if await field.count():
+            await field.fill(name)
+            confirm = None
+            for candidate in await scope.locator('button:visible, input[type="submit"]:visible').all():
+                label = ((await candidate.inner_text()) if await candidate.evaluate("e => e.tagName !== 'INPUT'") else (await candidate.get_attribute("value"))) or ""
+                if CONFIRM_SAVE.match(label.strip()) or SAVE_CART.search(label):
+                    confirm = candidate
+            if confirm is not None:
+                await confirm.click()
+                await page.wait_for_timeout(1_500)
+                text = await cart_text(page)
+                if "error" not in text or name.lower() in text:
+                    return True, "saved by the listener"
+    await debug_copy(page, "cart-save")
+    if await ask_person(page, f"SAVE THE CART: Cooper's 'save cart' could not be worked automatically. In Chrome, save this cart as\n"
+                              f"      {name}\nthen come back here and press Enter.",
+                        f"Paused: save the Cooper cart as {name} in Chrome on the office computer, then press Enter in the listener."):
+        return True, "saved by hand at the office"
+    return False, f"Could not save the cart (a copy of Cooper's cart page is in catalog_debug). Save it in Cooper as {name}."
+
+
+async def fill_cart(config: dict, command: dict, report, headless: bool = False) -> dict:
+    """The whole cart run. report(results, message, finished, saved) sends progress to the website."""
+    from playwright.async_api import async_playwright
+    global HEADLESS, HUMAN_LOCK
+    HEADLESS, HUMAN_LOCK = headless, None
+    name, lines = command.get("cart_name") or "Power House cart", command.get("items") or []
+    summary = {"added": 0, "errors": 0, "saved": False}
+    async with async_playwright() as playwright:
+        options = {"user_data_dir": str(PROFILE_DIRECTORY), "headless": headless, "no_viewport": not headless}
+        if BROWSER_CHANNEL:
+            options["channel"] = BROWSER_CHANNEL
+        if os.environ.get("COOPER_BROWSER_PATH"):
+            options["executable_path"] = os.environ["COOPER_BROWSER_PATH"]
+        context = await playwright.chromium.launch_persistent_context(**options)
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(COOPER_HOME, wait_until="domcontentloaded", timeout=60_000)
+            await wait_for_verification(page)
+            await accept_cookies(page, wait_seconds=8)
+            await login_to_cooper(page, config)
+            await open_cart(page)
+            if not EMPTY_CART.search(await cart_text(page)):
+                if not await ask_person(page, "THE COOPER CART ALREADY HAS ITEMS (or it could not be told empty). Empty it, or save it first, in Chrome,\n"
+                                              f"so only this job's materials end up in {name}. Then press Enter.",
+                                        "Paused: the Cooper cart already has items. Empty or save it in Chrome on the office computer, then press Enter."):
+                    log("The cart may not be empty; carrying on (nobody at the keyboard).")
+            report([], f"Adding {len(lines)} item(s) to the Cooper cart for {name}.", False, False)
+            for number, line in enumerate(lines, 1):
+                try:
+                    result = await add_line(page, line)
+                except Exception as error:  # noqa: BLE001  (one item's problem never stops the cart)
+                    result = {"status": "error", "message": f"{type(error).__name__}: {str(error)[:120]}"}
+                result["order_item_id"] = line.get("order_item_id")
+                summary["added" if result["status"] == "added" else "errors"] += 1
+                log(f"[{number}/{len(lines)}] {line['part_number']}: {result['status']}" + (f" ({result['message']})" if result.get("message") else ""))
+                report([result], f"{number} of {len(lines)}: {line['name']} ({line['part_number']}) {'added' if result['status'] == 'added' else 'NOT added: ' + result.get('message', '')}", False, False)
+            saved, how = await save_cart(page, name) if summary["added"] else (False, "Nothing was added, so the cart was not saved.")
+            summary["saved"] = saved
+            report([], (f"Cart saved as {name} ({how}). " if saved else how + " ") + f"{summary['added']} added, {summary['errors']} not added.", True, saved)
+        finally:
+            await close_quietly(context)
+    return summary
+
+
 # --------------------------------------------------------------------------- the loop
 def main() -> None:
     global NOTIFY
@@ -887,6 +1099,18 @@ def main() -> None:
 
             def NOTIFY(message, command_id=command_id):  # noqa: N802  (a line in the website's live status)
                 api_request(config, f"/api/local-cooper/commands/{command_id}/heartbeat", method="POST", payload={"message": message}, delays=(2, 5))
+            if command.get("mode") == "cart":
+                log(f"Received cart #{command_id}: {len(command.get('items') or [])} item(s), to be saved as {command.get('cart_name')}.")
+
+                def report(results, message, finished, saved):
+                    api_request(config, f"/api/local-cooper/commands/{command_id}/cart", method="POST",
+                                payload={"results": results, "message": message, "finished": finished, "saved": saved})
+
+                done = asyncio.run(fill_cart(config, command, report, headless=args.headless))
+                log(f"Cart #{command_id} finished: {done['added']} added, {done['errors']} not added, " + ("saved." if done["saved"] else "NOT saved."))
+                if args.once:
+                    return
+                continue
             if command.get("mode") == "catalog":
                 log(f"Received catalog run #{command_id}: adding up to {command.get('limit') or 'all the'} Cooper items the Pricing Sheet does not have yet.")
 

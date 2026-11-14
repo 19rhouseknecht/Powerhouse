@@ -219,6 +219,7 @@ class PriceSyncRun(db.Model):
     item_ids_json = db.Column(db.Text, nullable=False, default="")          # "Get selected prices": just these items
     mode = db.Column(db.String(20), nullable=False, default="")             # '' prices · 'catalog' add Cooper's items
     limit_items = db.Column(db.Integer, nullable=False, default=0)          # catalog: new items this run may add (0 = no limit)
+    cart_json = db.Column(db.Text, nullable=False, default="")              # cart: {job_id, order_id, cart_name, items: [...]}
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     @property
@@ -1266,7 +1267,20 @@ class JobMaterialOrder(db.Model):
     selected_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     cart_ready_at = db.Column(db.DateTime, nullable=True)
+    cart_name = db.Column(db.String(120), nullable=False, default="")         # the Cooper cart it was saved as (Lastname-MAT-JobNumber)
+    cart_batch_id = db.Column(db.Integer, nullable=True)                      # the office listener's run that is filling it
+    cart_status = db.Column(db.String(30), nullable=False, default="")        # '' · queued · running · saved · partial · not_saved · failed
+    cart_message = db.Column(db.String(400), nullable=False, default="")
+    cart_results_json = db.Column(db.Text, nullable=False, default="")        # [{order_item_id, part_number, name, quantity, status, message}]
     job = db.relationship("Job", back_populates="material_order")
+
+    @property
+    def cart_results(self):
+        try:
+            value = json.loads(self.cart_results_json or "[]")
+            return value if isinstance(value, list) else []
+        except ValueError:
+            return []
     quote_option = db.relationship("QuoteOption")
     selected_by = db.relationship("User")
     items = db.relationship("JobMaterialOrderItem", back_populates="order", cascade="all, delete-orphan", order_by="JobMaterialOrderItem.position")
@@ -1537,6 +1551,16 @@ def professionalize_scope_bullet(value):
 
 app.jinja_env.filters["presentation_scope"] = professionalize_scope_bullet
 app.jinja_env.filters["plain_terms"] = plain_terms
+
+
+def _from_json(text):
+    try:
+        return json.loads(text or "[]")
+    except ValueError:
+        return []
+
+
+app.jinja_env.filters["fromjson"] = _from_json
 
 
 # ---------------- Setup gate ----------------
@@ -3467,7 +3491,24 @@ def job_material_order(job_id):
     if not job.material_order:
         flash("Choose the customer’s accepted quote option first.", "error")
         return redirect(url_for("job_detail", job_id=job.id))
-    return render_template("job_material_order.html", job=job, order=job.material_order, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all())
+    order = job.material_order
+    sync_cart_state(order)
+    lines, left_out = cooper_cart_lines(order)
+    run = PriceSyncRun.query.filter_by(batch_id=order.cart_batch_id).first() if order.cart_batch_id else None
+    return render_template("job_material_order.html", job=job, order=order, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(),
+                           cart_lines=lines, cart_left_out=left_out, next_cart_name=cart_name_for(job), cart_run=run)
+
+
+def sync_cart_state(order):
+    """A cart run the listener never finished (it failed, was cancelled or went quiet) shows as failed on the order."""
+    if not order or order.cart_status not in ("queued", "running") or not order.cart_batch_id:
+        return
+    expire_stale_cooper_runs()
+    run = PriceSyncRun.query.filter_by(batch_id=order.cart_batch_id).first()
+    if run is None or run.status in ("failed", "cancelled"):
+        order.cart_status = "failed"
+        order.cart_message = (run.error_message if run and run.error_message else "The office listener stopped before the cart was finished.")[:400]
+        db.session.commit()
 
 
 @app.route("/jobs/<int:job_id>/materials/update", methods=["POST"])
@@ -3574,17 +3615,101 @@ def add_job_material_order_item(job_id):
 @app.route("/jobs/<int:job_id>/materials/add-to-cart", methods=["POST"])
 @login_required
 def add_job_material_order_to_cart(job_id):
+    """Add all items to the Cooper cart: the office listener puts every item with a Cooper part number in the cart at its
+    quantity and saves the cart as Lastname-MAT-JobNumber. Items without a Cooper part number are left out and listed."""
     check_csrf()
     job = db.get_or_404(Job, job_id)
     order = job.material_order
     if not order or not order.items:
-        flash("Add at least one material before preparing the cart.", "error")
+        flash("Add at least one material before sending it to the Cooper cart.", "error")
         return redirect(url_for("job_material_order", job_id=job.id))
-    order.status = "cart_ready"
-    order.cart_ready_at = datetime.utcnow()
+    lines, left_out = cooper_cart_lines(order)
+    if not lines:
+        flash("None of these materials has a Cooper part number, so there is nothing to put in the Cooper cart.", "error")
+        return redirect(url_for("job_material_order", job_id=job.id))
+    expire_stale_cooper_runs()
+    if PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).first():
+        flash("The office listener is busy with another Cooper job. Try again when it finishes.", "error")
+        return redirect(url_for("job_material_order", job_id=job.id))
+    name = cart_name_for(job)
+    batch = PriceSyncBatch(supplier="cooper", created_by=current_user)
+    db.session.add(batch); db.session.flush()
+    db.session.add(PriceSyncRun(batch=batch, mode="cart", total=len(lines), cart_json=json.dumps({"job_id": job.id, "order_id": order.id, "cart_name": name, "items": lines}),
+                                activity_log=json.dumps([f"Cart queued: {len(lines)} item(s) for job #{job.job_number}, to be saved as {name}. Waiting for the office listener."])))
+    order.status = "cart_ready"; order.cart_ready_at = datetime.utcnow()
+    order.cart_name, order.cart_batch_id, order.cart_status = name, batch.id, "queued"
+    order.cart_message = (f"{len(left_out)} item(s) have no Cooper part number and were left out: " + ", ".join(item.name for item in left_out[:8])) if left_out else ""
+    order.cart_results_json = json.dumps([dict(line, status="waiting", message="") for line in lines])
     db.session.commit()
-    flash("Cart marked ready. Your external ordering program can be connected to this job order next.", "success")
-    return redirect(url_for("job_material_order", job_id=job.id))
+    flash(f"Sent to the office listener: {len(lines)} item(s) go in the Cooper cart, saved as {name}.", "success")
+    return redirect(url_for("job_material_order", job_id=job.id) + "#cooper-cart")
+
+
+def cart_name_for(job):
+    """Lastname-MAT-JobNumber (the client's last name, else the company's or first name; letters and digits only)."""
+    client = job.client
+    last = (client.last_name or client.company_name or client.first_name or "Client") if client else "Client"
+    last = re.sub(r"[^A-Za-z0-9]+", "", last.split()[-1] if client and client.last_name else last) or "Client"
+    return f"{last}-MAT-{job.job_number or job.id}"
+
+
+def cooper_cart_lines(order):
+    """(lines for the Cooper cart, order items left out). A line is an item with a Cooper part number, at its quantity."""
+    lines, left_out = [], []
+    for item in order.items:
+        part = ""
+        if item.price_item and item.price_item.cooper_part_number:
+            part = item.price_item.cooper_part_number
+        elif item.part_number and "cooper" in canonical_item_name(item.supplier or ""):
+            part = item.part_number
+        if part and (item.quantity or 0) > 0:
+            lines.append({"order_item_id": item.id, "part_number": part.strip(), "name": item.name, "quantity": round(item.quantity, 3), "unit": item.unit or "ea"})
+        else:
+            left_out.append(item)
+    return lines, left_out
+
+
+def cart_order_for(run):
+    try:
+        data = json.loads(run.cart_json or "{}")
+    except ValueError:
+        return None, {}
+    return db.session.get(JobMaterialOrder, data.get("order_id") or 0), data
+
+
+@app.route("/api/local-cooper/commands/<int:batch_id>/cart", methods=["POST"])
+@local_cooper_api_required
+def local_cooper_cart(batch_id):
+    """The listener's report on a cart run: each item added or not, and (when finished) whether the cart was saved."""
+    batch = db.get_or_404(PriceSyncBatch, batch_id); run = batch.run
+    if run is None or run.mode != "cart" or run.status not in ("queued", "running"):
+        return jsonify({"error": "This cart run is no longer active."}), 409
+    order, data = cart_order_for(run)
+    payload = request.get_json(silent=True) or {}
+    results = {row.get("order_item_id"): row for row in (order.cart_results if order else [])}
+    for row in payload.get("results") or []:
+        if isinstance(row, dict) and row.get("order_item_id") in results:
+            results[row["order_item_id"]].update(status=str(row.get("status") or "")[:20], message=str(row.get("message") or "")[:200],
+                                                 added_quantity=row.get("added_quantity"))
+    added = sum(1 for row in results.values() if row.get("status") == "added")
+    run.status = "running"; run.current = added
+    message = str(payload.get("message") or "").strip()[:300]
+    if message:
+        append_sync_log(run, message)
+    if order:
+        order.cart_results_json = json.dumps(list(results.values()))
+        order.cart_status = "running"
+    if payload.get("finished"):
+        saved = bool(payload.get("saved"))
+        problems = [row for row in results.values() if row.get("status") != "added"]
+        run.status = "complete"
+        if order:
+            order.cart_status = ("saved" if not problems else "partial") if saved else "not_saved"
+            order.cart_message = (message or ("Saved in the Cooper cart as " + data.get("cart_name", "") if saved else "The cart was not saved."))[:400]
+        append_sync_log(run, f"Cart finished: {added} of {len(results)} item(s) added" + (f", saved as {data.get('cart_name')}." if saved else "; the cart was NOT saved."))
+    run.updated_at = datetime.utcnow()
+    db.session.commit()
+    return jsonify({"ok": True, "added": added})
 
 
 @app.route("/finance")
@@ -4274,6 +4399,20 @@ def local_cooper_next_command():
     item_query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.cooper_part_number != "")
     if run.only_zero_prices:
         item_query = item_query.filter(PriceItem.price <= 0)
+    if run.mode == "cart":
+        version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
+        put_listener_version(version.group(1) if version else "1")
+        order, data = cart_order_for(run)
+        if not version or tuple(int(x) for x in version.group(1).split(".")[:2]) < (2, 9):
+            run.status = "failed"; run.error_message = "This listener cannot fill a Cooper cart yet: download v2.9 or newer from Settings."
+            append_sync_log(run, run.error_message)
+            if order:
+                order.cart_status = "failed"; order.cart_message = run.error_message
+            db.session.commit()
+            return jsonify({"command": None, "state": "idle"})
+        if order:
+            order.cart_status = "running"; db.session.commit()
+        return jsonify({"state": "running", "command": {"id": run.batch_id, "mode": "cart", "cart_name": data.get("cart_name"), "items": data.get("items") or []}})
     if run.mode == "catalog":
         version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
         put_listener_version(version.group(1) if version else "1")
@@ -8024,6 +8163,10 @@ with app.app_context():
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "limit_items", "INTEGER NOT NULL DEFAULT 0"),
+        ("price_sync_run", "cart_json", "TEXT NOT NULL DEFAULT ''"),
+        ("job_material_order", "cart_name", "VARCHAR(120) NOT NULL DEFAULT ''"), ("job_material_order", "cart_batch_id", "INTEGER"),
+        ("job_material_order", "cart_status", "VARCHAR(30) NOT NULL DEFAULT ''"), ("job_material_order", "cart_message", "VARCHAR(400) NOT NULL DEFAULT ''"),
+        ("job_material_order", "cart_results_json", "TEXT NOT NULL DEFAULT ''"),
     ]:
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")
