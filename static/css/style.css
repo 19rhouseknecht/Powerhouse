@@ -1292,3 +1292,38 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .cart-send { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:8px 12px; flex:1 1 360px; min-width:0; }
 .cart-send small { color:var(--muted); font-size:12px; flex:1 1 260px; text-align:right; }
 .cart-send form { margin:0; }
+
+/* Job materials: what will be ordered */
+.material-list { margin:14px 0; }
+.material-row { display:grid; grid-template-columns:48px minmax(0,1fr) auto 110px auto; gap:12px; align-items:center; padding:10px 0; border-top:1px solid var(--border); }
+.material-thumb { width:48px; height:48px; border-radius:8px; background:#fff; display:grid; place-items:center; overflow:hidden; border:1px solid var(--border); }
+.material-thumb img { width:100%; height:100%; object-fit:contain; }
+.material-thumb span { color:#a8a29e; }
+.material-what { min-width:0; }
+.material-what strong { display:block; overflow-wrap:anywhere; }
+.material-what small { color:var(--muted); font-size:11px; }
+.material-cart-yes { color:#86efac; }
+.material-cart-no { color:#fbbf24; }
+.material-qty { display:flex; align-items:center; gap:6px; margin:0; }
+.material-qty input { width:84px; min-width:0; }
+.material-unit { color:var(--muted); font-size:12px; min-width:22px; }
+.material-saved { color:var(--muted); font-size:11px; min-width:40px; }
+.material-cost { text-align:right; }
+.material-cost strong { display:block; font-variant-numeric:tabular-nums; }
+.material-cost small { color:var(--muted); font-size:11px; }
+.material-remove { margin:0; }
+.material-add { margin:14px 0; }
+.material-search { margin-top:8px; }
+.material-search > input { width:100%; min-width:0; }
+.material-pick { margin:0; }
+.material-pick-fields { display:flex; align-items:center; gap:6px; }
+.material-pick-fields input[type="number"] { width:76px; min-width:0; }
+.material-pick-fields small { color:var(--muted); }
+.material-add-note { margin:10px 0 0; font-size:12px; }
+.material-add-note a { color:var(--accent-hover); }
+@media (max-width:760px) {
+  .material-row { grid-template-columns:44px minmax(0,1fr) auto; }
+  .material-qty { grid-column:2; }
+  .material-cost { grid-column:3; grid-row:2; }
+  .material-remove { grid-column:3; grid-row:1; }
+}
