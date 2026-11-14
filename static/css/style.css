@@ -1343,3 +1343,4 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .material-tick-bar small { font-size:12px; }
 .cooper-update-panel .section-title { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; }
 .cooper-update-panel.upd-failed h2 { color:#fca5a5; }
+.lighting-warn { flex-basis:100%; margin:6px 0 0; padding:8px 10px; border-radius:8px; background:rgba(217,119,6,.12); color:#fcd34d; font-size:12px; }
