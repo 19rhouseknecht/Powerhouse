@@ -48,7 +48,7 @@ import time
 import traceback
 from getpass import getpass
 
-LISTENER_VERSION = "2.9"
+LISTENER_VERSION = "2.10"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CONFIG_PATH = SCRIPT_DIRECTORY / "cooper_updater_config.json"
 PROFILE_DIRECTORY = SCRIPT_DIRECTORY / "cooper_chrome_profile"
@@ -896,11 +896,8 @@ async def ask_person(page, words: str, status: str) -> bool:
 
 
 async def open_cart(page) -> str:
-    """Go to Cooper's cart page (its own link when the page has one). Returns the cart page's address."""
-    link = page.locator('a[href*="cart" i]:not([href*="add" i])').first
-    href = (await link.get_attribute("href")) if await link.count() else None
-    target = urljoin(page.url, href) if href else f"{COOPER_HOME.rstrip('/')}/cart"
-    await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+    """Go to Cooper's cart page (/cart: the cart icon's own address). Returns the cart page's address."""
+    await page.goto(f"{COOPER_HOME.rstrip('/')}/cart", wait_until="domcontentloaded", timeout=60_000)
     await wait_for_verification(page)
     await accept_cookies(page)
     await page.wait_for_timeout(800)
@@ -914,10 +911,53 @@ async def cart_text(page) -> str:
         return ""
 
 
+async def cart_count(page):
+    """The number on Cooper's cart icon (span.cartCount), or None."""
+    try:
+        node = page.locator("span.cartCount").first
+        if await node.count():
+            digits = re.sub(r"[^0-9]", "", await node.inner_text(timeout=2_000))
+            return int(digits) if digits else 0
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+async def set_quantity(box, value: int) -> bool:
+    """Type a quantity the way a person does, so Cooper's page takes it: click, replace, fire change, leave the box."""
+    text = str(value)
+    for _ in range(2):
+        try:
+            await box.click()
+            await box.fill(text)
+            await box.dispatch_event("input")
+            await box.dispatch_event("change")
+            await box.press("Tab")
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if (await box.input_value()).strip() == text:
+                return True
+            await box.click(click_count=3)
+            await box.page.keyboard.type(text)
+            await box.press("Tab")
+            if (await box.input_value()).strip() == text:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
 async def find_add(scope):
     """(quantity box or None, Add to cart button or None) inside a listing or a product page."""
-    box = scope.locator(QTY_INPUT).first
-    box = box if await box.count() else None
+    box = None
+    for candidate in await scope.locator(QTY_INPUT).all():     # the visible quantity box (a hidden one is never the one used)
+        try:
+            if await candidate.is_visible():
+                box = candidate
+                break
+        except Exception:  # noqa: BLE001
+            continue
     for candidate in await scope.locator('button, a, input[type="submit"], input[type="button"]').all():
         try:
             is_input = await candidate.evaluate("e => e.tagName === 'INPUT'")
@@ -970,17 +1010,119 @@ async def add_line(page, line: dict) -> dict:
         await debug_copy(page, f"cart-add-{re.sub(r'[^A-Za-z0-9]', '', part)}")
         return {"status": "error", "message": "No Add to cart button on Cooper's listing (a copy is in catalog_debug)", "added_quantity": 0}
     if box is not None:
-        await box.fill(str(to_add))
+        if not await set_quantity(box, to_add):
+            return {"status": "error", "message": f"Cooper's quantity box would not take {to_add}", "added_quantity": 0}
     elif to_add != 1:
         return {"status": "error", "message": f"No quantity box on Cooper's listing (needed {to_add})", "added_quantity": 0}
+    before = await cart_count(page)
     await button.click()
-    await page.wait_for_timeout(1_500)
-    return {"status": "added", "message": note, "added_quantity": to_add}
+    for _ in range(40):                    # wait for Cooper to take it (the cart icon's number changes) before the next page
+        await page.wait_for_timeout(250)
+        after = await cart_count(page)
+        if before is None or (after is not None and after != before):
+            break
+    await page.wait_for_timeout(500)
+    return {"status": "added", "message": note, "added_quantity": to_add, "part_number": part}
+
+
+CART_ROWS_JS = r"""(wanted) => {
+  const squash = t => (t || '').toLowerCase().replace(/[^0-9a-z]/g, '');
+  const boxes = Array.from(document.querySelectorAll('input')).filter(i => /qty|quantity/i.test(i.name + ' ' + i.id + ' ' + i.className) || i.type === 'number')
+                     .filter(i => i.offsetParent !== null);
+  const out = {};
+  boxes.forEach((box, index) => {
+    let row = box.parentElement;
+    while (row && row !== document.body) {
+      const inside = Array.from(row.querySelectorAll('input')).filter(i => boxes.includes(i)).length;
+      if (inside > 1) return;                       // grew past this item's own row
+      const words = squash(row.innerText);
+      const part = wanted.find(p => words.includes(squash(p)));
+      if (part) { if (!(part in out)) out[part] = {index, value: box.value}; return; }
+      row = row.parentElement;
+    }
+  });
+  return out;
+}"""
+UPDATE_BUTTON = re.compile(r"^\s*(update( cart| quantities| qty)?|recalculate)\s*$", re.IGNORECASE)
+
+
+async def check_cart_quantities(page, wanted: dict) -> list:
+    """On Cooper's cart page, every part's quantity box against what was added; any that differs is set again.
+    Returns sentences for the parts it changed or could not find. A copy of the cart page is kept for fitting."""
+    await open_cart(page)
+    await debug_copy(page, "cart-page")
+    found = await page.evaluate(CART_ROWS_JS, list(wanted))
+    boxes = page.locator("input")
+    notes, changed = [], False
+    all_boxes = [b for b in await boxes.all()]
+    visible = []
+    for b in all_boxes:
+        try:
+            attrs = await b.evaluate("i => (i.name + ' ' + i.id + ' ' + i.className + ' ' + i.type)")
+            if re.search(r"qty|quantity|number", attrs, re.IGNORECASE) and await b.is_visible():
+                visible.append(b)
+        except Exception:  # noqa: BLE001
+            continue
+    for part, quantity in wanted.items():
+        row = found.get(part)
+        if row is None:
+            notes.append(f"{part}: not found on the cart page to check its quantity")
+            continue
+        try:
+            current = float(str(row["value"]).strip() or 0)
+        except ValueError:
+            current = 0
+        if current == quantity or row["index"] >= len(visible):
+            continue
+        if await set_quantity(visible[row["index"]], quantity):
+            changed = True
+            notes.append(f"{part}: was {current:g} in the cart, set to {quantity:g}")
+        else:
+            notes.append(f"{part}: is {current:g} in the cart, should be {quantity:g} (fix it in Cooper)")
+    if changed:
+        for candidate in await page.locator('button:visible, input[type="submit"]:visible, a:visible').all():
+            try:
+                label = ((await candidate.inner_text()) if await candidate.evaluate("e => e.tagName !== 'INPUT'") else (await candidate.get_attribute("value"))) or ""
+            except Exception:  # noqa: BLE001
+                continue
+            if UPDATE_BUTTON.match(label):
+                await candidate.click()
+                break
+        await page.wait_for_timeout(2_000)
+    return notes
 
 
 async def save_cart(page, name: str) -> tuple:
-    """Save (stash) the cart under this name. Returns (saved, how)."""
+    """Save (stash) the cart under this name with Cooper's own "Stash Cart for Later" (#saveCartDropdown, #CartName,
+    #saveCartBtn), then make sure it is listed on /cart/stashed. Other pages: the usual controls, else the person. Returns (saved, how)."""
     await open_cart(page)
+    if await page.locator("#saveCartDropdown, #CartName").count():
+        try:
+            toggle = page.locator("#saveCartDropdown").first
+            if await toggle.count():
+                await toggle.click()
+            field = page.locator("#CartName").first
+            try:
+                await field.wait_for(state="visible", timeout=4_000)
+                await field.fill(name)
+                await page.locator("#saveCartBtn").first.click()
+            except Exception:  # noqa: BLE001  (the dropdown did not open: fill and send its form directly)
+                await field.evaluate("(box, name) => { box.value = name; const form = box.closest('form'); form.requestSubmit ? form.requestSubmit() : form.submit(); }", name)
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=20_000)
+            except Exception:  # noqa: BLE001
+                pass
+            await page.wait_for_timeout(1_500)
+            await wait_for_verification(page)
+            await page.goto(f"{COOPER_HOME.rstrip('/')}/cart/stashed", wait_until="domcontentloaded", timeout=60_000)
+            await wait_for_verification(page)
+            if name.lower() in await cart_text(page):
+                return True, "stashed by the listener"
+            log(f"Pressed Save, but {name} is not on Cooper's stashed carts yet.")
+            await debug_copy(page, "cart-stashed")
+        except Exception as error:  # noqa: BLE001
+            log(f"Stashing the cart did not work ({type(error).__name__}: {error}).")
+        await open_cart(page)
     trigger = None
     for candidate in await page.locator('button, a, input[type="submit"], input[type="button"]').all():
         try:
@@ -1047,15 +1189,27 @@ async def fill_cart(config: dict, command: dict, report, headless: bool = False)
                                         "Paused: the Cooper cart already has items. Empty or save it in Chrome on the office computer, then press Enter."):
                     log("The cart may not be empty; carrying on (nobody at the keyboard).")
             report([], f"Adding {len(lines)} item(s) to the Cooper cart for {name}.", False, False)
+            all_results = []
             for number, line in enumerate(lines, 1):
                 try:
                     result = await add_line(page, line)
                 except Exception as error:  # noqa: BLE001  (one item's problem never stops the cart)
                     result = {"status": "error", "message": f"{type(error).__name__}: {str(error)[:120]}"}
                 result["order_item_id"] = line.get("order_item_id")
+                all_results.append(result)
                 summary["added" if result["status"] == "added" else "errors"] += 1
                 log(f"[{number}/{len(lines)}] {line['part_number']}: {result['status']}" + (f" ({result['message']})" if result.get("message") else ""))
                 report([result], f"{number} of {len(lines)}: {line['name']} ({line['part_number']}) {'added' if result['status'] == 'added' else 'NOT added: ' + result.get('message', '')}", False, False)
+            added = {}
+            for result in all_results:
+                if result.get("status") == "added" and result.get("part_number"):
+                    added[result["part_number"]] = added.get(result["part_number"], 0) + result["added_quantity"]
+            if added:
+                notes = await check_cart_quantities(page, added)
+                for note in notes:
+                    log(f"Cart check: {note}")
+                if notes:
+                    report([], "Checked the quantities in Cooper's cart: " + "; ".join(notes[:8]), False, False)
             saved, how = await save_cart(page, name) if summary["added"] else (False, "Nothing was added, so the cart was not saved.")
             summary["saved"] = saved
             report([], (f"Cart saved as {name} ({how}). " if saved else how + " ") + f"{summary['added']} added, {summary['errors']} not added.", True, saved)
