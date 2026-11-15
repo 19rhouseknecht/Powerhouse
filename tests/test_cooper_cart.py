@@ -89,60 +89,79 @@ import logging  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
 shop = Flask("pretend_cooper_cart")
-CART, SAVED = [], []
-LISTING = {"122NMB250": ("(250 ft)", True), "QO120": ("/ea", False)}
+CART, SAVED, STASHED, MODE = {}, [], {}, {"plain": False}
+LISTING = {"122NMB250": ("(250 ft)", True), "QO120": ("/ea", False), "GF20W": ("/ea", True)}
+# Like Cooper: the header has a "Saved Carts" link before the cart icon (the old listener could follow it by mistake), the
+# quantity box only counts once its change event fires (a filled box that never fires it stays at 1), the product page's Add
+# for QO120 always adds 1 (fixed later on the cart page), and the cart is stashed through the real dropdown form.
+
+
+def page(body):
+    count = sum(CART.values())
+    return (f'<html><body><header><a href="/cart/stashed">Saved Carts</a> <a href="/cart"><span class="icon icon-cart"></span>'
+            f'<span class="cartCount">{count}</span> </a></header>{body}</body></html>')
 
 
 @shop.route("/")
 def home():
-    return '<html><body><a href="/cart">Cart</a> Cooper</body></html>'
+    return page("Cooper")
 
 
 @shop.route("/product/search")
 def search():
     part = req.args.get("q", "")
     if part not in LISTING:
-        return '<html><body><div id="productSearchResults"><div class="product productCard" data-product-id="OTHER1"></div></div></body></html>'
+        return page('<div id="productSearchResults"><div class="product productCard" data-product-id="OTHER1"></div></div>')
     uom, has_button = LISTING[part]
-    add = (f'<input type="number" name="qty" value="1"><button type="button" class="addToCart" onclick="fetch(\'/cart/add?part={part}&qty=\' + '
-           f'this.previousElementSibling.value, {{method: \'POST\'}})">Add to Cart</button>') if has_button else ""
-    return (f'<html><body><div id="productSearchResults"><div class="product productCard" data-product-id="{part}"><a href="/product/{part}/detail">{part}</a>'
-            f'<span class="pricerPerQty" data-analytics-price="10"></span><small class="priceUOM">{uom}</small>{add}</div></div></body></html>')
+    add = (f'<input type="number" name="qty" value="1" onchange="this.dataset.q = this.value"><button type="button" class="addToCart" '
+           f'onclick="setTimeout(() => fetch(\'/cart/add?part={part}&qty=\' + (this.previousElementSibling.dataset.q || 1), {{method: \'POST\'}})'
+           f'.then(() => document.querySelector(\'.cartCount\').textContent = \'changed\'), 400)">Add to Cart</button>') if has_button else ""
+    return page(f'<div id="productSearchResults"><div class="product productCard" data-product-id="{part}"><a href="/product/{part}/detail">{part}</a>'
+                f'<span class="pricerPerQty" data-analytics-price="10"></span><small class="priceUOM">{uom}</small>{add}</div></div>')
 
 
 @shop.route("/product/<part>/detail")
 def detail(part):
-    return (f'<html><body><h1>{part}</h1><label>Qty <input id="qty" type="number" value="1"></label>'
-            f'<button onclick="fetch(\'/cart/add?part={part}&qty=\' + document.getElementById(\'qty\').value, {{method: \'POST\'}})">Add</button></body></html>')
+    return page(f'<h1>{part}</h1><label>Qty <input id="qty" type="number" value="1"></label>'
+                f'<button onclick="fetch(\'/cart/add?part={part}&qty=1\', {{method: \'POST\'}})">Add</button>')
 
 
 @shop.route("/cart/add", methods=["POST"])
 def cart_add():
-    CART.append((req.args["part"], int(req.args["qty"])))
+    CART[req.args["part"]] = CART.get(req.args["part"], 0) + int(req.args["qty"])
+    return "ok"
+
+
+@shop.route("/cart/update", methods=["POST"])
+def cart_update():
+    for part, qty in req.form.items():
+        CART[part] = int(float(qty))
     return "ok"
 
 
 @shop.route("/cart")
 def cart_page():
-    items = "".join(f"<li>{part} x {qty}</li>" for part, qty in CART) or "<p>Your cart is empty.</p>"
-    return f'''<html><body><ul>{items}</ul><button onclick="document.getElementById('save').style.display='block'">Save Cart</button>
-    <div id="save" role="dialog" style="display:none"><label>Cart name <input type="text" id="cartname"></label>
-    <button onclick="fetch('/cart/save?name=' + encodeURIComponent(document.getElementById('cartname').value), {{method: 'POST'}}).then(() => document.body.append('Saved'))">Save</button></div></body></html>'''
+    if MODE["plain"]:
+        return "<html><body><p>Your cart is empty.</p><p>No way to save it here.</p></body></html>"
+    rows = "".join(f'<tr><td>Item <b>{part}</b></td><td><input class="form-control qty" name="{part}" value="{qty}"></td></tr>' for part, qty in CART.items())
+    body = f'<table>{rows}</table><button id="upd" onclick="fetch(\'/cart/update\', {{method: \'POST\', body: new FormData(document.getElementById(\'f\'))}})">Update Cart</button>' if CART else "<p>Your cart is empty.</p>"
+    body = body.replace("<table>", '<form id="f" onsubmit="return false"><table>').replace("</table>", "</table></form>")
+    return page(body + """<div id="stash-cart-container"><a href="#" id="saveCartDropdown" onclick="document.getElementById('menu').style.display='block'; return false"
+      class="btn btn-default">Stash Cart for Later</a><div id="menu" class="dropdown-menu" style="display:none"><form action="/shoppingcart/savecart" method="post">
+      <label>Name This Cart</label><input hidden type="number" name="Id" value="59214055"><input placeholder="Enter Your Cart Name" class="form-control" type="text" id="CartName" name="CartName" value="">
+      <button id="saveCartBtn" type="submit" class="btn btn-primary">Save</button></form>
+      <i><a href="/cart/stashed">Click Here</a> to access your previously stashed carts.</i></div></div>""")
 
 
-@shop.route("/cart/save", methods=["POST"])
+@shop.route("/shoppingcart/savecart", methods=["POST"])
 def cart_save():
-    SAVED.append(req.args["name"]); return "ok"
+    SAVED.append(req.form["CartName"]); STASHED.update(CART); CART.clear()
+    return '<html><head><meta http-equiv="refresh" content="0; url=/cart"></head><body>Saved</body></html>'
 
 
-@shop.route("/plain")
-def plain():
-    return '<html><body><a href="/cart-plain">Cart</a></body></html>'
-
-
-@shop.route("/cart-plain")
-def cart_plain():
-    return "<html><body><p>Your cart is empty.</p><p>No way to save it here.</p></body></html>"
+@shop.route("/cart/stashed")
+def stashed():
+    return page("<h1>Stashed carts</h1>" + "".join(f"<p>{name}</p>" for name in SAVED))
 
 
 server = make_server("127.0.0.1", 0, shop, threaded=True); threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -160,6 +179,7 @@ if exe:
 reports = []
 command = {"cart_name": "Smith-MAT-1042", "items": [{"order_item_id": 1, "part_number": "122NMB250", "name": "wire", "quantity": 90, "unit": "ft"},
                                                     {"order_item_id": 2, "part_number": "QO120", "name": "breaker", "quantity": 3, "unit": "ea"},
+                                                    {"order_item_id": 4, "part_number": "GF20W", "name": "GFCI", "quantity": 7, "unit": "ea"},
                                                     {"order_item_id": 3, "part_number": "NOPE99", "name": "gone", "quantity": 1, "unit": "ea"}]}
 try:
     summary = asyncio.run(listener.fill_cart({"cooper_username": "u", "cooper_password": "p"}, command,
@@ -168,11 +188,14 @@ except Exception as error:  # noqa: BLE001
     if "xecutable" in str(error):
         skip("no browser for the listener"); done()
     raise
-check(sorted(CART) == [("122NMB250", 1), ("QO120", 3)], "the wire goes in as 1 roll of 250 ft (for 90 ft) and 3 breakers from the product page")
+check(SAVED == ["Smith-MAT-1042"], "the cart is stashed through Cooper's own Stash Cart for Later form, as Smith-MAT-1042 (never the Saved Carts link)")
+check(STASHED == {"122NMB250": 1, "QO120": 3, "GF20W": 7}, "every quantity is right: 7 GFCIs typed on the listing (the box's change fires), 1 roll of 250 ft for 90 ft, "
+      "and the breakers the product page added as 1 are set to 3 on the cart page (%s)" % STASHED)
+check(any("QO120: was 1 in the cart, set to 3" in message for _, message, _, _ in reports), "the cart check says what it fixed")
 results = {row["order_item_id"]: row for results, *_ in reports for row in results}
 check(results[1]["status"] == "added" and results[1]["message"] == "1 x 250 ft for 90 ft" and results[2]["status"] == "added", "each is reported added")
 check(results[3]["status"] == "error" and "no exact match" in results[3]["message"], "a part Cooper doesn't have is reported, and the rest carry on")
-check(SAVED == ["Smith-MAT-1042"] and summary["saved"] and reports[-1][2] and reports[-1][3], "the cart is saved as Smith-MAT-1042, and the site is told")
+check(summary["saved"] and reports[-1][2] and reports[-1][3] and "stashed by the listener" in reports[-1][1], "the site is told it was stashed")
 check("Cart saved as Smith-MAT-1042" in reports[-1][1], "with a sentence for the order page")
 
 
@@ -180,6 +203,7 @@ async def no_save_button():
     async with async_playwright() as playwright:
         browser = await (playwright.chromium.launch(executable_path=exe) if exe else playwright.chromium.launch())
         page = await browser.new_page()
+        MODE["plain"] = True
         await page.goto(listener.COOPER_HOME + "plain")
         asked = []
         listener.HEADLESS = False
@@ -196,5 +220,5 @@ saved, how, asked, unattended = asyncio.run(no_save_button())
 check(saved and how == "saved by hand at the office" and len(asked) == 1, "no Save cart button: the listener asks the person to save it as Smith-MAT-1042, then carries on")
 check(not unattended[0] and "Save it in Cooper as Smith-MAT-1042" in unattended[1] and list(listener.DEBUG_DIRECTORY.glob("cart-save.html")),
       "with nobody to ask it says so, and keeps a copy of the cart page")
-check(tuple(int(x) for x in listener.LISTENER_VERSION.split(".")) >= (2, 9), "the listener is v2.9 or newer (the cart needs 2.9)")
+check(tuple(int(x) for x in listener.LISTENER_VERSION.split(".")) >= (2, 10), "the listener is v2.10 or newer")
 done()
