@@ -47,6 +47,7 @@ def make_site():
     import app as appmod
     appmod.geocode_us_address = lambda address: (40.0379, -76.3055)       # no Census calls in tests
     appmod.app.config["TESTING"] = True
+    appmod.app.config["QUOTE_SYNC"] = True                                # Caden answers in the request, not a thread
     return appmod
 
 

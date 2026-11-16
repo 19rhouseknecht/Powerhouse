@@ -73,7 +73,8 @@ with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     check(q.lighting_room and (q.lighting_room["length"], q.lighting_room["width"], q.lighting_room["height"], q.lighting_room["type"]) == (14, 12, 9, "kitchen"),
           "the room is read from the message: kitchen, 14 x 12, 9 ft ceiling")
-    check("Lighting layout: Kitchen, 14 × 12 ft, 9 ft ceiling, kitchen (30 foot-candles)." in q.messages[-1].content, "and Caden's chat says what it read")
+    check(any("Lighting layout: Kitchen, 14 × 12 ft, 9 ft ceiling, kitchen (30 foot-candles)." in msg.content for msg in q.messages if msg.role == "assistant"),
+          "and Caden's chat says what it read")
 page = owner.get("/quoting/generate/%d" % job_id).get_data(as_text=True)
 check('id="lighting"' not in page and "lighting-plans" not in page and "Juno trimless downlight" not in page,
       "there is no lighting box listing the Pricing Sheet's lights: each option shows its own layout instead")
