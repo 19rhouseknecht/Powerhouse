@@ -1344,3 +1344,11 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .cooper-update-panel .section-title { display:flex; flex-wrap:wrap; justify-content:space-between; gap:10px; align-items:center; }
 .cooper-update-panel.upd-failed h2 { color:#fca5a5; }
 .lighting-warn { flex-basis:100%; margin:6px 0 0; padding:8px 10px; border-radius:8px; background:rgba(217,119,6,.12); color:#fcd34d; font-size:12px; }
+.caden-working p { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+.caden-working small { color:var(--muted); }
+.caden-dots { display:inline-flex; gap:4px; }
+.caden-dots b { width:7px; height:7px; border-radius:50%; background:var(--accent); animation:caden-dot 1.2s infinite ease-in-out; }
+.caden-dots b:nth-child(2) { animation-delay:.2s; }
+.caden-dots b:nth-child(3) { animation-delay:.4s; }
+@keyframes caden-dot { 0%, 80%, 100% { opacity:.25; transform:scale(.8); } 40% { opacity:1; transform:scale(1); } }
+@media (prefers-reduced-motion: reduce) { .caden-dots b { animation:none; opacity:.7; } }

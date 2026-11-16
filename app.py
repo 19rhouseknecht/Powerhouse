@@ -1072,6 +1072,7 @@ class Quote(db.Model):
     confirmed_at = db.Column(db.DateTime, nullable=True)
     pricing_needed_json = db.Column(db.Text, nullable=False, default="")    # Caden's suggested prices for unpriced items
     lighting_json = db.Column(db.Text, nullable=False, default="")          # the room for a lighting layout (lighting.read_room)
+    ai_working_since = db.Column(db.DateTime, nullable=True)                # Caden is building in the background since then
 
     @property
     def lighting_room(self):
@@ -1586,7 +1587,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2331,6 +2332,59 @@ def send_quote_message(job, quote, message):
     """One message from the office to Caden on a draft quote, and Caden's reply (options when ready). Never raises."""
     quote.messages.append(QuoteMessage(role="user", content=message))
     db.session.commit()
+    answer_quote_message(job, quote)
+
+
+# ---------------- Caden in the background ----------------
+# Building a quote can take minutes (several AI calls on a big Pricing Sheet), longer than PythonAnywhere lets a page wait,
+# so the page comes back at once and Caden works in a thread; the page shows "working" and reloads when he is done.
+CADEN_STALE_MINUTES = 20
+
+
+def caden_busy(quote):
+    """True while Caden is building this quote. A run that went quiet (the web app restarted under it) is ended and said."""
+    if not quote.ai_working_since:
+        return False
+    if datetime.utcnow() - quote.ai_working_since > timedelta(minutes=CADEN_STALE_MINUTES):
+        quote.ai_working_since = None
+        quote.messages.append(QuoteMessage(role="assistant", content="I stopped before finishing (the web app restarted while I was working), so nothing "
+                                           "changed. Send your message again; your conversation and draft are saved."))
+        db.session.commit()
+        return False
+    return True
+
+
+def start_caden(quote, work):
+    """Run work(job, quote) in the background for this quote (or right away when QUOTE_SYNC is set, as in tests)."""
+    quote.ai_working_since = datetime.utcnow()
+    db.session.commit()
+    if app.config.get("QUOTE_SYNC"):
+        _caden_worker(quote.id, work)
+        return
+    threading.Thread(target=_caden_worker, args=(quote.id, work), daemon=True).start()
+
+
+def _caden_worker(quote_id, work):
+    with app.app_context():
+        try:
+            quote = db.session.get(Quote, quote_id)
+            work(quote.job, quote)
+        except Exception as exc:  # noqa: BLE001 — Caden never takes the web worker down
+            app.logger.exception("Caden's background work failed")
+            db.session.rollback()
+            quote = db.session.get(Quote, quote_id)
+            quote.messages.append(QuoteMessage(role="assistant", content=f"Something went wrong while I was building the options, so nothing changed. "
+                                               f"{describe_ai_error(exc)} Send your message again."))
+        finally:
+            quote = db.session.get(Quote, quote_id)
+            if quote is not None:
+                quote.ai_working_since = None
+                db.session.commit()
+            db.session.remove()
+
+
+def answer_quote_message(job, quote):
+    """Caden answers the newest message on the quote: questions, or the options when ready. Never raises."""
     if not os.environ.get("OPENAI_API_KEY"):
         quote.messages.append(QuoteMessage(role="assistant", content="The OpenAI API key has not been connected yet. Add it on PythonAnywhere, reload the app, and send this message again."))
         db.session.commit()
@@ -2389,6 +2443,9 @@ def quote_assistant(job_id):
         if not message:
             flash("Enter a message for the quote assistant.", "error")
             return redirect(url_for("quote_assistant", job_id=job.id))
+        if caden_busy(quote):
+            flash("Caden is still building the options. Wait for him to finish, then send your message.", "error")
+            return redirect(url_for("quote_assistant", job_id=job.id))
         room_note = ""
         if request.form.get("lighting"):
             found, room_note = set_lighting_room_from_words(quote, [message] + [m.content for m in reversed(quote.messages) if m.role == "user"] + [job.description])
@@ -2403,16 +2460,29 @@ def quote_assistant(job_id):
             for option in quote.options:
                 option.lighting_json = ""
             db.session.commit()
-        send_quote_message(job, quote, message)
+        quote.messages.append(QuoteMessage(role="user", content=message))
         if room_note:
-            quote.messages.append(QuoteMessage(role="assistant", content=room_note)); db.session.commit()
-        return redirect(url_for("quote_assistant", job_id=job.id))
+            quote.messages.append(QuoteMessage(role="assistant", content=room_note))
+        db.session.commit()
+        start_caden(quote, answer_quote_message)
+        return redirect(url_for("quote_assistant", job_id=job.id) + "#caden")
 
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
+                           caden_working=caden_busy(quote),
                            pricing_rows=pricing_needed_rows(quote) if quote.options else [],
                            lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS, lighting_shapes=lighting.SHAPES,
                            lighting_plans=lighting_plans_for(quote)[1], lights_missing=lights_without_lumens() if quote.lighting_room or request.args.get("lighting") else [],
                            sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
+
+
+@app.route("/quotes/<int:quote_id>/caden-status")
+@login_required
+def caden_status(quote_id):
+    """For the page while Caden works: still working, and for how long."""
+    quote = db.get_or_404(Quote, quote_id)
+    working = caden_busy(quote)
+    seconds = int((datetime.utcnow() - quote.ai_working_since).total_seconds()) if working else 0
+    return jsonify({"working": working, "seconds": seconds, "messages": len(quote.messages)})
 
 
 @app.route("/quotes/<int:quote_id>/option-count", methods=["POST"])
@@ -3031,32 +3101,38 @@ def rework_quote(quote_id):
     if not os.environ.get("OPENAI_API_KEY"):
         flash("Connect the OpenAI API before asking Caden to rework the quote.", "error")
         return redirect(url_for("quote_assistant", job_id=quote.job_id))
+    if caden_busy(quote):
+        flash("Caden is still working on this quote. Wait for him to finish.", "error")
+        return redirect(url_for("quote_assistant", job_id=quote.job_id))
     manual_snapshots = capture_manual_quote_edits(quote)
     quote.messages.append(QuoteMessage(role="user", content=f"Rework all {quote.option_count} options now using the repaired Service and Pricing Sheet mappings plus every manual option edit recorded in this conversation. Preserve administrator-edited scope, quantities, material prices, labor decisions, titles, descriptions, and bullets unless I explicitly asked to replace them. Improve organization and homeowner-facing wording. Ask only if one remaining fact materially changes the entire scope."))
     db.session.commit()
-    try:
-        result = build_ai_quote_response(quote.job, quote)
-        quote.messages.append(QuoteMessage(role="assistant", content=result.get("message", f"I reworked all {quote.option_count} options using the repaired pricing context.")))
-        if result.get("ready"):
-            notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
-            remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
-            if not quote.ai_snapshot_json:
-                quote.ai_snapshot_json = serialize_quote_snapshot(quote)
-            restore_manual_quote_edits(quote, manual_snapshots)
-            quote.title = plain_terms(result.get("quote_title", "")) or quote.title
-            quote.introduction = plain_terms(result.get("introduction", ""))
+
+    def rework(job, quote):
+        try:
+            result = build_ai_quote_response(job, quote)
+            quote.messages.append(QuoteMessage(role="assistant", content=result.get("message", f"I reworked all {quote.option_count} options using the repaired pricing context.")))
+            if result.get("ready"):
+                notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
+                remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
+                if not quote.ai_snapshot_json:
+                    quote.ai_snapshot_json = serialize_quote_snapshot(quote)
+                restore_manual_quote_edits(quote, manual_snapshots)
+                quote.title = plain_terms(result.get("quote_title", "")) or quote.title
+                quote.introduction = plain_terms(result.get("introduction", ""))
+            else:
+                questions = [item.strip() for item in result.get("questions", []) if item.strip()]
+                if questions:
+                    quote.messages.append(QuoteMessage(role="assistant", content="I need one answer before reworking the quote: " + questions[0]))
             db.session.commit()
-            flash(f"Caden reworked all {quote.option_count} options with the updated pricing context.", "success")
-        else:
-            questions = [item.strip() for item in result.get("questions", []) if item.strip()]
-            if questions:
-                quote.messages.append(QuoteMessage(role="assistant", content=questions[0]))
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("Quote rework failed")
+            db.session.rollback()
+            quote.messages.append(QuoteMessage(role="assistant", content=f"I could not rework the quote. {describe_ai_error(exc)} Your repaired pricing and existing draft remain saved."))
             db.session.commit()
-            flash("Caden needs one answer before reworking the quote.", "error")
-    except Exception as exc:
-        app.logger.exception("Quote rework failed")
-        db.session.rollback()
-        flash(f"Caden could not rework the quote. {describe_ai_error(exc)} Your repaired pricing and existing draft remain saved.", "error")
+
+    start_caden(quote, rework)
+    flash(f"Caden is reworking all {quote.option_count} options. This page updates when he is done.", "success")
     return redirect(url_for("quote_assistant", job_id=quote.job_id))
 
 
@@ -6400,6 +6476,19 @@ def apply_lighting_plan(quote):
     return notes
 
 
+LIGHTING_SHORTLIST = 15
+
+
+def lighting_shortlist(plans):
+    """The lights Caden is shown: those that reach the room's target (RAB first, then by cost), at most LIGHTING_SHORTLIST;
+    when none reaches it, the brightest few. A shorter list keeps the quote quick to build."""
+    good = [plan for plan in plans if plan["footcandles"] >= plan["target"] * 0.95]
+    if not good:
+        return sorted(plans, key=lambda plan: -plan["footcandles"])[:5]
+    good.sort(key=lambda plan: ("rab" not in plan["name"].lower(), plan["material"], plan["count"]))
+    return good[:LIGHTING_SHORTLIST]
+
+
 def lighting_prompt(quote):
     """The LIGHTING_PLAN block for Caden, or ''."""
     room, plans = lighting_plans_for(quote)
@@ -6407,7 +6496,7 @@ def lighting_prompt(quote):
         return ""
     rows = [{"price_item_id": plan["id"], "light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"],
              "layout": "rings" if plan["shape"] == "circle" else f"{plan['rows']} x {plan['cols']} grid", "footcandles": plan["footcandles"], "material_cost": plan["material"],
-             "unconfirmed": plan["unconfirmed"]} for plan in plans[:40]]
+             "unconfirmed": plan["unconfirmed"]} for plan in lighting_shortlist(plans)]
     size = f"{room['length']:g} ft round" if room.get("shape") == "circle" else f"{room['length']:g} x {room['width']:g} ft"
     return f"""LIGHTING_PLAN for {room['name']} ({size}, {room['height']:g} ft ceiling, {room['type_label']},
 target {room['target']:g} foot-candles average, worked out with the lumen method):
@@ -8425,7 +8514,7 @@ with app.app_context():
         ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "lumens", "FLOAT"), ("price_item", "lumens_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_item", "specs_json", "TEXT NOT NULL DEFAULT ''"), ("price_item", "product_url", "VARCHAR(400) NOT NULL DEFAULT ''"),
-        ("price_item", "specs_at", "DATETIME"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_item", "specs_at", "DATETIME"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "ai_working_since", "DATETIME"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "image_path", "VARCHAR(255) NOT NULL DEFAULT ''"), ("price_item", "image_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_sync_run", "item_ids_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_sync_run", "mode", "VARCHAR(20) NOT NULL DEFAULT ''"),
