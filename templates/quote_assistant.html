@@ -84,7 +84,7 @@
 {% if quote.options %}<section class="panel section-panel missing-pricing-panel"><div class="section-title"><div><span class="eyebrow">Quick quote repair</span><h2>Missing pricing</h2><p class="muted">Connect each missing line to a complete service or a Pricing Sheet item. Quantities multiply automatically.</p></div><span class="status-pill {{ 'status-active' if not missing_groups else 'status-in-works' }}">{{ 'All pricing connected' if not missing_groups else missing_groups|length ~ ' missing' }}</span></div>
 {% if missing_groups %}<div class="missing-service-list">{% for group in missing_groups %}<details id="repair-{{ group.key }}" class="missing-service-card" {{ 'open' if request.args.get('repair') == group.key }}><summary><div><strong>{{ group.name }}</strong><span>Used in {{ group.tiers|join(', ') }} · {{ group.lines|length }} quote line{{ '' if group.lines|length == 1 else 's' }}</span></div><b>Fix pricing ›</b></summary><div class="missing-repair-body">
 <form method="POST" action="{{ url_for('repair_quote_missing', quote_id=quote.id) }}" class="repair-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="missing_key" value="{{ group.key }}"><input type="hidden" name="strategy" value="service"><div><span class="repair-number">1</span><h3>Use a complete service</h3><p>Best when labor, material, and scope are already included.</p></div><label>Service<select name="service_id" required><option value="">Select service</option>{% if group.suggested_services %}<optgroup label="Possible matches">{% for service in group.suggested_services %}<option value="{{ service.id }}">{{ service.name }} · {{ service.example_quantity }} · ${{ '{:,.2f}'.format(service.example_total) }}</option>{% endfor %}</optgroup>{% endif %}<optgroup label="All services">{% for service in group.other_services %}<option value="{{ service.id }}">{{ service.name }} · {{ service.example_quantity }} · ${{ '{:,.2f}'.format(service.example_total) }}</option>{% endfor %}</optgroup></select></label><label>How many example quantities?<input type="number" name="quantity" min="0.01" step="0.01" value="1" required><small>Example: service covers 1 bulb; enter 4 for four bulbs.</small></label><button class="btn btn-primary">Link service &amp; calculate</button></form>
-<form method="POST" action="{{ url_for('repair_quote_missing', quote_id=quote.id) }}" class="repair-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="missing_key" value="{{ group.key }}"><input type="hidden" name="strategy" value="price_item"><div><span class="repair-number">2</span><h3>Use a Pricing Sheet item</h3><p>Useful for simple per-piece or per-foot items.</p></div><label>Pricing item<select name="price_item_id" required><option value="">Select pricing item</option>{% if group.suggested_items %}<optgroup label="Possible matches">{% for item in group.suggested_items %}<option value="{{ item.id }}">{{ item.name }} · ${{ '{:,.2f}'.format(item.price) }}/{{ item.unit }}</option>{% endfor %}</optgroup>{% endif %}<optgroup label="All pricing items">{% for item in group.other_items %}<option value="{{ item.id }}">{{ item.name }} · ${{ '{:,.2f}'.format(item.price) }}/{{ item.unit }}</option>{% endfor %}</optgroup></select></label><label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" value="1" required></label><button class="btn btn-primary">Use item &amp; calculate</button></form>
+<form method="POST" action="{{ url_for('repair_quote_missing', quote_id=quote.id) }}" class="repair-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="missing_key" value="{{ group.key }}"><input type="hidden" name="strategy" value="price_item"><div><span class="repair-number">2</span><h3>Use a Pricing Sheet item</h3><p>Useful for simple per-piece or per-foot items.</p></div><label>Search the Pricing Sheet<input type="search" placeholder="Name or Cooper part number…" autocomplete="off" data-repair-find="{{ url_for('find_pricing_items', items=1) }}"></label><label>Pricing item<select name="price_item_id" required data-repair-pick><option value="">{{ 'Select a possible match, or search above' if group.suggested_items else 'Search above for the item' }}</option>{% if group.suggested_items %}<optgroup label="Possible matches">{% for item in group.suggested_items %}<option value="{{ item.id }}">{{ item.name }} · ${{ '{:,.2f}'.format(item.price) }}/{{ item.unit }}</option>{% endfor %}</optgroup>{% endif %}<optgroup label="Search results" data-repair-results hidden></optgroup></select></label><label>Quantity<input type="number" name="quantity" min="0.01" step="0.01" value="1" required></label><button class="btn btn-primary">Use item &amp; calculate</button></form>
 <div class="repair-form"><div><span class="repair-number">3</span><h3>Not on the Pricing Sheet yet?</h3><p>Add it on the Pricing Sheet (prices only live there), then come back and pick it in 2 or at the top.</p></div><a class="btn btn-secondary" href="{{ url_for('pricing_sheet', add=group.name, next=request.path ~ '#needs-price') }}#add-item">Add it on the Pricing Sheet ↗</a></div>
 <form method="POST" action="{{ url_for('ai_repair_quote_pricing', quote_id=quote.id) }}" class="repair-form ai-missing-repair-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="missing_key" value="{{ group.key }}"><div><span class="repair-number">4</span><h3>Explain this installation to Caden</h3><p>Describe all parts, quantities, and labor for <strong>{{ group.name }}</strong>. Caden will repair this issue across {{ group.tiers|join(', ') }} and fill empty Pricing Sheet labor values when you teach them.</p></div><label class="repair-ai-text">Installation details<textarea name="repair_instructions" rows="5" required placeholder="Example: Use four 6-inch wafer lights and 40 feet of 12/2. Each wafer takes 0.5 hours and the cable takes 0.05 hours per foot."></textarea><small>Existing catalog prices are used. Caden will report anything it cannot match.</small></label><button class="btn btn-primary" {{ 'disabled' if not api_ready else '' }}>✦ Let Caden fix this item</button></form>
 <div class="create-full-service"><div><strong>Need labor, materials, tools, and a repeatable scope?</strong><span>Create a complete service, then return here to select it and enter the quantity.</span></div><a class="btn btn-secondary" href="{{ url_for('create_service', quote_id=quote.id, missing_key=group.key, name=group.name) }}">Create full service</a></div>
@@ -114,6 +114,36 @@
       setTimeout(check, 3000);
     }).catch(function () { misses += 1; setTimeout(check, Math.min(30000, 3000 * misses)); });
   })();
+})();
+</script>
+<script>
+(function () {           /* Missing pricing: search the Pricing Sheet for the item (the sheet is too big to list in a menu) */
+  document.querySelectorAll('[data-repair-find]').forEach(function (box) {
+    var form = box.closest('form'), pick = form.querySelector('[data-repair-pick]'), results = form.querySelector('[data-repair-results]'), timer = null, asked = '';
+    box.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () {
+        var q = box.value.trim();
+        if (q.length < 2 || q === asked) return;
+        asked = q;
+        fetch(box.getAttribute('data-repair-find') + '&q=' + encodeURIComponent(q), {headers: {'Accept': 'application/json'}})
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (q !== asked) return;
+            results.replaceChildren();
+            (data.results || []).forEach(function (row) {
+              var o = document.createElement('option'); o.value = row.id;
+              o.textContent = row.name + ' · $' + Number(row.price).toFixed(2) + '/' + row.unit + (row.kind.indexOf('Unconfirmed') > -1 ? ' · Unconfirmed' : '');
+              results.appendChild(o);
+            });
+            results.hidden = !results.children.length;
+            results.label = results.children.length ? 'Search results for "' + q + '"' : 'Nothing found';
+            if (results.children.length) pick.value = results.children[0].value;
+          }).catch(function () {});
+      }, 300);
+    });
+    box.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+  });
 })();
 </script>
 {% endblock %}
