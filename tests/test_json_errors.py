@@ -76,6 +76,7 @@ with sync_playwright() as pw:
     said = []
     page.on("dialog", lambda dialog: (said.append(dialog.message), dialog.accept()))
     ctx.clear_cookies()                                  # signed out while the page sat open
+    page.click("[data-open-dialog=cooper-dialog]")          # the Cooper controls live in the Cooper window (1.26.0)
     button = page.locator("button", has_text="Update all prices")
     button.click(); page.wait_for_timeout(800)
     check(said and "signed out" in said[-1] and "Unexpected token" not in said[-1], "signed out: the button says to sign in again, not 'Unexpected token'")
@@ -83,10 +84,12 @@ with sync_playwright() as pw:
     page.goto(BASE + "/login"); page.fill("input[name=username]", "browser"); page.fill("input[name=password]", "a-long-password-1"); page.click("form button")
     page.goto(BASE + "/quoting/pricing")
     page.evaluate("document.querySelectorAll('[data-cooper-sync-form] input[name=csrf_token]').forEach(i => i.value = 'stale')")
+    page.click("[data-open-dialog=cooper-dialog]")
     page.locator("button", has_text="Add all items from Cooper").click(); page.wait_for_timeout(800)
     check("out of date" in said[-1], "an out-of-date page: the button says to refresh")
     check(page.locator("button", has_text="Add all items from Cooper").count() == 1, "the catalog button keeps its label too")
     page.reload()
+    page.click("[data-open-dialog=cooper-dialog]")
     page.locator("button", has_text="Update all prices").click()
     page.wait_for_selector("[data-cooper-bot]:not([hidden])", timeout=5000)
     check(page.locator("button", has_text="Price check queued").count() == 1, "with a fresh page the price check starts as before")

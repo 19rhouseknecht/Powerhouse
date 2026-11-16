@@ -35,9 +35,8 @@ page = client.get("/sales/onsite-checklist").get_data(as_text=True)
 check("Needs review" in page and "Quoted one" not in page and "Doing it" not in page, "the onsite checklist lists only jobs in the works")
 
 page = client.get("/").get_data(as_text=True)
-services, tools, clients_section = page.index(">⚡</span> Services"), page.index("</span> Tools</a>"), page.index("Clients &amp; Jobs</div>")
-check(services < tools < clients_section, "Tools is under Quoting, right below Services")
-check(page.count("</span> Tools</a>") == 1, "and only there")
+check("</span> Tools</a>" not in page and "Tools</strong>" in client.get("/quoting/pricing").get_data(as_text=True),
+      "Tools has moved from the sidebar to a window at the top of the Pricing Sheet (1.26.0)")
 crew = sign_in(m, "crew", admin=False)
 check("</span> Tools</a>" not in crew.get("/").get_data(as_text=True), "non-admins still do not see Tools")
 

@@ -364,6 +364,25 @@ class GeneratorUpgrade(db.Model):
             return {}
 
 
+class JobNote(db.Model):
+    """A note on a job, with any pictures taken with it (Jobs -> a job -> Notes)."""
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job.id"), nullable=False, index=True)
+    body = db.Column(db.Text, nullable=False, default="")
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    job = db.relationship("Job", backref=db.backref("notes", order_by="JobNote.created_at.desc()", cascade="all, delete-orphan"))
+    created_by = db.relationship("User")
+    photos = db.relationship("JobNotePhoto", backref="note", cascade="all, delete-orphan", order_by="JobNotePhoto.id")
+
+
+class JobNotePhoto(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    note_id = db.Column(db.Integer, db.ForeignKey("job_note.id"), nullable=False, index=True)
+    original_name = db.Column(db.String(255), nullable=False)
+    stored_name = db.Column(db.String(255), nullable=False)
+
+
 class GeneratorSizing(db.Model):
     """A generator sizing saved to a job (Generators -> Sizing)."""
     id = db.Column(db.Integer, primary_key=True)
@@ -1589,7 +1608,7 @@ def enforce_role_permissions():
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
-        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
+        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
         "finance_dashboard":"view_finance", "expenses":"view_expenses", "create_expense":"view_expenses", "expense_receipt":"view_expenses",
         "onsite_checklist":"view_sales", "onsite_checklist_job":"view_sales", "save_onsite_checklist":"view_sales", "refresh_inspection_tip":"view_sales", "inspection_photo":"view_sales", "delete_inspection_photo":"view_sales", "sales_reviews":"view_sales",
@@ -1724,7 +1743,7 @@ def pricing_sheet():
     items = items[(page - 1) * PRICING_PAGE_SIZE: page * PRICING_PAGE_SIZE]
     page_args = {k: v for k, v in request.args.items() if k != "page"}
     last_catalog = PriceSyncRun.query.filter_by(mode="catalog").order_by(PriceSyncRun.id.desc()).first()
-    return render_template("pricing.html", items=items, categories=categories, suppliers=suppliers, search=search, selected_category=category, selected_supplier=supplier, selected_unit=unit, selected_sort=sort, selected_direction=direction, review_duplicates=review_duplicates, duplicate_pairs=duplicate_pairs, labor_rate=get_labor_rate(), active_sync=active_sync, latest_sync=latest_sync,
+    return render_template("pricing.html", items=items, categories=categories, suppliers=suppliers, search=search, selected_category=category, selected_supplier=supplier, selected_unit=unit, selected_sort=sort, selected_direction=direction, review_duplicates=review_duplicates, duplicate_pairs=duplicate_pairs, labor_rate=get_labor_rate(), tool_count=ToolCatalog.query.filter_by(active=True).count(), active_sync=active_sync, latest_sync=latest_sync,
                            total_items=total_items, page=page, page_count=page_count, page_args=page_args, unconfirmed_count=unconfirmed_count,
                            unconfirmed_label=UNCONFIRMED, caden_unconfirmed=caden_uses_unconfirmed(), catalog_batch=CATALOG_BATCH, catalog_batch_max=CATALOG_BATCH_MAX, last_catalog=last_catalog, catalog_done_count=len(catalog_done()))
 
@@ -1966,7 +1985,8 @@ def update_labor_rate():
         return redirect(url_for("pricing_sheet"))
     set_company_setting("labor_rate", f"{rate:.2f}")
     flash(f"Labor rate updated to ${rate:,.2f} per hour.", "success")
-    return redirect(url_for("pricing_sheet"))
+    back = request.form.get("next", "")
+    return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("labor_calculator"))
 
 
 @app.route("/quoting/pricing/new", methods=["POST"])
@@ -4097,6 +4117,60 @@ def delete_job(job_id):
     db.session.commit()
     flash(f'Deleted job "{title}" and {visit_count} attached job visit(s). Payroll clock sessions and detached expenses were preserved.', "success")
     return redirect(url_for("jobs"))
+
+
+JOB_NOTE_PICTURES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".heif"}
+JOB_NOTE_DIR = ("uploads", "job_notes")
+
+
+@app.route("/jobs/<int:job_id>/notes", methods=["POST"])
+@login_required
+def add_job_note(job_id):
+    """A note on the job: words, pictures, or both."""
+    check_csrf()
+    job = db.get_or_404(Job, job_id)
+    body = request.form.get("body", "").strip()[:5000]
+    uploads = [upload for upload in request.files.getlist("photos") if upload and upload.filename]
+    pictures = [upload for upload in uploads if os.path.splitext(upload.filename)[1].lower() in JOB_NOTE_PICTURES]
+    for upload in uploads:
+        if upload not in pictures:
+            flash(f'Skipped "{upload.filename}": it is not a picture.', "error")
+    if not body and not pictures:
+        flash("Write a note or add a picture.", "error")
+        return redirect(url_for("job_detail", job_id=job.id) + "#notes")
+    note = JobNote(job=job, body=body, created_by=current_user)
+    folder = os.path.join(app.static_folder, *JOB_NOTE_DIR)
+    os.makedirs(folder, exist_ok=True)
+    for upload in pictures:
+        stored = f"{secrets.token_hex(10)}-{secure_filename(upload.filename) or 'picture'}"
+        upload.save(os.path.join(folder, stored))
+        note.photos.append(JobNotePhoto(original_name=upload.filename[:255], stored_name=stored))
+    db.session.add(note)
+    db.session.commit()
+    flash("Note added" + (f" with {len(pictures)} picture{'s' if len(pictures) != 1 else ''}." if pictures else "."), "success")
+    return redirect(url_for("job_detail", job_id=job.id) + "#notes")
+
+
+@app.route("/jobs/<int:job_id>/notes/<int:note_id>/remove", methods=["POST"])
+@login_required
+def remove_job_note(job_id, note_id):
+    """Its writer (or an admin) can take a note off the job."""
+    check_csrf()
+    note = db.get_or_404(JobNote, note_id)
+    if note.job_id != job_id:
+        abort(404)
+    if note.created_by_id != current_user.id and not (current_user.role and current_user.role.is_admin):
+        abort(403)
+    db.session.delete(note)
+    db.session.commit()
+    flash("Note removed.", "success")
+    return redirect(url_for("job_detail", job_id=job_id) + "#notes")
+
+
+@app.route("/jobs/note-photos/<path:filename>")
+@login_required
+def job_note_photo(filename):
+    return send_from_directory(os.path.join(app.static_folder, *JOB_NOTE_DIR), secure_filename(filename))
 
 
 @app.route("/schedule")

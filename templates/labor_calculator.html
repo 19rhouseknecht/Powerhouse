@@ -1,7 +1,15 @@
 {% extends "base.html" %}
 {% block title %}Labor Calculator — Power House Flow{% endblock %}
 {% block content %}
-<div class="page-heading"><span class="eyebrow">Quoting / Labor intelligence</span><h1>Labor calculator</h1><p>Mike turns labor references into reviewable Pricing Sheet recommendations and answers field labor questions. Nothing changes until you approve it.</p></div>
+<div class="page-heading"><span class="eyebrow"><a href="{{ url_for('pricing_sheet') }}">Pricing Sheet</a> / Labor calculator</span><h1>Labor calculator</h1><p>Mike turns labor references into reviewable Pricing Sheet recommendations and answers field labor questions. Nothing changes until you approve it.</p></div>
+<section class="panel labor-rate-panel">
+  <div><span class="eyebrow">Company pricing</span><h2>Hourly labor rate</h2><p class="muted">Applied to the labor time on every Pricing Sheet item and service.</p></div>
+  <form method="POST" action="{{ url_for('update_labor_rate') }}" class="labor-rate-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.path }}">
+    <div class="money-input"><span>$</span><input type="number" min="0" step="0.01" name="labor_rate" value="{{ '%.2f'|format(labor_rate) }}" required></div><span class="muted">per hour</span>
+    <button class="btn btn-primary" type="submit">Save labor rate</button>
+  </form>
+</section>
 
 <div class="labor-calculator-grid">
   <section>
