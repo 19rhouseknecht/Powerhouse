@@ -7578,8 +7578,29 @@ def generator_sizing():
             return redirect(url_for("job_detail", job_id=job.id) + "#generator-sizing")
     jobs, linked = generator_jobs(values)
     defaults = gen.read_inputs(values)
-    return render_template("generator_sizing.html", result=result, fields=gen.FIELDS, choices=gen.CHOICES, values=defaults,
-                           appliances=gen.APPLIANCES, models=gen.KOHLER_MODELS, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None)
+    step = 4 if result else min(max(values.get("step", type=int) or 1, 1), 3)      # the slide to open on
+    return render_template("generator_sizing.html", result=result, fields=gen.FIELDS, choices=gen.CHOICES, values=defaults, step=step,
+                           appliances=gen.APPLIANCES, models=gen.KOHLER_MODELS, jobs=jobs, linked_job=linked, selected_job=linked.id if linked else None,
+                           appliance_groups=GENERATOR_APPLIANCE_GROUPS)
+
+
+# The Appliances slide's groups (every appliance in generators.APPLIANCES lands in one; a new one falls in "More").
+GENERATOR_APPLIANCE_GROUPS = [
+    ("kitchen", "Kitchen", ("dishwasher", "disposal", "microwave", "range", "cooktop", "oven", "freezer")),
+    ("laundry", "Laundry & water heating", ("dryer", "water_heater", "tankless")),
+    ("motors", "Pumps & motors", ("furnace_blower", "well_pump", "sump_pump", "pool_pump", "garage_door", "central_vac")),
+    ("big", "Big extras", ("ev_charger", "hot_tub")),
+]
+
+
+@app.route("/generators/sizing/estimate")
+@login_required
+def generator_sizing_estimate():
+    """The load so far, for the slides before Results: the same calculation as Size the generator (generators.size)."""
+    result = gen.size(request.args)
+    return jsonify({"total_va": result["total_va"], "generator_va": result["generator_va"], "required_kw": result["required_kw"],
+                    "starting_kva": result["starting_kw"], "model": result["model"]["model"] if result["model"] else "",
+                    "managed": result["with_load_management"]["shed"]})
 
 
 def generator_context(job):
