@@ -1352,3 +1352,33 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .caden-dots b:nth-child(3) { animation-delay:.4s; }
 @keyframes caden-dot { 0%, 80%, 100% { opacity:.25; transform:scale(.8); } 40% { opacity:1; transform:scale(1); } }
 @media (prefers-reduced-motion: reduce) { .caden-dots b { animation:none; opacity:.7; } }
+/* Pricing Sheet: small windows at the top (Cooper, Labor calculator, Tools) */
+.sheet-tiles { display:flex; flex-wrap:wrap; gap:10px; margin:0 0 16px; }
+.sheet-tile { display:flex; align-items:center; gap:10px; padding:9px 14px 9px 10px; border:1px solid var(--border); border-radius:10px; background:var(--panel, #1c1917); color:inherit; text-decoration:none; font:inherit; cursor:pointer; text-align:left; position:relative; }
+.sheet-tile:hover, .sheet-tile:focus-visible { border-color:var(--accent); }
+.sheet-tile strong { display:block; font-size:13px; }
+.sheet-tile small { display:block; color:var(--muted); font-size:11px; }
+.sheet-tile-mark { width:28px; height:28px; display:grid; place-items:center; border-radius:7px; background:rgba(217,119,6,.14); color:var(--accent); font-weight:700; }
+.sheet-tile-dot { position:absolute; top:7px; right:7px; width:8px; height:8px; border-radius:50%; background:#22c55e; }
+.sheet-dialog { width:min(860px, calc(100vw - 32px)); max-height:calc(100vh - 48px); padding:0; border:1px solid var(--border); border-radius:12px; background:var(--panel, #1c1917); color:inherit; }
+.sheet-dialog::backdrop { background:rgba(0,0,0,.55); }
+.sheet-dialog-head { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--border); }
+.sheet-dialog-head h2 { margin:0; font-size:17px; }
+.sheet-dialog .cooper-sync-panel { margin:0; border:0; }
+.labor-rate-panel { margin-top:4px; }
+/* Job notes and pictures */
+.job-note-form { display:grid; gap:8px; margin:6px 0 14px; }
+.job-note-form textarea { width:100%; resize:vertical; }
+.job-note-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.job-note-actions button { margin-left:auto; }
+.job-note-file { cursor:pointer; }
+.job-note-file input { position:absolute; width:1px; height:1px; opacity:0; }
+.job-note-list { list-style:none; margin:0; padding:0; display:grid; gap:10px; }
+.job-note-list > li { padding:10px 0 0; border-top:1px solid var(--border); }
+.job-note-meta { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; }
+.job-note-meta small { color:var(--muted); }
+.job-note-meta form { margin-left:auto; }
+.job-note-photos { display:flex; flex-wrap:wrap; gap:8px; margin-top:6px; }
+.job-note-photos img { width:96px; height:96px; object-fit:cover; border-radius:8px; border:1px solid var(--border); display:block; }
+.job-note-file { position:relative; overflow:hidden; }
+.eyebrow a { color:inherit; text-decoration:underline; text-underline-offset:2px; }
