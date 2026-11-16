@@ -2487,9 +2487,10 @@ def quote_assistant(job_id):
         start_caden(quote, answer_quote_message)
         return redirect(url_for("quote_assistant", job_id=job.id) + "#caden")
 
-    return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=build_missing_quote_groups(quote),
+    missing_groups = build_missing_quote_groups(quote) if quote.options else []
+    return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=missing_groups,
                            caden_working=caden_busy(quote),
-                           pricing_rows=pricing_needed_rows(quote) if quote.options else [],
+                           pricing_rows=pricing_needed_rows(quote, missing_groups) if quote.options else [],
                            lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS, lighting_shapes=lighting.SHAPES,
                            lighting_plans=lighting_plans_for(quote)[1], lights_missing=lights_without_lumens() if quote.lighting_room or request.args.get("lighting") else [],
                            sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
@@ -2574,9 +2575,11 @@ def manual_quote_file(outcome_id):
 
 
 def build_missing_quote_groups(quote):
+    """The unpriced lines on a draft, grouped by name, each with likely Services and Pricing Sheet items. The Pricing Sheet
+    can hold Cooper's whole catalog, so items come from sheet_matches (a narrowed search), never a scan of every item;
+    the page searches the rest as you type."""
     grouped = {}
     services = Service.query.order_by(Service.name).all()
-    price_items = PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all()
     for option in quote.options:
         for line in option.lines:
             if not line.is_missing:
@@ -2590,13 +2593,10 @@ def build_missing_quote_groups(quote):
     for group in grouped.values():
         target = normalize_item_name(group["name"])
         service_scores = [(SequenceMatcher(None, target, normalize_item_name(item.name)).ratio(), item) for item in services]
-        item_scores = [(SequenceMatcher(None, target, item.lookup_key).ratio(), item) for item in price_items]
         group["suggested_services"] = [item for score, item in sorted(service_scores, key=lambda pair: (-pair[0], pair[1].name))[:5] if score >= .22]
-        group["suggested_items"] = [item for score, item in sorted(item_scores, key=lambda pair: (-pair[0], pair[1].name))[:5] if score >= .22]
+        group["suggested_items"] = [item for score, item in sheet_matches(group["name"], limit=5)]
         suggested_service_ids = {item.id for item in group["suggested_services"]}
-        suggested_item_ids = {item.id for item in group["suggested_items"]}
         group["other_services"] = [item for item in services if item.id not in suggested_service_ids]
-        group["other_items"] = [item for item in price_items if item.id not in suggested_item_ids]
     return list(grouped.values())
 
 
@@ -5833,6 +5833,9 @@ def calculate_estimated_drive_time(destination):
     return (estimated_road_miles / average_speed) * 60, estimated_road_miles
 
 
+DRIVE_RETRY_HOURS = 6          # a drive-time lookup that failed is tried again after this (or at once with force)
+
+
 def refresh_job_drive_time(job, force=False):
     if not job.job_address:
         raise RuntimeError("The job requires a complete work address before drive time can be calculated.")
@@ -5841,6 +5844,9 @@ def refresh_job_drive_time(job, force=False):
         return job.drive_minutes
     if not force and job.drive_minutes is not None and job.drive_checked_at and job.drive_checked_at > datetime.utcnow() - timedelta(days=30):
         return job.drive_minutes
+    if (not force and job.drive_minutes is None and job.drive_error and job.drive_checked_at
+            and job.drive_checked_at > datetime.utcnow() - timedelta(hours=DRIVE_RETRY_HOURS)):
+        raise RuntimeError(job.drive_error)          # it failed a moment ago: say so without asking the map service again
     try:
         job.drive_minutes, job.drive_distance_miles = calculate_estimated_drive_time(job.job_address)
         job.drive_checked_at = datetime.utcnow(); job.drive_error = ""
@@ -6636,8 +6642,10 @@ def sheet_matches(name, limit=3):
     part_keys = {canonical_part_number(t) for t in words if re.search(r"[a-z]", t) and re.search(r"\d", t) and len(canonical_part_number(t)) >= 5}
     distinctive = sorted(set(words), key=lambda w: (-len(w), w))[:3]
     query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
+    hits = sum(db.case((PriceItem.name.ilike(f"%{w}%"), 1), else_=0) for w in set(words[:8]))   # items holding more of the words first
     rows = query.filter(db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in distinctive],
-                               *[PriceItem.cooper_part_number.ilike(f"%{w}%") for w in distinctive])).limit(400).all()
+                               *[PriceItem.cooper_part_number.ilike(f"%{w}%") for w in distinctive])
+                        ).order_by(hits.desc(), PriceItem.category == UNCONFIRMED, PriceItem.id).limit(400).all()
     want_words, want_sizes = set(words), _sizes(words)
     want_canon = canonical_item_name(name)
     scored = []
@@ -6649,7 +6657,10 @@ def sheet_matches(name, limit=3):
         shared = len(want_words & have_words)
         contained = shared / max(len(want_words), 1)              # how much of what was asked for the sheet item has
         overlap = shared / max(len(want_words | have_words), 1)
-        ratio = SequenceMatcher(None, want_canon, canonical_item_name(item.name)).ratio()
+        if 0.5 * contained + 0.25 * overlap + 0.25 < SHEET_OFFER_SCORE:
+            continue                                              # can't reach an offer even with identical spelling: skip the slow part
+        matcher = SequenceMatcher(None, want_canon, canonical_item_name(item.name))
+        ratio = matcher.ratio() if 0.5 * contained + 0.25 * overlap + 0.25 * matcher.quick_ratio() >= SHEET_OFFER_SCORE else 0.0
         score = 0.5 * contained + 0.25 * overlap + 0.25 * ratio
         if want_sizes and not want_sizes <= _sizes(have):
             score = min(score, SHEET_AUTO_SCORE - 0.01) * 0.75          # a different size is never the same item
@@ -6721,18 +6732,18 @@ def quote_ready_summary(quote, notes=()):
     return "\n\n".join(parts)
 
 
-def pricing_needed_rows(quote):
+def pricing_needed_rows(quote, groups=None):
     """Every unpriced item on the draft, once, with Caden's suggestion when he made one."""
     saved = quote.pricing_needed
     rows = []
-    for group in build_missing_quote_groups(quote):
+    for group in (build_missing_quote_groups(quote) if groups is None else groups):
         key = normalize_item_name(group["name"])
         suggestion = saved.get(key) or next((row for other, row in saved.items()
                                               if SequenceMatcher(None, other, key).ratio() >= .82), {})
         quantities = sorted({line.multiplier for line in group["lines"]})
         candidates = [{"id": item.id, "name": item.name, "price": item.price, "unit": item.unit, "labor": item.labor_hours_per_unit,
                        "unconfirmed": item.category == UNCONFIRMED, "part": item.cooper_part_number}
-                      for score, item in sheet_matches(group["name"], limit=3)]
+                      for item in (group.get("suggested_items") or [])[:3]]
         rows.append({"key": group["key"], "name": group["name"], "tiers": group["tiers"], "lines": len(group["lines"]), "candidates": candidates,
                      "quantities": quantities, "quantity_text": " / ".join("%g" % q for q in quantities), "unit": suggestion.get("unit") or "ea",
                      "material": suggestion.get("suggested_material_price"), "labor": suggestion.get("suggested_labor_hours"),
