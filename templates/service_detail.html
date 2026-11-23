@@ -9,11 +9,20 @@
       {% if service.items %}<div class="item-table-wrap"><table class="item-table"><thead><tr><th>Item</th><th>Qty.</th><th>Unit</th><th>Unit cost</th><th>Total</th></tr></thead><tbody>{% set spots = service.drawing_spots %}{% for item in service.items %}<tr class="{{ 'spot-row' if service.drawing_is_picture }}" data-spot-key="{{ item.spot_key }}" {% if service.drawing_is_picture %}tabindex="0" title="Show where it is on the drawing"{% endif %}><td><strong>{{ item.current_name }}</strong>{% if spots.get(item.spot_key) %} <span class="spot-count" data-spot-count title="Marked on the drawing">◎ {{ spots[item.spot_key]|length }}</span>{% endif %}{% if item.catalog_item and item.catalog_item.cooper_part_number %}<small>Cooper #{{ item.catalog_item.cooper_part_number }}</small>{% endif %}{% if item.notes %}<small>{{ item.notes }}</small>{% endif %}</td><td>{{ '%g'|format(item.quantity) }}</td><td>{{ item.current_unit }}</td><td>${{ '{:,.2f}'.format(item.current_unit_price) }}</td><td>${{ '{:,.2f}'.format(item.quantity * item.current_unit_price) }}</td></tr>{% endfor %}</tbody><tfoot><tr><td colspan="4">Materials</td><td>${{ '{:,.2f}'.format(service.item_material_total) }}</td></tr>{% if service.rental_total %}<tr><td colspan="4">Rental tools &amp; equipment</td><td>${{ '{:,.2f}'.format(service.rental_total) }}</td></tr>{% endif %}<tr><td colspan="4">Labor · {{ '%g'|format(service.estimated_labor_hours) }} hr</td><td>${{ '{:,.2f}'.format(service.labor_total) }}</td></tr><tr><td colspan="4"><strong>Example service total</strong></td><td><strong>${{ '{:,.2f}'.format(service.example_total) }}</strong></td></tr></tfoot></table></div>{% else %}<p class="muted">No materials have been added yet. Estimated labor: {{ '%g'|format(service.estimated_labor_hours) }} hr (${{ '{:,.2f}'.format(service.labor_total) }}).{% if service.rental_total %} Rental equipment: ${{ '{:,.2f}'.format(service.rental_total) }}.{% endif %}</p>{% endif %}
     </section>
     {% if service.has_steps and service.steps %}<section class="panel section-panel service-steps" id="steps"><div class="section-title"><div><span class="eyebrow">How it's done</span><h2>Step-by-step instructions</h2></div><span class="quantity-badge">{{ service.steps|length }} step{{ 's' if service.steps|length != 1 }}</span></div>
-      <ol class="service-step-list">{% for step in service.steps %}<li class="service-step">
-        <span class="service-step-number" aria-hidden="true">{{ loop.index }}</span>
-        <div class="service-step-text">{% if step.title %}<h3>{{ step.title }}</h3>{% endif %}{% if step.body %}<p class="record-notes">{{ step.body }}</p>{% endif %}</div>
-        {% if step.image_filename %}<a class="service-step-picture" href="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" target="_blank" rel="noopener"><img src="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" alt="Step {{ loop.index }}{{ ': ' + step.title if step.title }}" loading="lazy"></a>{% endif %}
-      </li>{% endfor %}</ol>
+      <div class="step-carousel" data-step-carousel tabindex="0" aria-roledescription="carousel" aria-label="Step-by-step instructions">
+        <div class="step-slides" data-step-slides>{% for step in service.steps %}
+          <article class="step-slide {{ 'has-picture' if step.image_filename else 'no-picture' }}" data-step-slide aria-roledescription="slide" aria-label="Step {{ loop.index }} of {{ service.steps|length }}">
+            {% if step.image_filename %}<a class="step-slide-picture" draggable="false" href="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" target="_blank" rel="noopener" title="Open full size"><img src="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" alt="Step {{ loop.index }}{{ ': ' + step.title if step.title }}" {{ 'loading=lazy' if not loop.first }} draggable="false"></a>{% endif %}
+            <div class="step-slide-text"><span class="step-slide-count">Step {{ loop.index }} of {{ service.steps|length }}</span>{% if step.title %}<h3>{{ step.title }}</h3>{% endif %}{% if step.body %}<p class="record-notes">{{ step.body }}</p>{% endif %}</div>
+          </article>{% endfor %}
+        </div>
+        <div class="step-nav" data-step-nav hidden>
+          <button type="button" class="step-arrow" data-step-prev aria-label="Previous step">‹</button>
+          <div class="step-progress" role="group" aria-label="Steps">{% for step in service.steps %}<button type="button" class="step-progress-seg" data-step-go="{{ loop.index0 }}" aria-label="Step {{ loop.index }}{{ ': ' + step.title if step.title }}"></button>{% endfor %}</div>
+          <button type="button" class="step-arrow" data-step-next aria-label="Next step">›</button>
+        </div>
+        <p class="step-nav-count muted" data-step-counter aria-live="polite" hidden></p>
+      </div>
     </section>{% endif %}
     <section class="panel section-panel after-panel" id="after">
       <div class="section-title"><div><span class="eyebrow">AI picture</span><h2>See it after the upgrade</h2><p class="muted">Upload a photo of what's there now. The AI draws it after this service, with this service's parts, then finds each part in the picture so you can click on it. It's an illustration of the finished job, not an exact plan.</p></div></div>
@@ -61,4 +70,38 @@
 <script src="{{ url_for('static', filename='js/drawing-spots.js', v=asset_version) }}"></script>
 {% endif %}
 <script src="{{ url_for('static', filename='js/service-after.js', v=asset_version) }}"></script>
+<script>
+(function () {           /* steps one at a time: arrows, swipe, the arrow keys, and the progress bar (all steps show without scripts) */
+  var root = document.querySelector('[data-step-carousel]');
+  if (!root) return;
+  var slides = root.querySelectorAll('[data-step-slide]'), segs = root.querySelectorAll('[data-step-go]');
+  var prev = root.querySelector('[data-step-prev]'), next = root.querySelector('[data-step-next]'), counter = root.querySelector('[data-step-counter]'), at = 0;
+  root.classList.add('is-carousel');
+  root.querySelector('[data-step-nav]').hidden = slides.length < 2; counter.hidden = false;
+  function go(n, fromSwipe) {
+    at = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, i) { s.hidden = i !== at; s.classList.toggle('from-left', fromSwipe === 'right'); });
+    segs.forEach(function (b, i) { b.classList.toggle('is-done', i < at); b.classList.toggle('is-current', i === at); b.setAttribute('aria-current', i === at ? 'step' : 'false'); });
+    prev.disabled = at === 0; next.disabled = at === slides.length - 1;
+    counter.textContent = 'Step ' + (at + 1) + ' of ' + slides.length;
+  }
+  prev.addEventListener('click', function () { go(at - 1, 'right'); });
+  next.addEventListener('click', function () { go(at + 1); });
+  segs.forEach(function (b, i) { b.addEventListener('click', function () { go(i, i < at ? 'right' : ''); }); });
+  root.addEventListener('keydown', function (e) {
+    if (e.target.closest('input, textarea')) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); go(at + 1); }
+    if (e.key === 'ArrowLeft') { e.preventDefault(); go(at - 1, 'right'); }
+  });
+  var sx = null, sy = 0;                                  /* swipe on a phone (or drag with a mouse) */
+  root.addEventListener('pointerdown', function (e) { if (e.pointerType === 'mouse' && e.button !== 0) return; sx = e.clientX; sy = e.clientY; });
+  root.addEventListener('pointerup', function (e) {
+    if (sx === null) return;
+    var dx = e.clientX - sx, dy = e.clientY - sy; sx = null;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.5) { e.preventDefault(); go(dx < 0 ? at + 1 : at - 1, dx > 0 ? 'right' : ''); root.dataset.swiped = '1'; }
+  });
+  root.addEventListener('click', function (e) { if (root.dataset.swiped) { e.preventDefault(); delete root.dataset.swiped; } }, true);
+  go(0);
+})();
+</script>
 {% endblock %}
