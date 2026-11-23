@@ -466,3 +466,4 @@
 :where(html[data-theme="modern"]) .analytics-profit dd { color: #0d7834; }
 :where(html[data-theme="modern"]) .analytics-profit.is-loss dd { color: #830101; }
 :where(html[data-theme="modern"]) .role-cannot { color: #830101; }
+:where(html[data-theme="modern"]) .jobber-updated { border-color: rgba(54, 225, 117, .45); }

@@ -3,8 +3,8 @@
 {% block content %}
 <div class="breadcrumb"><a href="{{ url_for('settings') }}">Settings</a><span>/</span>Jobber</div>
 <div class="page-heading heading-actions">
-  <div><span class="eyebrow">Settings / Jobber</span><h1>Pull from Jobber</h1><p>Bring clients and jobs over from Jobber. Reading only: nothing is ever changed in Jobber. You see what will happen before anything is saved here.</p></div>
-  {% if connected %}<form method="POST" action="{{ url_for('jobber_pull') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if state.status == 'running' }}>⇩ Pull from Jobber</button></form>{% endif %}
+  <div><span class="eyebrow">Settings / Jobber</span><h1>Jobber</h1><p><strong>Update from Jobber</strong> brings over everything new in one click: clients, requests, quotes, jobs, the schedule, who worked how long, and job expenses with their receipts. Nothing is ever changed in Jobber, nothing is doubled, and the database is backed up first. Or pull and review it step by step below.</p></div>
+  {% if connected %}<div class="button-row"><form method="POST" action="{{ url_for('jobber_pull') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-secondary" {{ 'disabled' if state.status == 'running' }}>⇩ Pull to review</button></form><form method="POST" action="{{ url_for('jobber_update') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-primary" {{ 'disabled' if state.status == 'running' }}>⟳ Update from Jobber</button></form></div>{% endif %}
 </div>
 
 {% if state.status == 'running' %}
@@ -13,6 +13,12 @@
   <div><strong>Reading from Jobber…</strong>
     <ul class="release-log" id="jobber-log">{% for line in state.log %}<li>{{ line }}</li>{% endfor %}</ul>
     <small class="muted">This page updates by itself. Large accounts can take a few minutes (Jobber limits how fast it answers).</small></div>
+</section>
+{% elif state.status == 'done' and state.updated %}{% set u = state.updated %}
+<section class="panel section-panel jobber-updated" id="jobber-updated"><span class="eyebrow">Updated from Jobber · {{ u.at.replace('T', ' ') }} UTC</span>
+  <h2>{{ u.clients_new }} new client{{ 's' if u.clients_new != 1 }}, {{ u.jobs_new }} new job{{ 's' if u.jobs_new != 1 }}</h2>
+  <ul class="jobber-updated-list"><li>{{ u.refreshed }} clients and jobs refreshed</li><li>{{ u.visits }} visits put on the schedule, {{ u.assigned }} jobs assigned</li><li>{{ u.time }} time entries ({{ u.hours }} hours) on timesheets</li><li>{{ u.expenses }} job expenses (${{ '{:,.2f}'.format(u.expense_total) }}), {{ u.receipts }} receipts saved{% if u.receipts_missed %} ({{ u.receipts_missed }} couldn't be downloaded: their link is in the expense's notes){% endif %}</li><li>{{ u.materials }} jobs got their material cost from Jobber's line items</li></ul>
+  {% if u.backup %}<small class="muted">Backed up first: <code>{{ u.backup }}</code>.</small>{% endif %}
 </section>
 {% elif state.status == 'failed' %}
 <div class="panel release-error"><strong>The last pull did not finish.</strong> {{ state.error }}</div>
@@ -93,6 +99,22 @@
     <small class="muted">The database is backed up first. Time goes on timesheets at the hours Jobber recorded; each person's pay rate on this site is used for job labor.</small>
   </form>
   {% if last_schedule_import.at %}<p class="muted">Last brought over {{ last_schedule_import.at.replace('T', ' ') }} UTC by {{ last_schedule_import.by }}: {{ last_schedule_import.done.visits }} visits, {{ last_schedule_import.done.assigned }} jobs assigned, {{ last_schedule_import.done.time }} time entries.</p>{% endif %}
+</section>
+{% endif %}
+
+{% if expenses_plan %}{% set ep = expenses_plan %}{% set ec = ep.counts %}
+<section class="panel section-panel jobber-schedule" id="jobber-expenses">
+  <div class="section-title"><div><span class="eyebrow">Step 4 · Expenses &amp; materials</span><h2>Bring over what jobs cost</h2>
+    <p class="muted">Jobber expenses on a job become Expenses on that job here, with the receipt (they count as the job's materials in its analytics). A job with no material cost here gets the cost of its Jobber line items.</p></div></div>
+  {% if not ep.has_expenses %}<p class="sizing-note">{% if ep.refused %}Jobber didn't allow reading expenses ({{ ep.refused }}).{% else %}This pull has no expenses.{% endif %} In Jobber's Developer Center, give your app permission to <strong>read expenses</strong>, then connect again and pull.</p>{% endif %}
+  <div class="jobber-sched-counts">
+    <div><strong>{{ ec.expenses_new }}</strong><span>job expenses · ${{ '{:,.2f}'.format(ec.total_new) }}</span>{% if ec.receipts %}<small>{{ ec.receipts }} with a receipt</small>{% endif %}{% if ec.expenses_here %}<small>{{ ec.expenses_here }} already here</small>{% endif %}{% if ec.expenses_no_job %}<small>{{ ec.expenses_no_job }} not on an imported job</small>{% endif %}</div>
+    <div><strong>{{ ec.materials_fill }}</strong><span>jobs to get a material cost</span><small>only jobs with none yet</small></div>
+  </div>
+  <form method="POST" action="{{ url_for('jobber_expenses_import') }}" class="jobber-import" onsubmit="return confirm('Bring over job expenses and material costs from Jobber? The database is backed up first.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-primary" {{ 'disabled' if not (ec.expenses_new or ec.materials_fill) }}>Bring over expenses &amp; materials</button>
+  </form>
 </section>
 {% endif %}
 
