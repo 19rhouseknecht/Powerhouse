@@ -15,6 +15,30 @@
         {% if step.image_filename %}<a class="service-step-picture" href="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" target="_blank" rel="noopener"><img src="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" alt="Step {{ loop.index }}{{ ': ' + step.title if step.title }}" loading="lazy"></a>{% endif %}
       </li>{% endfor %}</ol>
     </section>{% endif %}
+    <section class="panel section-panel after-panel" id="after">
+      <div class="section-title"><div><span class="eyebrow">AI picture</span><h2>See it after the upgrade</h2><p class="muted">Upload a photo of what's there now. The AI draws it after this service, with this service's parts, then finds each part in the picture so you can click on it. It's an illustration of the finished job, not an exact plan.</p></div></div>
+      <form method="POST" action="{{ url_for('start_service_render', service_id=service.id) }}" enctype="multipart/form-data" class="after-form" data-after-form>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label class="btn btn-secondary after-pick"><input type="file" name="photo" accept="image/png,image/jpeg,image/webp" required data-after-photo {{ 'disabled' if not ai_ready }}> Choose a photo</label>
+        <small class="muted" data-after-picked>{{ "The AI isn't connected (no OpenAI key)." if not ai_ready else "A phone photo is fine: it is made smaller first." }}</small>
+        <button class="btn btn-primary" data-after-go {{ 'disabled' if not ai_ready or (render and render.status == 'working') }}>✦ Draw it after the upgrade</button>
+      </form>
+      {% if render %}
+      <div class="after-result" data-after-result data-status-url="{{ url_for('service_render_status', render_id=render.id) }}" data-status="{{ render.status }}">
+        <script type="application/json" data-after-data>{{ render_data|tojson }}</script>
+        <div class="after-working" data-after-working {{ '' if render.status == 'working' else 'hidden' }}><i class="caden-dots" aria-hidden="true"><b></b><b></b><b></b></i> Drawing the finished job… this takes a minute or two. <small data-after-time></small></div>
+        <p class="sizing-note" data-after-error {{ '' if render.error else 'hidden' }}>{{ render.error }}</p>
+        <div class="after-view" data-after-view {{ '' if render.status == 'done' else 'hidden' }}>
+          <div class="after-toggle" role="tablist"><button type="button" role="tab" aria-selected="true" data-after-show="after">After</button><button type="button" role="tab" aria-selected="false" data-after-show="before">Before</button></div>
+          <div class="after-body">
+            <div class="after-stage" data-after-stage><img alt="The job after the upgrade (AI picture)" data-after-image><div class="after-boxes" data-after-boxes></div><span class="after-label" data-after-label hidden></span></div>
+            <div class="after-parts"><span class="schedule-options-label">Parts in the picture</span><div data-after-parts></div><small class="muted">Click a part to see where it is, or click a box in the picture. Boxes are the AI's best guess.</small></div>
+          </div>
+        </div>
+        {% if service.renders|length > 1 %}<div class="after-history"><span class="schedule-options-label">Earlier pictures</span>{% for other in service.renders[:8] %}{% if other.image_filename %}<a href="{{ url_for('service_detail', service_id=service.id, render=other.id) }}#after" class="{{ 'is-current' if other.id == render.id }}"><img src="{{ url_for('static', filename='uploads/services/' + other.image_filename) }}" alt="Picture from {{ other.created_at.strftime('%b %-d') }}" loading="lazy"></a>{% endif %}{% endfor %}</div>{% endif %}
+      </div>
+      {% endif %}
+    </section>
     <section class="panel section-panel"><div class="section-title"><div><span class="eyebrow">Crew checklist</span><h2>Tools & equipment</h2></div></div>
       {% if service.tools %}<div class="tool-grid">{% for tool in service.tools %}<div class="tool-card {{ 'critical' if tool.is_critical else '' }}"><span class="check-icon">✓</span><div><strong>{{ tool.current_name }}</strong><span class="tool-kind">{{ tool.current_type }}{% if tool.current_cost %} · ${{ '{:,.2f}'.format(tool.current_cost) }} rental{% endif %}</span>{% if tool.notes %}<p>{{ tool.notes }}</p>{% endif %}{% if tool.is_critical %}<small>Don't forget</small>{% endif %}</div></div>{% endfor %}</div>{% else %}<p class="muted">No tools have been added yet.</p>{% endif %}
     </section>
@@ -36,4 +60,5 @@
   "parts": service.items|map(attribute='spot_key')|list, "names": service.items|map(attribute='current_name')|list}|tojson }}</script>
 <script src="{{ url_for('static', filename='js/drawing-spots.js', v=asset_version) }}"></script>
 {% endif %}
+<script src="{{ url_for('static', filename='js/service-after.js', v=asset_version) }}"></script>
 {% endblock %}

@@ -445,3 +445,8 @@
 :where(html[data-theme="modern"]) .spot-row.is-active td { background: rgba(108, 78, 255, .12); }
 :where(html[data-theme="modern"]) .spot-count { background: rgba(108, 78, 255, .16); color: #4b1bbb; }
 :where(html[data-theme="modern"]) .marker-part[aria-checked="true"] { box-shadow: 0 0 0 2px rgba(108, 78, 255, .3); }
+:where(html[data-theme="modern"]) .after-toggle button[aria-selected="true"] { color: #f5f4f9; }
+:where(html[data-theme="modern"]) .after-box { border: 2px solid var(--mark, #a70a0a); }
+:where(html[data-theme="modern"]) .after-box.is-on { box-shadow: 0 0 0 3px rgba(30, 22, 70, 0.42), 0 0 0 9999px rgba(30, 22, 70, 0.122); }
+:where(html[data-theme="modern"]) .after-label { background: rgba(252, 252, 253, .85); color: #16141f; }
+:where(html[data-theme="modern"]) .after-parts .marker-part[aria-pressed="true"] { box-shadow: 0 0 0 2px rgba(108, 78, 255, .3); }

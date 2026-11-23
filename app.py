@@ -150,6 +150,40 @@ class Service(db.Model):
         return (self.estimated_labor_hours or 0) * get_labor_rate()
 
 
+class ServiceRender(db.Model):
+    """"After the upgrade": a photo of the existing install and the AI's picture of it after this service, with where each
+    of the service's parts is in that picture (hotspots, % of the picture, found by the AI)."""
+    id = db.Column(db.Integer, primary_key=True)
+    service_id = db.Column(db.Integer, db.ForeignKey("service.id"), nullable=False, index=True)
+    photo_filename = db.Column(db.String(255), nullable=False)
+    image_filename = db.Column(db.String(255), nullable=False, default="")
+    hotspots_json = db.Column(db.Text, nullable=False, default="")          # [{"part": name, "x", "y", "w", "h", "note"}]
+    parts_json = db.Column(db.Text, nullable=False, default="")             # the parts list it was drawn with
+    status = db.Column(db.String(20), nullable=False, default="working")    # working · done · failed
+    error = db.Column(db.String(400), nullable=False, default="")
+    created_by_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    service = db.relationship("Service", backref=db.backref("renders", order_by="ServiceRender.created_at.desc()", cascade="all, delete-orphan"))
+    created_by = db.relationship("User")
+
+    @property
+    def hotspots(self):
+        try:
+            value = json.loads(self.hotspots_json or "[]")
+        except ValueError:
+            return []
+        return value if isinstance(value, list) else []
+
+    @property
+    def parts(self):
+        try:
+            value = json.loads(self.parts_json or "[]")
+        except ValueError:
+            return []
+        return value if isinstance(value, list) else []
+
+
 class ServiceStep(db.Model):
     """One step of a service's step-by-step instructions: a title, what to do, and a picture."""
     id = db.Column(db.Integer, primary_key=True)
@@ -1642,7 +1676,7 @@ def enforce_role_permissions():
         abort(403)
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
-        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
+        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
@@ -2253,7 +2287,11 @@ def create_service():
 @app.route("/quoting/services/<int:service_id>")
 @login_required
 def service_detail(service_id):
-    return render_template("service_detail.html", service=db.get_or_404(Service, service_id))
+    service = db.get_or_404(Service, service_id)
+    wanted = request.args.get("render", type=int)
+    render = next((r for r in service.renders if r.id == wanted), None) or (service.renders[0] if service.renders else None)
+    return render_template("service_detail.html", service=service, render=render, render_data=render_view(render) if render else None,
+                           ai_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
 
 
 SERVICE_CHECKLIST_CATEGORIES = [
@@ -2290,6 +2328,133 @@ def service_order_checklist(service_id):
 
 
 SPOTS_PER_PART = 200
+RENDER_IMAGE_MODEL_DEFAULT = "gpt-image-1"
+RENDER_PICTURES = {".png", ".jpg", ".jpeg", ".webp"}
+RENDER_STALE_MINUTES = 15
+
+
+def render_parts(service):
+    return [{"name": item.current_name, "quantity": item.quantity, "unit": item.current_unit} for item in service.items]
+
+
+def render_prompt(service, parts):
+    lines = "\n".join(f"- {part['quantity']:g} {part['unit']} {part['name']}" for part in parts) or "- (no parts listed)"
+    return (f"Edit this photo of an existing electrical installation to show it after this work is done: {service.name}. "
+            f"{service.description or ''}\n\nInstall these parts, neatly and to code, the way a licensed electrician would:\n{lines}\n\n"
+            "Keep the same wall, viewpoint, lighting and surroundings; change only what the work changes. Photorealistic, "
+            "like a photo taken right after the job. Show wiring dressed neatly, fittings, locknuts and connectors where they "
+            "belong. Do not add any text, labels, arrows or logos.")
+
+
+def find_render_hotspots(client, image_bytes, parts):
+    """Where each listed part is in the picture: [{part, x, y, w, h, note}] in % of the picture. Parts are referred to by
+    their number in the list, so the AI can't invent one; a box outside the picture is dropped."""
+    if not parts:
+        return []
+    numbered = "\n".join(f"{index}: {part['name']}" for index, part in enumerate(parts))
+    schema = {"type": "object", "additionalProperties": False, "required": ["spots"], "properties": {"spots": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False, "required": ["part", "x", "y", "w", "h", "note"],
+        "properties": {"part": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}, "h": {"type": "number"},
+                       "note": {"type": "string"}}}}}}
+    response = client.responses.create(
+        model=os.environ.get("OPENAI_MODEL", "gpt-5-mini"),
+        instructions=("You look at a picture of a finished electrical installation and find where each listed part is. "
+                      "For every place a part can be seen, give a box: x, y = its top-left corner and w, h = its size, all as "
+                      "percentages (0-100) of the picture's width and height. A part seen in several places gets several boxes. "
+                      "Leave out a part you cannot see. note: a few words on what is there (e.g. 'locknut on the left knockout')."),
+        input=[{"role": "user", "content": [{"type": "input_text", "text": "Parts, by number:\n" + numbered},
+                                             {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")}]}],
+        text={"format": {"type": "json_schema", "name": "part_hotspots", "schema": schema, "strict": True}})
+    found = []
+    for spot in json.loads(response.output_text).get("spots", [])[:120]:
+        try:
+            index = int(spot["part"]); x, y, w, h = (float(spot[k]) for k in ("x", "y", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= index < len(parts) or w <= 0 or h <= 0:
+            continue
+        left, top, right, bottom = max(x, 0.0), max(y, 0.0), min(x + w, 100.0), min(y + h, 100.0)
+        if right - left < 0.5 or bottom - top < 0.5 or (right - left) * (bottom - top) < 0.5 * w * h:
+            continue                                   # mostly outside the picture: not a box to trust
+        x, y, w, h = left, top, right - left, bottom - top
+        found.append({"part": parts[index]["name"], "x": round(x, 2), "y": round(y, 2), "w": round(w, 2), "h": round(h, 2), "note": str(spot.get("note") or "")[:120]})
+    return found
+
+
+def _render_worker(render_id):
+    with app.app_context():
+        render = db.session.get(ServiceRender, render_id)
+        try:
+            folder = os.path.join(app.static_folder, "uploads", "services")
+            client = OpenAI()
+            with open(os.path.join(folder, render.photo_filename), "rb") as photo:
+                result = client.images.edit(model=os.environ.get("OPENAI_IMAGE_MODEL", RENDER_IMAGE_MODEL_DEFAULT), image=photo,
+                                            prompt=render_prompt(render.service, render.parts))
+            image_bytes = base64.b64decode(result.data[0].b64_json)
+            name = f"{secrets.token_hex(8)}-after.png"
+            with open(os.path.join(folder, name), "wb") as handle:
+                handle.write(image_bytes)
+            render.image_filename = name
+            render.status = "done"
+            db.session.commit()
+            try:
+                render.hotspots_json = json.dumps(find_render_hotspots(client, image_bytes, render.parts))
+            except Exception as exc:  # noqa: BLE001 — the picture is still worth having without its hotspots
+                app.logger.warning("Finding the parts in render %s failed: %s", render_id, exc)
+                render.error = f"The picture is ready, but finding the parts in it failed. {describe_ai_error(exc)}"[:400]
+        except Exception as exc:  # noqa: BLE001
+            app.logger.exception("Service render %s failed", render_id)
+            db.session.rollback()
+            render = db.session.get(ServiceRender, render_id)
+            render.status = "failed"
+            render.error = f"The picture couldn't be made. {describe_ai_error(exc)}"[:400]
+        render.finished_at = datetime.utcnow()
+        db.session.commit()
+        db.session.remove()
+
+
+def render_view(render):
+    if render.status == "working" and datetime.utcnow() - render.created_at > timedelta(minutes=RENDER_STALE_MINUTES):
+        render.status, render.error = "failed", "It stopped before finishing (the web app restarted). Try again."
+        db.session.commit()
+    return {"id": render.id, "status": render.status, "error": render.error, "hotspots": render.hotspots,
+            "image": url_for("static", filename="uploads/services/" + render.image_filename) if render.image_filename else "",
+            "photo": url_for("static", filename="uploads/services/" + render.photo_filename),
+            "parts": [part["name"] for part in render.parts]}
+
+
+@app.route("/quoting/services/<int:service_id>/after", methods=["POST"])
+@login_required
+def start_service_render(service_id):
+    """After the upgrade: upload a photo of what is there now; the AI draws it after this service, in the background."""
+    check_csrf()
+    service = db.get_or_404(Service, service_id)
+    back = url_for("service_detail", service_id=service.id) + "#after"
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        flash("The AI isn't connected (no OpenAI key), so it can't draw the picture.", "error"); return redirect(back)
+    photo = request.files.get("photo")
+    if not photo or not photo.filename or os.path.splitext(photo.filename)[1].lower() not in RENDER_PICTURES:
+        flash("Choose a photo (JPG, PNG or WEBP) of what is there now.", "error"); return redirect(back)
+    if any(r.status == "working" for r in service.renders if datetime.utcnow() - r.created_at < timedelta(minutes=RENDER_STALE_MINUTES)):
+        flash("A picture is already being made for this service. Wait for it to finish.", "error"); return redirect(back)
+    folder = os.path.join(app.static_folder, "uploads", "services")
+    os.makedirs(folder, exist_ok=True)
+    stored = f"{secrets.token_hex(8)}-before-{secure_filename(photo.filename) or 'photo.jpg'}"
+    photo.save(os.path.join(folder, stored))
+    render = ServiceRender(service=service, photo_filename=stored, parts_json=json.dumps(render_parts(service)), created_by=current_user)
+    db.session.add(render)
+    db.session.commit()
+    if app.config.get("QUOTE_SYNC"):
+        _render_worker(render.id)
+    else:
+        threading.Thread(target=_render_worker, args=(render.id,), daemon=True).start()
+    return redirect(url_for("service_detail", service_id=service.id, render=render.id) + "#after")
+
+
+@app.route("/quoting/services/renders/<int:render_id>")
+@login_required
+def service_render_status(render_id):
+    return jsonify(render_view(db.get_or_404(ServiceRender, render_id)))
 
 
 def clean_drawing_spots(raw, keys):
