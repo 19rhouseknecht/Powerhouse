@@ -11,6 +11,7 @@ import math
 import shutil
 import zipfile
 import lighting
+import scheduling
 from difflib import SequenceMatcher
 from functools import wraps
 from urllib.parse import quote_plus
@@ -735,6 +736,7 @@ class Job(db.Model):
     review_at = db.Column(db.DateTime, nullable=True)
     quote_presentation_at = db.Column(db.DateTime, nullable=True)
     work_start_date = db.Column(db.Date, nullable=True)
+    work_start_time = db.Column(db.String(5), nullable=False, default="")          # "07:30": when the crew starts (7-8 AM unless the job says otherwise)
     duration_days = db.Column(db.Integer, nullable=False, default=1)
     internal_notes = db.Column(db.Text, nullable=False, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -1625,7 +1627,7 @@ def enforce_role_permissions():
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
-        "jobs":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
+        "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
         "finance_dashboard":"view_finance", "expenses":"view_expenses", "create_expense":"view_expenses", "expense_receipt":"view_expenses",
         "onsite_checklist":"view_sales", "onsite_checklist_job":"view_sales", "save_onsite_checklist":"view_sales", "refresh_inspection_tip":"view_sales", "inspection_photo":"view_sales", "delete_inspection_photo":"view_sales", "sales_reviews":"view_sales",
@@ -4206,6 +4208,72 @@ def job_note_photo(filename):
     return send_from_directory(os.path.join(app.static_folder, *JOB_NOTE_DIR), secure_filename(filename))
 
 
+SCHEDULE_RULES_PROMPT = """You read an electrical contractor's job description for scheduling exceptions only. The office's rules:
+the crew starts between 07:00 and 08:00, everything is done by 16:00, Monday to Friday. Change a rule ONLY when the
+description says so (for example "customer is home after 10", "can only do Saturdays", "not before the 15th", "must be
+done by noon", "after the drywall is up next month"). Otherwise return the office's values. Times are 24-hour HH:MM.
+weekdays: Monday = 0 ... Sunday = 6. not_before: YYYY-MM-DD or "" (today is {today}). work_days: how many full days the
+work described takes, your honest estimate for a two-person crew (1 for most service calls), 0 when you cannot tell.
+review_minutes: how long a site review would take (60 unless it is a big job). why: one short sentence naming what in the
+description changed a rule, or "" when nothing did."""
+
+
+def schedule_rules_from_description(title, description):
+    """(rules, note): the scheduling rules for this job. The AI reads the description for exceptions; without an OpenAI
+    key (or on any error) the office's rules are used and the note says so."""
+    text = " ".join(f"{title or ''}. {description or ''}".split())[:3000]
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY") or len(text) < 3:
+        return scheduling.clean_rules(), "Using the usual rules: start 7–8 AM, done by 4 PM, Monday to Friday."
+    schema = {"type": "object", "additionalProperties": False,
+              "required": ["start_from", "start_to", "day_end", "weekdays", "not_before", "work_days", "review_minutes", "why"],
+              "properties": {"start_from": {"type": "string"}, "start_to": {"type": "string"}, "day_end": {"type": "string"},
+                             "weekdays": {"type": "array", "items": {"type": "integer"}}, "not_before": {"type": "string"},
+                             "work_days": {"type": "integer"}, "review_minutes": {"type": "integer"}, "why": {"type": "string"}}}
+    try:
+        response = OpenAI().responses.create(model=os.environ.get("OPENAI_MODEL", "gpt-5-mini"),
+                                             instructions=SCHEDULE_RULES_PROMPT.replace("{today}", date.today().isoformat()), input=text,
+                                             text={"format": {"type": "json_schema", "name": "schedule_rules", "schema": schema, "strict": True}})
+        rules = scheduling.clean_rules(json.loads(response.output_text))
+    except Exception as exc:  # noqa: BLE001 — scheduling still works with the usual rules
+        app.logger.warning("Schedule rules from the description failed: %s", exc)
+        return scheduling.clean_rules(), "Couldn't read the description just now, so these use the usual rules (start 7–8 AM, done by 4 PM, Mon–Fri)."
+    return rules, rules["why"] or "Nothing in the description changes the usual rules: start 7–8 AM, done by 4 PM."
+
+
+def booked_for(person_id, skip_job_id=None):
+    """(appointments, work days) already on the schedule for this person (everybody's when nobody is assigned yet)."""
+    jobs = Job.query.filter(~Job.status.in_(["completed", "declined"]))
+    if person_id:
+        jobs = jobs.filter(Job.assigned_user_id == person_id)
+    appointments, busy = [], set()
+    for job in jobs.all():
+        if job.id == skip_job_id:
+            continue
+        for when in (job.review_at, job.quote_presentation_at):
+            if when:
+                appointments.append((when, when + timedelta(hours=1)))
+        if job.work_start_date:
+            busy.update(job.work_start_date + timedelta(days=offset) for offset in range(max(job.duration_days or 1, 1)))
+    return appointments, busy
+
+
+@app.route("/jobs/schedule-options", methods=["POST"])
+@login_required
+def job_schedule_options():
+    """Suggest times on the job form: open site-review times and work days, found in the real schedule."""
+    check_csrf()
+    rules, note = schedule_rules_from_description(request.form.get("title", ""), request.form.get("description", ""))
+    person = request.form.get("assigned_user_id", type=int)
+    appointments, busy = booked_for(person, request.form.get("job_id", type=int))
+    typed_days = request.form.get("duration_days", type=int) or 0
+    days = typed_days if typed_days > 1 else (rules["work_days"] or typed_days or 1)
+    today = date.today()
+    return jsonify({"note": note, "who": (db.session.get(User, person).username if person and db.session.get(User, person) else "the whole team"),
+                    "review": scheduling.review_slots(rules, appointments, busy, today),
+                    "work": scheduling.work_slots(rules, busy, today, days),
+                    "work_days": days, "estimated": bool(rules["work_days"] and typed_days <= 1)})
+
+
 @app.route("/schedule")
 @login_required
 def schedule():
@@ -4230,9 +4298,10 @@ def schedule():
         if job.quote_presentation_at:
             events.setdefault(job.quote_presentation_at.date(), []).append({"job": job, "type": "quote", "label": "Read quote", "time": job.quote_presentation_at.strftime("%-I:%M %p")})
         if job.work_start_date:
+            start_time = datetime.strptime(job.work_start_time, "%H:%M").strftime("%-I:%M %p") if job.work_start_time else ""
             for offset in range(max(job.duration_days or 1, 1)):
                 work_date = job.work_start_date + timedelta(days=offset)
-                events.setdefault(work_date, []).append({"job": job, "type": "work", "label": f"Work day {offset + 1}/{max(job.duration_days or 1, 1)}", "time": ""})
+                events.setdefault(work_date, []).append({"job": job, "type": "work", "label": f"Work day {offset + 1}/{max(job.duration_days or 1, 1)}", "time": start_time})
     jump = 1 if view == "day" else 7 if view == "week" else 31
     previous_date = (first_day - timedelta(days=1)) if view == "month" else anchor - timedelta(days=jump)
     next_date = (first_day.replace(day=28) + timedelta(days=4)).replace(day=1) if view == "month" else anchor + timedelta(days=jump)
@@ -6857,6 +6926,10 @@ def populate_job_from_form(job):
     if error:
         return error
     work_date_value = request.form.get("work_start_date", "")
+    work_time_value = request.form.get("work_start_time", "").strip()
+    if work_time_value and not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", work_time_value):
+        return "Work start time must be a time of day."
+    job.work_start_time = work_time_value
     try:
         work_start_date = date.fromisoformat(work_date_value) if work_date_value else None
         duration_days = max(int(request.form.get("duration_days", "1") or 1), 1)
@@ -8726,6 +8799,7 @@ with app.app_context():
     add_column_if_missing("user", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("user", "theme", "VARCHAR(10) NOT NULL DEFAULT ''")
     add_column_if_missing("service", "has_steps", "BOOLEAN NOT NULL DEFAULT 0")
+    add_column_if_missing("job", "work_start_time", "VARCHAR(5) NOT NULL DEFAULT ''")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

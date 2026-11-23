@@ -437,3 +437,5 @@
 :where(html[data-theme="modern"]) .step-number { color: #f5f4f9; }
 :where(html[data-theme="modern"]) .step-remove { color: #830101; }
 :where(html[data-theme="modern"]) .service-step-number { color: #f5f4f9; }
+:where(html[data-theme="modern"]) .schedule-suggest-note { color: #444059; }
+:where(html[data-theme="modern"]) .schedule-chip.is-picked { box-shadow: 0 0 0 2px rgba(108, 78, 255, .3); }
