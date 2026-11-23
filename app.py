@@ -973,6 +973,7 @@ class Expense(db.Model):
     notes = db.Column(db.Text, nullable=False, default="")
     receipt_filename = db.Column(db.String(255), nullable=True)
     expense_date = db.Column(db.Date, nullable=False, default=date.today, index=True)
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)    # brought over from a Jobber expense
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     submitted_by = db.relationship("User", backref="expenses")
     job = db.relationship("Job", backref=db.backref("expenses", lazy="selectin"))
@@ -1702,7 +1703,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import",
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import", "jobber_update", "jobber_expenses_import",
                        "job_analytics", "cooper_account", "test_cooper_account", "check_cooper_prices", "cancel_cooper_price_sync", "cooper_sync_preview",
                        "apply_cooper_prices", "start_cooper_catalog", "unconfirmed_switch", "update_job_materials_from_cooper",
                        "labor_calculator", "upload_labor_reference", "apply_labor_proposals", "ask_mike", "update_labor_rate", "download_cooper_listener"}
@@ -7814,9 +7815,9 @@ def jobber_pulled():
         return None
 
 
-def _jobber_pull_worker(by):
+def _jobber_pull_worker(by, update=False):
     with app.app_context():
-        state = {"status": "running", "started_at": datetime.utcnow().isoformat(timespec="seconds"), "by": by, "log": []}
+        state = {"status": "running", "started_at": datetime.utcnow().isoformat(timespec="seconds"), "by": by, "log": [], "update": update}
 
         def say(line):
             state["log"] = (state["log"] + [line])[-12:]
@@ -7833,6 +7834,12 @@ def _jobber_pull_worker(by):
                          counts={k: len(data.get(k) or []) for k in jb.ORDER}, account=(data.get("account") or {}).get("name", ""),
                          calls=data.get("calls", 0))
             say("Done: %s." % ", ".join("%d %s" % (len(data.get(k) or []), k) for k in jb.ORDER))
+            if update:                                     # Update from Jobber: bring everything new over now
+                state["status"] = "running"; say("Bringing over what's new…")
+                summary = jobber_update_all(data, by)
+                state.update(status="done", updated=summary)
+                say("Updated: %d new clients, %d new jobs, %d visits, %d time entries, %d expenses." % (
+                    summary["clients_new"], summary["jobs_new"], summary["visits"], summary["time"], summary["expenses"]))
         except jb.JobberError as exc:
             db.session.rollback()
             state.update(status="failed", error=str(exc), finished_at=datetime.utcnow().isoformat(timespec="seconds"))
@@ -8022,7 +8029,8 @@ def jobber_page():
     data = jobber_pulled() if state.get("status") == "done" else None
     plan = jobber_plan(data) if data else None
     schedule_plan = jobber_schedule_plan(data) if data else None
-    return render_template("jobber.html", schedule_plan=schedule_plan, site_users=User.query.order_by(User.username).all(),
+    return render_template("jobber.html", schedule_plan=schedule_plan, expenses_plan=jobber_expenses_plan(data) if data else None,
+                           last_update=jobber_json("last_update"), site_users=User.query.order_by(User.username).all(),
                            last_schedule_import=jobber_json("last_schedule_import"), client_id=jobber_setting("client_id"), has_secret=bool(jobber_secret("client_secret")),
                            connected=jobber_connected(), account=jobber_json("account"), callback_url=jobber_callback_url(),
                            state=state, plan=plan, data=data, last_import=jobber_json("last_import"), status_labels=JOB_STATUS_LABELS,
@@ -8269,6 +8277,132 @@ def jobber_schedule_apply(data):
         done["time"] += 1; done["seconds"] += entry["seconds"]
     db.session.commit()
     return done
+
+
+RECEIPT_TYPES = {b"%PDF": ".pdf", b"\x89PNG": ".png", b"\xff\xd8\xff": ".jpg", b"GIF8": ".gif", b"RIFF": ".webp"}
+
+
+def _receipt_extension(body):
+    return next((ext for magic, ext in RECEIPT_TYPES.items() if body.startswith(magic)), "")
+
+
+def jobber_expenses_plan(data):
+    """What bringing over Jobber's job expenses and line-item costs would do."""
+    local_jobs = {j.jobber_id: j for j in Job.query.filter(Job.jobber_id != "").all()}
+    have = {e.jobber_id for e in Expense.query.filter(Expense.jobber_id != "").all()}
+    counts = {"expenses_new": 0, "expenses_here": 0, "expenses_no_job": 0, "total_new": 0.0, "receipts": 0, "materials_fill": 0}
+    for raw in data.get("expenses") or []:
+        entry = jb.expense_fields(raw)
+        if not entry["jobber_id"]:
+            continue
+        if entry["jobber_id"] in have:
+            counts["expenses_here"] += 1
+        elif entry["job_jobber_id"] not in local_jobs:
+            counts["expenses_no_job"] += 1
+        else:
+            counts["expenses_new"] += 1; counts["total_new"] += entry["total"]
+            counts["receipts"] += 1 if entry["receipt_url"] else 0
+    for raw in data.get("jobs") or []:
+        job = local_jobs.get(raw.get("id") or "")
+        if job is not None and not job.material_cost and jb.line_item_cost(jb.job_fields(raw)["line_items"]):
+            counts["materials_fill"] += 1
+    return {"counts": counts, "has_expenses": "expenses" in data and "expenses" not in (data.get("missing") or []),
+            "refused": (data.get("refused") or {}).get("expenses", "")}
+
+
+def jobber_expenses_apply(data, by_username=""):
+    """Jobber's expenses on jobs become Expenses on those jobs (category Materials direct job, so they count as the job's
+    materials), with their receipts downloaded; a job with no material cost gets its line items' cost. Never doubles."""
+    local_jobs = {j.jobber_id: j for j in Job.query.filter(Job.jobber_id != "").all()}
+    have = {e.jobber_id for e in Expense.query.filter(Expense.jobber_id != "").all()}
+    mapping = jobber_people_map(list({jb.expense_fields(r)["person"] for r in data.get("expenses") or []} - {""}))
+    fallback = User.query.filter_by(username=by_username).first() or User.query.join(Role).filter(Role.is_admin.is_(True)).order_by(User.id).first()
+    folder = os.path.join(app.static_folder, "uploads", "receipts")
+    done = {"expenses": 0, "total": 0.0, "receipts": 0, "receipts_missed": 0, "materials": 0}
+    for raw in data.get("expenses") or []:
+        entry = jb.expense_fields(raw)
+        job = local_jobs.get(entry["job_jobber_id"])
+        if not entry["jobber_id"] or entry["jobber_id"] in have or job is None:
+            continue
+        submitter = db.session.get(User, mapping.get(entry["person"]) or 0) or fallback
+        notes = " · ".join(filter(None, [entry["description"], "From Jobber" + (f" ({entry['person']})" if entry["person"] else "")]))
+        expense = Expense(job=job, submitted_by_user_id=submitter.id, vendor=entry["title"] or "Jobber expense", total=entry["total"],
+                          category="Materials direct job", reimbursable=False, notes=notes, expense_date=entry["date"] or date.today(),
+                          jobber_id=entry["jobber_id"])
+        if entry["receipt_url"]:
+            body = jb.download(entry["receipt_url"])
+            extension = _receipt_extension(body) if body else ""
+            if extension:
+                os.makedirs(folder, exist_ok=True)
+                name = f"{secrets.token_hex(8)}-jobber-receipt{extension}"
+                with open(os.path.join(folder, name), "wb") as handle:
+                    handle.write(body)
+                expense.receipt_filename = name
+                done["receipts"] += 1
+            else:
+                done["receipts_missed"] += 1
+                expense.notes = (expense.notes + " · Receipt in Jobber: " + entry["receipt_url"])[:4000]
+        db.session.add(expense)
+        have.add(entry["jobber_id"])
+        done["expenses"] += 1; done["total"] += entry["total"]
+    for raw in data.get("jobs") or []:
+        job = local_jobs.get(raw.get("id") or "")
+        cost = jb.line_item_cost(jb.job_fields(raw)["line_items"]) if job is not None else 0
+        if job is not None and not job.material_cost and cost:
+            job.material_cost = cost
+            done["materials"] += 1
+    db.session.commit()
+    return done
+
+
+def jobber_update_all(data, by_username):
+    """Update from Jobber, after its pull: import, schedule & time, expenses & materials. Backed up first. Returns a summary."""
+    backup = rel.backup_database(os.path.join(basedir, "instance", "app.db"), RELEASE_BACKUPS, "before-jobber-update")
+    counts = jobber_apply(data)
+    schedule = jobber_schedule_apply(data)
+    money = jobber_expenses_apply(data, by_username)
+    summary = {"at": datetime.utcnow().isoformat(timespec="seconds"), "by": by_username, "backup": os.path.basename(backup) if backup else "",
+               "clients_new": counts["clients_new"], "jobs_new": counts["jobs_new"],
+               "refreshed": counts["clients_update"] + counts["clients_link"] + counts["clients_fill"] + counts["jobs_update"] + counts["jobs_fill"],
+               "visits": schedule["visits"], "assigned": schedule["assigned"], "time": schedule["time"], "hours": round(schedule["seconds"] / 3600, 1),
+               "expenses": money["expenses"], "expense_total": round(money["total"], 2), "receipts": money["receipts"],
+               "receipts_missed": money["receipts_missed"], "materials": money["materials"]}
+    put_jobber_setting("last_update", summary)
+    put_jobber_setting("last_import", {"at": summary["at"], "by": by_username, "counts": counts, "backup": summary["backup"]})
+    return summary
+
+
+@app.route("/settings/jobber/update", methods=["POST"])
+@login_required
+def jobber_update():
+    """Update from Jobber: one click pulls and brings over everything new (clients, jobs, schedule, time, expenses)."""
+    check_csrf()
+    back = request.form.get("next", "")
+    back = back if back.startswith("/") and not back.startswith("//") else url_for("jobber_page")
+    if not jobber_connected():
+        flash("Connect Jobber first: it takes a Client ID and Secret from Jobber's Developer Center.", "error")
+        return redirect(url_for("jobber_page"))
+    if jobber_pull_state().get("status") == "running":
+        flash("Jobber is already being read. Wait for it to finish.", "error")
+        return redirect(back)
+    put_jobber_setting("pull", {"status": "running", "started_at": datetime.utcnow().isoformat(timespec="seconds"),
+                                "by": current_user.username, "log": ["Starting…"], "update": True})
+    threading.Thread(target=_jobber_pull_worker, args=(current_user.username, True), daemon=True).start()
+    return redirect(url_for("jobber_page"))
+
+
+@app.route("/settings/jobber/expenses-import", methods=["POST"])
+@login_required
+def jobber_expenses_import():
+    check_csrf()
+    data = jobber_pulled()
+    if data is None:
+        flash("Pull from Jobber first.", "error")
+        return redirect(url_for("jobber_page"))
+    rel.backup_database(os.path.join(basedir, "instance", "app.db"), RELEASE_BACKUPS, "before-jobber-expenses")
+    done = jobber_expenses_apply(data, current_user.username)
+    flash("From Jobber: %d job expenses ($%.2f), %d receipts saved, %d jobs got a material cost." % (done["expenses"], done["total"], done["receipts"], done["materials"]), "success")
+    return redirect(url_for("jobber_page") + "#jobber-expenses")
 
 
 @app.route("/settings/jobber/people", methods=["POST"])
@@ -9387,6 +9521,7 @@ with app.app_context():
     add_column_if_missing("job", "work_start_time", "VARCHAR(5) NOT NULL DEFAULT ''")
     add_column_if_missing("service", "drawing_spots_json", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing("clock_session", "jobber_id", "VARCHAR(80) NOT NULL DEFAULT ''")
+    add_column_if_missing("expense", "jobber_id", "VARCHAR(80) NOT NULL DEFAULT ''")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

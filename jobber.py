@@ -29,7 +29,7 @@ VERSION = "2025-04-16"           # X-JOBBER-GRAPHQL-VERSION; Jobber supports a v
 AGENT = "Power House"
 TRANSPORT = None                 # tests: callable(method, url, headers, body_bytes) -> (status, bytes)
 SLEEP = time.sleep               # tests replace it
-PAGE = {"clients": 25, "requests": 25, "quotes": 15, "jobs": 10, "timesheets": 50}
+PAGE = {"clients": 25, "requests": 25, "quotes": 15, "jobs": 10, "timesheets": 50, "expenses": 50}
 
 
 class JobberError(Exception):
@@ -52,6 +52,20 @@ def _http(method, url, headers, body=None, timeout=60):
         return exc.code, exc.read()
     except Exception as exc:  # noqa: BLE001
         raise JobberError("Could not reach Jobber (%s). Try again in a minute." % exc.__class__.__name__, "network")
+
+
+RECEIPT_MAX = 15 * 1024 * 1024
+
+
+def download(url):
+    """A receipt picture or PDF from the address Jobber gave (https only), or b"" when it can't be had."""
+    if not str(url).startswith("https://"):
+        return b""
+    try:
+        status, body = _http("GET", url, {"User-Agent": "PowerHouseFlow"})
+    except JobberError:
+        return b""
+    return body if status == 200 and body and len(body) <= RECEIPT_MAX else b""
 
 
 def _json(payload):
@@ -254,9 +268,16 @@ WANT = {
         "id": None, "startAt": None, "endAt": None, "finalDuration": None, "duration": None, "note": None, "label": None,
         "user": {"id": None, "name": NAME}, "job": {"id": None}, "visit": {"id": None},
     },
+    # money spent on a job (materials, receipts); several likely field names, trimmed to what Jobber's schema has
+    "expenses": {
+        "id": None, "title": None, "description": None, "date": None, "total": None, "createdAt": None, "updatedAt": None,
+        "linkedJob": {"id": None}, "job": {"id": None}, "enteredBy": {"name": NAME}, "paidBy": {"name": NAME},
+        "receiptUrl": None, "receipt": {"url": None, "fileName": None, "contentType": None},
+    },
 }
-ORDER = ("clients", "requests", "quotes", "jobs", "timesheets")
-ROOT_FIELD = {"timesheets": "timeSheetEntries"}           # our name -> Jobber's query name, where they differ
+ORDER = ("clients", "requests", "quotes", "jobs", "timesheets", "expenses")
+ROOT_FIELD = {"timesheets": "timeSheetEntries", "expenses": "expenses"}   # our name -> Jobber's query name
+OPTIONAL = {"timesheets", "expenses"}                     # need their own permission: a refusal skips them, the rest still comes over
 
 
 def pull(session, progress=None):
@@ -289,7 +310,7 @@ def pull(session, progress=None):
             try:
                 data = session.gql(query, {"after": after})
             except JobberError as exc:
-                if what in ROOT_FIELD and exc.kind == "refused":        # time sheets need their own permission: the rest still comes over
+                if what in OPTIONAL and exc.kind == "refused":          # time sheets / expenses need their own permission
                     out["missing"].append(what)
                     out.setdefault("refused", {})[what] = str(exc)
                     say("Jobber didn't allow reading %s (%s); the rest came over." % (what, exc))
@@ -385,7 +406,21 @@ def client_fields(raw):
 
 def _lines(raw):
     return [{"name": i.get("name") or "", "description": i.get("description") or "", "quantity": i.get("quantity"),
-             "unit_price": money(i.get("unitPrice")), "total": money(i.get("totalPrice"))} for i in _nodes(raw.get("lineItems"))]
+             "unit_price": money(i.get("unitPrice")), "total": money(i.get("totalPrice")), "unit_cost": money(i.get("unitCost"))}
+            for i in _nodes(raw.get("lineItems"))]
+
+
+def line_item_cost(lines):
+    """What a job's line items cost (quantity x unit cost, where Jobber has a cost), or 0."""
+    total = 0.0
+    for line in lines or []:
+        try:
+            quantity = float(line.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0.0
+        if line.get("unit_cost"):
+            total += quantity * float(line["unit_cost"])
+    return round(total, 2)
 
 
 def job_status(raw, now=None):
@@ -462,6 +497,22 @@ def timesheet_fields(raw):
             "person": person_name(raw.get("user")), "job_jobber_id": (raw.get("job") or {}).get("id") or "",
             "visit_jobber_id": (raw.get("visit") or {}).get("id") or "",
             "note": " · ".join(filter(None, [(raw.get("label") or "").strip(), (raw.get("note") or "").strip()]))[:255]}
+
+
+def expense_fields(raw):
+    """One Jobber expense: what, how much, when, on which job, who, and its receipt (an address to download it from)."""
+    receipt = raw.get("receipt") if isinstance(raw.get("receipt"), dict) else {}
+    when = local_date(raw.get("date")) if raw.get("date") and "T" in str(raw.get("date")) else None
+    if when is None and raw.get("date"):
+        try:
+            when = datetime.strptime(str(raw["date"])[:10], "%Y-%m-%d").date()
+        except ValueError:
+            when = None
+    return {"jobber_id": raw.get("id") or "", "title": (raw.get("title") or "").strip()[:180], "description": (raw.get("description") or "").strip(),
+            "total": money(raw.get("total")) or 0.0, "date": when or local_date(raw.get("createdAt")),
+            "job_jobber_id": ((raw.get("linkedJob") or {}).get("id") or (raw.get("job") or {}).get("id") or ""),
+            "person": person_name(raw.get("enteredBy")) or person_name(raw.get("paidBy")),
+            "receipt_url": raw.get("receiptUrl") or receipt.get("url") or "", "receipt_name": receipt.get("fileName") or ""}
 
 
 def quote_fields(raw):
