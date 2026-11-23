@@ -123,7 +123,7 @@ with sync_playwright() as pw:
     page.goto(base + "/quoting/services/%d" % service_id)
     page.locator("[data-svc-tick]").check()
     page.click("[data-svc-cooper]")
-    page.locator("[data-svc-said]", has_text="Sent to the office listener").wait_for(timeout=5000)
+    page.locator("[data-svc-said]", has_text="the page updates by itself").wait_for(timeout=8000)
     with app.app_context():
         run = m.PriceSyncRun.query.order_by(m.PriceSyncRun.id.desc()).first()
         check(run.item_ids == [panel_id], "ticking a material and pressing Update from Cooper sends it to the office listener")

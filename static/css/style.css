@@ -1806,3 +1806,9 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .svc-items td.svc-pic-col .line-thumb { display:grid; }
 .svc-tick-bar { margin:10px 0 8px; }
 .svc-tick-bar small a { color:var(--accent-hover); }
+
+/* Needs a price: Show more like these, and the search for when the suggestions are wrong */
+.more-like { margin:6px 0 2px; }
+.more-like-results:empty { display:none; }
+.more-like-results { margin-top:6px; }
+.sheet-search-label { display:block; margin:10px 0 4px; color:var(--muted); font-size:11px; font-weight:600; }

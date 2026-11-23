@@ -3284,6 +3284,41 @@ def find_pricing_items():
     return jsonify({"results": found})
 
 
+MORE_MATCHES_PAGE = 8
+
+
+@app.route("/quoting/pricing/more-like.json")
+@login_required
+def more_sheet_matches():
+    """Show more like these (Needs a price): more Pricing Sheet items like the item asked for and like the suggestions already
+    shown (the same kind of thing, other makes and styles), best first, 8 at a time, never one already shown."""
+    if not (current_user.can("view_quoting") or current_user.can("view_pricing")):
+        return jsonify({"results": [], "more": False})
+    name = request.args.get("name", "")[:200]
+    shown = {int(v) for v in request.args.get("shown", "").split(",") if v.strip().isdigit()}
+    page = max(request.args.get("page", type=int) or 0, 0)
+    found, seen = [], set(shown)
+    seeds = [name] + [item.name for item in PriceItem.query.filter(PriceItem.id.in_(shown or {0})).all()]
+    for seed in seeds:
+        for score, item in sheet_matches(seed, limit=40):
+            if item.id not in seen:
+                seen.add(item.id); found.append((score, item))
+    if len(found) < 24:                                    # looser: anything sharing the item's main words
+        words = [w for w in _match_tokens(name) if w not in MATCH_WORD_FILLER and len(w) > 2][:3]
+        if words:
+            loose = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0,
+                                           db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in words])).order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(60).all()
+            for item in loose:
+                if item.id not in seen:
+                    seen.add(item.id); found.append((0.0, item))
+    found.sort(key=lambda row: (-row[0], row[1].category == UNCONFIRMED, row[1].name))
+    chunk = found[:MORE_MATCHES_PAGE]
+    return jsonify({"more": len(found) > MORE_MATCHES_PAGE, "page": page,
+                    "results": [{"id": item.id, "name": item.name, "price": round(item.price, 2), "unit": item.unit, "part": item.cooper_part_number,
+                                 "unconfirmed": item.category == UNCONFIRMED, "image": url_for("static", filename=item.image_path) if item.image_path else ""}
+                                for score, item in chunk]})
+
+
 @app.route("/quoting/pricing/items/<int:item_id>/confirm", methods=["POST"])
 @login_required
 def confirm_unconfirmed_item(item_id):
