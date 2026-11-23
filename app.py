@@ -212,6 +212,7 @@ class PriceItem(db.Model):
         """Lumens typed on the Pricing Sheet, else read from the name ("... 1200 lm"), else None. Never estimated."""
         return self.lumens if self.lumens else lighting.lumens_from_name(self.name)
     image_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'cooper' (captured by the listener) · 'upload'
+    picture_asked_at = db.Column(db.DateTime, nullable=True)                 # when a page last asked the office listener for its picture
     lumens = db.Column(db.Float, nullable=True)                               # a light's output; blank = read from its name when it says
     lumens_source = db.Column(db.String(20), nullable=False, default="")      # '' · 'typed' (never overwritten) · 'cooper'
     specs_json = db.Column(db.Text, nullable=False, default="")               # everything Cooper's product page lists: {label: value}
@@ -1089,7 +1090,10 @@ Never put a price on a quote yourself and never create a Pricing Sheet item. Whe
 missing_services (its name, quantity and unit) and pricing_needed (with your best guess, which is shown only as a hint): it is
 listed at the top of the draft, where the office matches it to a Pricing Sheet item. If the office gives you a price in the chat
 for something not in the libraries, still list it in missing_services and say they can add it on the Pricing Sheet and match it.
-Leave direct_priced_items empty."""
+Leave direct_priced_items empty.
+QUANTITIES: every line is charged for its quantity, so the quantity is the real count and the name never carries one
+("LED wafer light", quantity 12; never "12x LED wafer light", quantity 1). Parts that go with every light or device (bulbs,
+trims, housings, brackets, boxes) are that count times how many each takes: 12 fixtures with 2 bulbs each is 24 bulbs."""
 
 CADEN_PRESENTATION_WORDING_V1 = """CLIENT PRESENTATION WORDING:
 Every client-facing option bullet must be concise, professional, and easy for a homeowner to understand. Prefer short scope phrases such as “Premium installation of …”, “Premium replacement of …”, “Premium upgrade of …”, or “Professional inspection of …”. Describe what will be completed, not the internal estimating method. Do not write paragraphs, technical explanations, sales hype, or separate bullets for ordinary labor, setup, cleanup, travel, and disposal. Aim for one clear action per bullet and generally 4–12 words."""
@@ -1193,6 +1197,7 @@ class Quote(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     confirmed_at = db.Column(db.DateTime, nullable=True)
     pricing_needed_json = db.Column(db.Text, nullable=False, default="")    # Caden's suggested prices for unpriced items
+    labor_suggest_json = db.Column(db.Text, nullable=False, default="")     # Mike's suggested labor times: {price_item_id: {hours, reason}}
     lighting_json = db.Column(db.Text, nullable=False, default="")          # the room for a lighting layout (lighting.read_room)
     ai_working_since = db.Column(db.DateTime, nullable=True)                # Caden is building in the background since then
 
@@ -1211,6 +1216,14 @@ class Quote(db.Model):
     @property
     def has_missing_pricing(self):
         return any(option.has_missing_price for option in self.options)
+
+    @property
+    def labor_suggestions(self):
+        try:
+            value = json.loads(self.labor_suggest_json or "{}")
+            return value if isinstance(value, dict) else {}
+        except ValueError:
+            return {}
 
     @property
     def pricing_needed(self):
@@ -1712,7 +1725,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "price_item_pictures":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2005,6 +2018,11 @@ def check_cooper_prices():
     selected_ids = sorted({int(v) for v in request.form.getlist("item_ids[]") + request.form.get("item_ids", "").split(",") if str(v).strip().isdigit()})
     expire_stale_cooper_runs()
     active = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).order_by(PriceSyncRun.updated_at.desc()).first()
+    if active and active.mode == "pictures" and active.status == "queued":
+        # pictures asked for by themselves and not started: this request goes first, and those items are asked for again later
+        PriceItem.query.filter(PriceItem.id.in_(active.item_ids or [0])).update({PriceItem.picture_asked_at: None}, synchronize_session=False)
+        active.status = "cancelled"; append_sync_log(active, "Replaced by an Update from Cooper; the pictures are asked for again later.")
+        db.session.commit(); active = None
     if active:
         return jsonify({"error":"A Cooper price check is already queued or running.", "batch_id":active.batch_id, "status_url":url_for("cooper_sync_status", batch_id=active.batch_id), "preview_url":url_for("cooper_sync_preview", batch_id=active.batch_id)}), 409
     priced_query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.cooper_part_number != "")
@@ -2781,9 +2799,13 @@ def quote_assistant(job_id):
         return redirect(url_for("quote_assistant", job_id=job.id) + "#caden")
 
     missing_groups = build_missing_quote_groups(quote) if quote.options else []
+    pricing_rows = pricing_needed_rows(quote, missing_groups) if quote.options else []
+    shown = {c["id"] for row in pricing_rows for c in row["candidates"] if not c["image"]}
+    shown |= {line.price_item_id for option in quote.options for line in option.lines if line.price_item_id and line.price_item and not line.price_item.image_path}
+    picture_watch = ask_cooper_for_pictures(PriceItem.query.filter(PriceItem.id.in_(shown)).all()) if shown else ""
     return render_template("quote_assistant.html", job=job, quote=quote, api_ready=bool(os.environ.get("OPENAI_API_KEY")), missing_groups=missing_groups,
-                           caden_working=caden_busy(quote),
-                           pricing_rows=pricing_needed_rows(quote, missing_groups) if quote.options else [],
+                           caden_working=caden_busy(quote), picture_watch=picture_watch, zero_labor=zero_labor_items(quote),
+                           pricing_rows=pricing_rows,
                            lighting_room=quote.lighting_room, lighting_types=lighting.ROOM_TYPES, lighting_fields=lighting.FIELDS, lighting_shapes=lighting.SHAPES,
                            lighting_plans=lighting_plans_for(quote)[1], lights_missing=lights_without_lumens() if quote.lighting_room or request.args.get("lighting") else [],
                            sheet_categories=[row[0] for row in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct().order_by(PriceItem.category)])
@@ -3287,6 +3309,15 @@ def find_pricing_items():
 MORE_MATCHES_PAGE = 8
 
 
+@app.route("/quoting/pricing/pictures.json")
+@login_required
+def price_item_pictures():
+    """The pictures of some Pricing Sheet items (for a page waiting on the office listener): {id: address or ''}."""
+    ids = [int(v) for v in request.args.get("ids", "").split(",") if v.strip().isdigit()][:200]
+    rows = PriceItem.query.filter(PriceItem.id.in_(ids or [0])).all()
+    return jsonify({"pictures": {str(item.id): url_for("static", filename=item.image_path) if item.image_path else "" for item in rows}})
+
+
 @app.route("/quoting/pricing/more-like.json")
 @login_required
 def more_sheet_matches():
@@ -3313,7 +3344,8 @@ def more_sheet_matches():
                     seen.add(item.id); found.append((0.0, item))
     found.sort(key=lambda row: (-row[0], row[1].category == UNCONFIRMED, row[1].name))
     chunk = found[:MORE_MATCHES_PAGE]
-    return jsonify({"more": len(found) > MORE_MATCHES_PAGE, "page": page,
+    watch = ask_cooper_for_pictures([item for score, item in chunk])
+    return jsonify({"more": len(found) > MORE_MATCHES_PAGE, "page": page, "picture_watch": watch,
                     "results": [{"id": item.id, "name": item.name, "price": round(item.price, 2), "unit": item.unit, "part": item.cooper_part_number,
                                  "unconfirmed": item.category == UNCONFIRMED, "image": url_for("static", filename=item.image_path) if item.image_path else ""}
                                 for score, item in chunk]})
@@ -5338,6 +5370,39 @@ def local_cooper_items():
     })
 
 
+PICTURE_RETRY = timedelta(days=7)
+
+
+def ask_cooper_for_pictures(items):
+    """Pricing Sheet items a page is showing with no picture (and a Cooper part number) are sent to the office listener by
+    themselves: one queued "pictures" run collects them (a page's items are added to it while it waits); an item is asked
+    for once a week at most; a picture someone uploaded is never replaced. Returns the run's status address to watch, or ''."""
+    now = datetime.utcnow()
+    want = {item.id: item for item in items if item is not None and item.active and (item.cooper_part_number or "").strip()
+            and not item.image_path and item.image_source != "upload" and (item.picture_asked_at is None or item.picture_asked_at < now - PICTURE_RETRY)}
+    expire_stale_cooper_runs()
+    active = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running"))).order_by(PriceSyncRun.id.desc()).first()
+    if not want:
+        return url_for("cooper_sync_status", batch_id=active.batch_id) if active and active.mode == "pictures" else ""
+    if active is not None and not (active.mode == "pictures" and active.status == "queued"):
+        return ""                                       # the listener is busy with something else: asked again on a later page
+    if active is not None:
+        run = active
+        ids = sorted(set(run.item_ids) | set(want))
+        run.item_ids_json = json.dumps(ids); run.total = len(ids)
+    else:
+        batch = PriceSyncBatch(supplier="cooper", created_by_user_id=current_user.id if current_user.is_authenticated else None)
+        db.session.add(batch); db.session.flush()
+        run = PriceSyncRun(batch=batch, mode="pictures", total=len(want), item_ids_json=json.dumps(sorted(want)),
+                           activity_log=json.dumps(["Pictures asked for by themselves for items shown without one; their prices come back "
+                                                    "for review too. Waiting for the office listener."]))
+        db.session.add(run)
+    for item in want.values():
+        item.picture_asked_at = now
+    db.session.commit()
+    return url_for("cooper_sync_status", batch_id=run.batch_id)
+
+
 def expire_stale_cooper_runs():
     cutoff = datetime.utcnow() - timedelta(minutes=30)
     stale = PriceSyncRun.query.filter(PriceSyncRun.status.in_(("queued", "running")), PriceSyncRun.updated_at < cutoff).all()
@@ -5432,7 +5497,7 @@ def local_cooper_next_command():
     version = re.search(r"Updater/([\d.]+)", request.headers.get("User-Agent", ""))
     put_listener_version(version.group(1) if version else "1")
     return jsonify({"state":"running", "command":{"id":run.batch_id, "items":[{"id":item.id, "name":item.name, "part_number":item.cooper_part_number.strip(), "unit":item.unit,
-                                                                               "current_price":item.price, "want_specs": wants_cooper_specs(item, bool(run.item_ids_json))} for item in items]}})
+                                                                               "current_price":item.price, "want_specs": wants_cooper_specs(item, bool(run.item_ids_json) and run.mode != "pictures")} for item in items]}})
 
 
 @app.route("/api/local-cooper/commands/<int:batch_id>/heartbeat", methods=["POST"])
@@ -7039,6 +7104,43 @@ def remember_direct_pricing(agent, name, unit, price, labor, source):
     db.session.add(AgentKnowledge(agent=agent, title=f"Direct price — {name} — {datetime.utcnow().strftime('%Y-%m-%d')}", category="User-supplied pricing", content=content, active=True))
 
 
+COUNT_IN_NAME = [
+    re.compile(r"^\s*\(?(?:(?:qty\.?|quantity):?\s*(\d{1,4})|(\d{1,4})\s*(?:x|×|pcs?|ea\.?|each))\)?\s+(?=\S)", re.IGNORECASE),  # "12x lights", "qty 4 dimmers"
+    re.compile(r"\s*[\(\[,-]?\s*(?:x|×|qty\.?:?|quantity:?)\s*(\d{1,4})\s*[\)\]]?\s*$", re.IGNORECASE),          # "lights x12", "lights (qty 12)"
+    re.compile(r"\s*\(\s*(\d{1,4})\s*(?:x|×|pcs?|ea\.?|each)?\s*\)\s*$", re.IGNORECASE),                         # "lights (12)"
+]
+
+
+def count_from_name(name):
+    """A quantity written into an item's name ("12x LED wafer lights", "LED wafer light x12", "bulbs (24)"):
+    (the name without it, the count), else (name, None). Never reads a size or a rating ("6in", "20A", "14/2", "1200 lm")."""
+    text = str(name or "")
+    for pattern in COUNT_IN_NAME:
+        found = pattern.search(text)
+        if found:
+            count = int(next(g for g in found.groups() if g))
+            rest = (text[:found.start()] + text[found.end():]).strip(" ,-")
+            if 1 < count <= 2000 and rest:
+                return rest, float(count)
+    return text, None
+
+
+def fix_written_counts(option):
+    """Every line of an option is charged for its own quantity: a line whose name carries a count ("12x lights") and a
+    quantity of 1 takes that count (and the name loses it). Returns sentences for what changed."""
+    notes = []
+    lights = max([line.multiplier or 0 for line in option.lines if _looks_like_light(line) and not PER_LIGHT_PART.search(line.service_name or "")] or [0])
+    for line in option.lines:
+        name, count = count_from_name(line.service_name)
+        if count and (line.multiplier or 0) <= 1 and 1 < count < lights and PER_LIGHT_PART.search(line.service_name or ""):
+            line.multiplier = lights * count                       # "2x bulbs" with 12 lights: 2 for each light (12x brackets: 12)
+            notes.append(f"{option.tier}: {line.service_name} is charged for {line.multiplier:g} ({count:g} for each of the {lights:g} lights; it was 1).")
+        elif count and (line.multiplier or 0) <= 1:
+            line.service_name = name[:180]; line.multiplier = count
+            notes.append(f"{option.tier}: {name} is charged for {count:g} (the count in its name; it was 1).")
+    return notes
+
+
 def _missing_entry(value):
     """A missing item as (name, quantity, unit), from Caden's object or an older plain string."""
     if isinstance(value, dict):
@@ -7111,6 +7213,9 @@ def apply_ai_quote_options(quote, option_data):
 
     def pending(option, name, quantity=1.0, unit="ea", suggestion=None):
         name = re.sub(r"\s*\((?:direct[- ]?priced|estimated?|estimate only|pricing (?:pending|needed)|needs? pric(?:e|ing)|unpriced)\)", "", str(name or ""), flags=re.IGNORECASE).strip()
+        bare, count = count_from_name(name)
+        if count and quantity <= 1:
+            name, quantity = bare, count
         option.lines.append(QuoteOptionService(service=None, service_name=name[:180] or "Item to price", example_quantity="Pricing pending",
                                                multiplier=quantity, unit_price=0, position=len(option.lines)))
         if suggestion:
@@ -7166,6 +7271,7 @@ def apply_ai_quote_options(quote, option_data):
             pending(option, name, quantity, unit)
         if not option.lines:
             pending(option, "Service library match needed")
+        notes.extend(fix_written_counts(option))
         quote.options.append(option)
     found = sheet_found_note(price_missing_from_sheet(quote))
     if found:
@@ -7270,10 +7376,73 @@ def apply_lighting_plan(quote):
             if line.multiplier:
                 notes.append(f"{option.tier}: {line.service_name} set to {plan['count']} (the layout for {room['name']}; Caden had {line.multiplier:g}).")
             line.multiplier = plan["count"]
+        notes.extend(per_light_parts(option, line, plan["count"]))
+        wire = lighting.wire_run(plan, room)
+        notes.extend(wire_for_lighting(option, wire["feet"], rate))
         option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "shape": room.get("shape", "rect"), "lumens": plan["lumens"], "count": plan["count"],
                                            "rows": plan["rows"], "cols": plan["cols"], "positions": plan["positions"], "spacing": plan["spacing"],
-                                           "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"]})
+                                           "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"], "wire_feet": wire["feet"]})
     return notes
+
+
+PER_LIGHT_PART = re.compile(r"\b(bulbs?|lamps?|trims?|baffles?|retrofit kits?|can housings?|housings?|remodel cans?|new construction cans?|"
+                            r"mounting brackets?|wafer brackets?|junction box(?:es)?|j-?box(?:es)?|drivers?)\b", re.IGNORECASE)
+PER_EACH = re.compile(r"(\d{1,2})\s*(?:x|×)?\s*(?:bulbs?|lamps?)?\s*(?:per|each|/)\s*(?:light|fixture|can|lamp)|(\d{1,2})\s*(?:x|×)\s*(?:bulbs?|lamps?)", re.IGNORECASE)
+
+
+def per_light_parts(option, light, count):
+    """Parts that go with every light (bulbs, trims, housings, brackets, boxes) are charged for every light: at least the
+    light count, times how many each light takes when the name says ("2x bulbs", "2 per fixture")."""
+    notes = []
+    for line in option.lines:
+        if line is light or not PER_LIGHT_PART.search(line.service_name or "") or lighting.lumens_from_name(line.service_name or "") \
+                or WIRE_LINE.search(line.service_name or ""):
+            continue
+        each = PER_EACH.search(line.service_name or "")
+        per = int(next(g for g in each.groups() if g)) if each else 1
+        wanted = count * max(per, 1)
+        if (line.multiplier or 0) < wanted:
+            before = line.multiplier or 0
+            line.multiplier = wanted
+            notes.append(f"{option.tier}: {line.service_name} set to {wanted:g} ({per} for each of the {count} lights; was {before:g}).")
+    return notes
+
+
+WIRE_LINE = re.compile(r"(\b\d{1,2}\s*/\s*[23]\b|romex|\bnm-?b\b|\bwire\b|\bwiring\b|\bcable\b)", re.IGNORECASE)
+NOT_WIRE = re.compile(r"\b(wireless|nut|nuts|connector|staple|strap|tie|clamp|labor only)\b", re.IGNORECASE)
+LIGHTING_WIRE_NAME = "14/2 NM-B wire (Romex)"
+
+
+def lighting_wire_item():
+    """The cable new lights are wired with: a 14/2 NM-B (Romex) by the foot on the Pricing Sheet, confirmed items first."""
+    rows = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0, PriceItem.name.ilike("%14/2%")).all()
+    rows = [item for item in rows if not NOT_WIRE.search(item.name)]
+    rows.sort(key=lambda item: (item.unit.lower() not in ("ft", "foot", "feet"), item.category == UNCONFIRMED,
+                                not re.search(r"romex|nm-?b", item.name, re.IGNORECASE), item.price))
+    return rows[0] if rows else None
+
+
+def wire_for_lighting(option, feet, rate):
+    """A lighting layout means rewiring: the option carries the cable for its lights, as many feet as the layout needs
+    (lighting.wire_run), as a material with its labor. A wire line Caden already put in takes the layout's footage."""
+    if feet <= 0:
+        return []
+    line = next((line for line in option.lines if WIRE_LINE.search(line.service_name or "") and not NOT_WIRE.search(line.service_name or "")), None)
+    if line is not None:
+        if abs(line.multiplier - feet) < 0.5:
+            return []
+        before = line.multiplier
+        line.multiplier = feet
+        return [f"{option.tier}: {line.service_name} set to {feet} ft for the lighting layout's wiring (was {before:g})."]
+    item = lighting_wire_item()
+    if item is not None:
+        option.lines.append(QuoteOptionService(service=None, price_item=item, service_name=item.name, example_quantity=f"1 {item.unit}", multiplier=feet,
+                                               unit_price=item.price + item.labor_hours_per_unit * rate, material_unit_price=item.price,
+                                               labor_hours_per_unit=item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines)))
+        return [f"{option.tier}: added {feet} ft of {item.name} to wire the lights."]
+    option.lines.append(QuoteOptionService(service=None, service_name=LIGHTING_WIRE_NAME, example_quantity="Pricing pending",
+                                           multiplier=feet, unit_price=0, position=len(option.lines)))
+    return [f"{option.tier}: added {feet} ft of {LIGHTING_WIRE_NAME} to wire the lights; it is not on the Pricing Sheet yet, so it needs a price."]
 
 
 LIGHTING_SHORTLIST = 15
@@ -7305,7 +7474,8 @@ Lighting rule: for this room's general lighting, every option uses exactly ONE l
 price_item_id and exactly its quantity (the quantity is the layout's, not yours). Make the options differ the way a client would
 choose: lower tiers the most economical light that meets the target, higher tiers better lights (higher output for fewer
 fixtures, slimmer or premium trims, dimmable, better color) or more light. Never pick a light whose footcandles fall short of
-the target. Add the switching, dimmers and wiring as usual. Say in the option description how many lights and how bright.
+the target. Add the switching and dimmers as usual. The app adds the cable for these lights itself (its footage worked out
+from the layout), so put at most one wire line for them; its quantity is set to the layout's footage. Say in the option description how many lights and how bright.
 We use RAB lighting for almost everything (sold through Cooper): prefer RAB lights on LIGHTING_PLAN. When the right light for a
 tier is not on LIGHTING_PLAN (often a RAB part not on the Pricing Sheet yet), put it in missing_services named with its RAB
 part number and its lumens, for example "RAB SLIM6 6in LED wafer 1200 lm": it is listed at the top of the quote to be priced, and
@@ -7471,6 +7641,99 @@ def pricing_needed_rows(quote, groups=None):
                      "reason": suggestion.get("reason") or ""})
     rows.sort(key=lambda row: not row["candidates"])            # the ones the Pricing Sheet can price first
     return rows
+
+
+def zero_labor_items(quote):
+    """Pricing Sheet items on this draft with no labor time (0 hr on the sheet and on the line), each once, with Mike's
+    suggestion when he has made one: [{item, suggestion}]."""
+    if quote.status != "draft":
+        return []
+    saved = quote.labor_suggestions
+    found = {}
+    for option in quote.options:
+        for line in option.lines:
+            item = line.price_item if line.price_item_id else None
+            if item is not None and not item.labor_hours_per_unit and not line.labor_hours_per_unit:
+                found.setdefault(item.id, {"item": item, "suggestion": saved.get(str(item.id))})
+    return sorted(found.values(), key=lambda row: row["item"].name.lower())
+
+
+def mike_labor_suggestions(items):
+    """Mike's labor time for Pricing Sheet items that have none: {price_item_id: {hours, reason}}, from his labor references
+    (his time sheet), the labor already on the Pricing Sheet and the Services. Raises when the assistant is not connected."""
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("Mike needs the AI connection (Settings → AI) to suggest times; type a time instead.")
+    mike = AiAgent.query.filter(db.func.lower(AiAgent.name) == "mike").first()
+    known = [{"name": item.name, "unit": item.unit, "hours_per_unit": item.labor_hours_per_unit}
+             for item in PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.labor_hours_per_unit > 0).order_by(PriceItem.name).limit(400).all()]
+    asked = [{"price_item_id": item.id, "name": item.name, "unit": item.unit, "category": item.category} for item in items]
+    schema = {"type": "object", "properties": {"suggestions": {"type": "array", "items": {"type": "object", "properties": {
+        "price_item_id": {"type": "integer"}, "hours_per_unit": {"type": "number", "minimum": 0}, "reason": {"type": "string"}},
+        "required": ["price_item_id", "hours_per_unit", "reason"], "additionalProperties": False}}}, "required": ["suggestions"], "additionalProperties": False}
+    instructions = f"""You are Mike, Power House Electrical Solutions' labor-estimating specialist.
+{build_agent_context(mike)}
+
+Each item below has no labor time yet. Suggest the installed labor hours per the item's own unit (per foot for wire sold by the
+foot, per fixture for a light), for one electrician in a typical house. Use your labor references first, then the labor already
+on the Pricing Sheet for similar items. reason: one short sentence saying where the time comes from (the reference and line, or
+the similar item). These are suggestions the office accepts or edits.
+
+LABOR ALREADY ON THE PRICING SHEET: {json.dumps(known)}"""
+    response = OpenAI().responses.create(model=os.environ.get("OPENAI_MODEL", "gpt-5-mini"), instructions=instructions, input=json.dumps(asked),
+                                         text={"format": {"type": "json_schema", "name": "labor_suggestions", "schema": schema, "strict": True}})
+    wanted = {item.id for item in items}
+    result = {}
+    for row in json.loads(response.output_text).get("suggestions", []):
+        hours = row.get("hours_per_unit")
+        if row.get("price_item_id") in wanted and isinstance(hours, (int, float)) and 0 <= hours <= 100:
+            result[row["price_item_id"]] = {"hours": round(float(hours), 3), "reason": str(row.get("reason") or "").strip()[:300]}
+    return result
+
+
+@app.route("/quotes/<int:quote_id>/labor-suggestions", methods=["POST"])
+@login_required
+def suggest_quote_labor(quote_id):
+    """No labor time yet: Mike suggests a time for each item on the draft that has none (asked once; kept on the quote)."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    rows = zero_labor_items(quote)
+    saved = quote.labor_suggestions
+    ask = [row["item"] for row in rows if str(row["item"].id) not in saved]
+    if ask:
+        try:
+            for item_id, row in mike_labor_suggestions(ask).items():
+                saved[str(item_id)] = row
+        except Exception as exc:
+            app.logger.exception("Mike labor suggestions failed")
+            return jsonify({"error": str(exc) if isinstance(exc, RuntimeError) else f"Mike could not suggest times. {describe_ai_error(exc)}",
+                            "suggestions": saved}), 503
+        quote.labor_suggest_json = json.dumps(saved); db.session.commit()
+    return jsonify({"suggestions": saved})
+
+
+@app.route("/quotes/<int:quote_id>/labor-time", methods=["POST"])
+@login_required
+def save_item_labor(quote_id):
+    """Accept (or edit) a labor time: saved on the Pricing Sheet item, so every later quote has it, and on this draft's lines."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    item = db.session.get(PriceItem, request.form.get("price_item_id", type=int) or 0)
+    hours = request.form.get("hours", type=float)
+    if item is None or hours is None or not 0 <= hours <= 100:
+        flash("Type the labor hours (0 to 100) for that item.", "error")
+        return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#labor-check")
+    item.labor_hours_per_unit = round(hours, 4)
+    changed = 0
+    for option in quote.options:
+        for line in option.lines:
+            if line.price_item_id == item.id and not line.labor_hours_per_unit:
+                line.labor_hours_per_unit = item.labor_hours_per_unit
+                line.labor_rate_snapshot = line.labor_rate_snapshot or get_labor_rate()
+                line.unit_price = (line.material_unit_price or 0) + line.labor_hours_per_unit * line.labor_rate_snapshot
+                changed += 1
+    db.session.commit()
+    flash(f"{item.name}: {hours:g} hr per {item.unit} saved on the Pricing Sheet" + (f" and on {changed} line(s) of this quote." if changed else "."), "success")
+    return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#labor-check")
 
 
 def populate_client_from_form(client):
@@ -9695,7 +9958,8 @@ with app.app_context():
         ("job", "jobber_quote_status", "VARCHAR(40) NOT NULL DEFAULT ''"), ("job", "jobber_quote_total", "FLOAT"),
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
-        ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"),
+        ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "labor_suggest_json", "TEXT NOT NULL DEFAULT ''"),
+        ("price_item", "picture_asked_at", "DATETIME"),
         ("price_item", "lumens", "FLOAT"), ("price_item", "lumens_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_item", "specs_json", "TEXT NOT NULL DEFAULT ''"), ("price_item", "product_url", "VARCHAR(400) NOT NULL DEFAULT ''"),
         ("price_item", "specs_at", "DATETIME"), ("quote", "lighting_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "ai_working_since", "DATETIME"), ("quote_option", "lighting_json", "TEXT NOT NULL DEFAULT ''"),
