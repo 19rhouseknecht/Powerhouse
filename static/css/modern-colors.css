@@ -471,3 +471,7 @@
 :where(html[data-theme="modern"]) .quick-menu { box-shadow: 0 16px 40px rgba(30, 22, 70, 0.158); }
 :where(html[data-theme="modern"]) .quick-read { color: #444059; }
 :where(html[data-theme="modern"]) .pick-thumb { background: #16141f; }
+:where(html[data-theme="modern"]) .inline-said.is-ok { color: #0d7834; }
+:where(html[data-theme="modern"]) .inline-said.is-bad { color: #830101; }
+:where(html[data-theme="modern"]) .field-error, :where(html[data-theme="modern"]) :where(input, select, textarea).field-error { border-color: #a70a0a !important; box-shadow: 0 0 0 3px rgba(167, 10, 10, .2) !important; }
+:where(html[data-theme="modern"]) .field-error-note { color: #830101; }

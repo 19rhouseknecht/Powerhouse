@@ -220,3 +220,49 @@ document.addEventListener("DOMContentLoaded", () => {
     fetch(form.action, {method: 'POST', body: body, headers: {'X-Requested-With': 'fetch'}}).catch(function () {});
   });
 })();
+
+
+/* Forms that save in place (Settings -> users): no reload to the top. A problem marks its field in red and says what's
+   wrong, and nothing typed is cleared. A form that must reload (adding a user) comes back at the same place. */
+(function () {
+  try {
+    var kept = JSON.parse(sessionStorage.getItem("keep-scroll") || "null");
+    if (kept && kept.path === location.pathname) { sessionStorage.removeItem("keep-scroll"); window.scrollTo(0, kept.y); }
+  } catch (e) {}
+  function keepScroll() { try { sessionStorage.setItem("keep-scroll", JSON.stringify({path: location.pathname, y: window.scrollY})); } catch (e) {} }
+  document.querySelectorAll("form[data-keep-scroll]").forEach(function (form) { form.addEventListener("submit", keepScroll); });
+  document.querySelectorAll("form[data-inline-save]").forEach(function (form) {
+    var said = document.querySelector('[data-said-for="' + form.id + '"]');
+    function fields() { return Array.prototype.slice.call(form.elements); }
+    function clearErrors() {
+      fields().forEach(function (f) { f.classList.remove("field-error"); f.removeAttribute("aria-invalid"); });
+      document.querySelectorAll('[data-error-for="' + form.id + '"]').forEach(function (n) { n.remove(); });
+    }
+    form.addEventListener("submit", function (e) {
+      if (!window.fetch) { keepScroll(); return; }
+      e.preventDefault();
+      clearErrors();
+      if (said) { said.className = "inline-said"; said.textContent = "Saving…"; }
+      fetch(form.action, {method: "POST", body: new FormData(form), headers: {"X-Requested-With": "fetch", "Accept": "application/json"}})
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) {
+            if (d.reload) { keepScroll(); location.reload(); return; }
+            if (said) { said.className = "inline-said is-ok"; said.textContent = "✓ " + (d.message || "Saved"); setTimeout(function () { said.textContent = ""; }, 2500); }
+            if (d.clear) fields().forEach(function (f) { if (f.type === "password") f.value = ""; });
+            return;
+          }
+          if (said) { said.className = "inline-said is-bad"; said.textContent = ""; }
+          var bad = d.field ? fields().find(function (f) { return f.name === d.field; }) : null;
+          var note = document.createElement("small"); note.className = "field-error-note"; note.setAttribute("data-error-for", form.id); note.textContent = d.error || "Not saved.";
+          if (bad) {
+            bad.classList.add("field-error"); bad.setAttribute("aria-invalid", "true");
+            (bad.closest("label") || bad.parentElement).append(note);
+            bad.focus();
+            bad.addEventListener("input", function once() { bad.classList.remove("field-error"); bad.removeAttribute("aria-invalid"); note.remove(); bad.removeEventListener("input", once); });
+          } else if (said) { said.textContent = d.error || "Not saved."; }
+        })
+        .catch(function () { if (said) { said.className = "inline-said is-bad"; said.textContent = "Not saved: check the connection."; } });
+    });
+  });
+})();
