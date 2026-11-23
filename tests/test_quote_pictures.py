@@ -102,8 +102,27 @@ with sync_playwright() as pw:
     before_pics = sum(1 for i in wanted if i != unpictured and db_has_pic(i))
     check(page.locator(".needs-price-card").first.locator(".sheet-picks > .sheet-pick img.pick-thumb").count() == before_pics + 1, "when it's done the page shows the new picture by itself, no refresh")
     card = page.locator(".needs-price-card").first
+    check(card.locator("[data-more-cooper]").is_hidden(), "the 'more' Cooper button waits until more are shown")
     card.locator("[data-more-go]").click()
     card.locator("[data-more-results] .sheet-pick").first.wait_for(timeout=5000)
+    more_ids = [int(v.split(":")[1]) for v in card.locator("[data-more-results] .sheet-pick button").evaluate_all("bs => bs.map(b => b.value)")]
+    check(card.locator("[data-more-cooper-go]").is_visible() and "Update these 8 from Cooper" in card.locator("[data-more-cooper-go]").inner_text(),
+          "Show more like these offers Update these from Cooper for the ones shown")
+    page.evaluate("window.notReloaded = true")
+    card.locator("[data-more-cooper-go]").click()
+    card.locator("[data-more-said]", has_text="the page updates by itself").wait_for(timeout=8000)
+    with app.app_context():
+        run = m.PriceSyncRun.query.order_by(m.PriceSyncRun.id.desc()).first()
+        check(sorted(run.item_ids) == sorted(more_ids), "it sends just the 'more' items shown to the office listener")
+        bare = [i for i in more_ids if not db.session.get(m.PriceItem, i).image_path]
+        for i in bare: db.session.get(m.PriceItem, i).image_path = "img/logo-wordmark.png"
+        run.status = "complete"; db.session.commit()
+    page.wait_for_function("window.notReloaded !== true", timeout=15000)
+    page.wait_for_load_state()
+    card = page.locator(".needs-price-card").first
+    card.locator("[data-more-results] .sheet-pick").first.wait_for(timeout=5000)
+    check(bare and card.locator("[data-more-results] img.pick-thumb").count() == 8,
+          "after the update the 'more' list opens again by itself, with the new pictures")
     card.locator("[data-more-results] .sheet-pick button", has_text="Use this").first.click()
     page.wait_for_load_state()
     with app.app_context():

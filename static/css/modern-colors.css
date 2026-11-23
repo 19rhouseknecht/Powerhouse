@@ -475,3 +475,5 @@
 :where(html[data-theme="modern"]) .inline-said.is-bad { color: #830101; }
 :where(html[data-theme="modern"]) .field-error, :where(html[data-theme="modern"]) :where(input, select, textarea).field-error { border-color: #a70a0a !important; box-shadow: 0 0 0 3px rgba(167, 10, 10, .2) !important; }
 :where(html[data-theme="modern"]) .field-error-note { color: #830101; }
+:where(html[data-theme="modern"]) .busy-overlay { background: rgba(252, 252, 253, .55); }
+:where(html[data-theme="modern"]) .busy-card { box-shadow: 0 20px 60px rgba(30, 22, 70, 0.158); }

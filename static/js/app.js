@@ -291,3 +291,44 @@ window.PHWatchCooper = function (statusUrl, said, reviewUrl) {
     }).catch(function () { setTimeout(check, 8000); });
   })();
 };
+
+
+/* While a page waits for an answer: after a button sends a form (and the browser goes to the next page), a loading
+   overlay says what's happening and stops other clicks, so nothing is clicked twice. It only shows if the wait passes
+   a quarter second; forms that save in place (fetch) or were cancelled (a confirm box) never show it. A button's
+   data-busy="…" says what it's doing; after 20 seconds it says it's still working and can be closed. */
+(function () {
+  var overlay = null, timer = null, slow = null;
+  function build() {
+    overlay = document.createElement("div");
+    overlay.className = "busy-overlay"; overlay.hidden = true;
+    overlay.setAttribute("role", "alertdialog"); overlay.setAttribute("aria-live", "assertive"); overlay.setAttribute("aria-busy", "true");
+    overlay.innerHTML = '<div class="busy-card"><span class="busy-spinner" aria-hidden="true"></span><strong data-busy-words>Working on it…</strong>' +
+      '<small data-busy-slow hidden>Still working: this can take a moment. <button type="button" class="btn btn-ghost btn-small" data-busy-close>Close</button></small></div>';
+    document.body.append(overlay);
+    overlay.querySelector("[data-busy-close]").addEventListener("click", hide);
+  }
+  function show(words) {
+    if (!overlay) build();
+    overlay.querySelector("[data-busy-words]").textContent = words || "Working on it…";
+    overlay.querySelector("[data-busy-slow]").hidden = true;
+    overlay.hidden = false; document.documentElement.classList.add("is-busy");
+    slow = setTimeout(function () { overlay.querySelector("[data-busy-slow]").hidden = false; }, 20000);
+  }
+  function hide() {
+    clearTimeout(timer); clearTimeout(slow);
+    if (overlay) overlay.hidden = true;
+    document.documentElement.classList.remove("is-busy");
+  }
+  document.addEventListener("submit", function (e) {
+    var form = e.target, by = e.submitter;
+    setTimeout(function () {                              /* after every other handler: did one stop it (fetch, confirm)? */
+      if (e.defaultPrevented || form.target === "_blank" || form.hasAttribute("data-no-busy") || (by && by.hasAttribute("data-no-busy"))) return;
+      var words = (by && by.getAttribute("data-busy")) || form.getAttribute("data-busy");
+      clearTimeout(timer);
+      timer = setTimeout(function () { show(words); }, 250);
+    }, 0);
+  });
+  window.addEventListener("pageshow", hide);               /* coming back with the Back button */
+  window.PHBusy = {show: show, hide: hide};
+})();

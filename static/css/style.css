@@ -1812,3 +1812,17 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .more-like-results:empty { display:none; }
 .more-like-results { margin-top:6px; }
 .sheet-search-label { display:block; margin:10px 0 4px; color:var(--muted); font-size:11px; font-weight:600; }
+
+/* The loading overlay while a page waits for an answer */
+.busy-overlay { position:fixed; inset:0; z-index:200; display:grid; place-items:center; background:rgba(12,10,9,.55); backdrop-filter:blur(2px); cursor:progress; }
+.busy-overlay[hidden] { display:none; }
+.busy-card { display:grid; justify-items:center; gap:10px; padding:22px 28px; border-radius:16px; background:var(--panel); border:1px solid var(--border); box-shadow:0 20px 60px rgba(0,0,0,.45); max-width:min(360px, calc(100vw - 40px)); text-align:center; cursor:default; }
+.busy-card strong { font-size:15px; }
+.busy-card small { color:var(--muted); font-size:12px; line-height:1.5; }
+.busy-card small[hidden] { display:none; }
+.busy-spinner { width:34px; height:34px; border-radius:50%; border:3px solid var(--border); border-top-color:var(--accent); animation:busy-spin .8s linear infinite; }
+@keyframes busy-spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .busy-spinner { animation-duration:2.4s; } }
+
+.more-like-cooper { margin-top:6px; }
+.more-like-cooper[hidden] { display:none; }
