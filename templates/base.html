@@ -127,6 +127,30 @@
   <script src="{{ url_for('static', filename='js/tour.js', v=asset_version) }}"></script>
   <script src="{{ url_for('static', filename='js/date-pickers.js', v=asset_version) }}"></script>
   <script src="{{ url_for('static', filename='js/app.js', v=asset_version) }}"></script>
+  {# Quick actions: the round + on every page #}
+  <div class="quick-actions" data-quick>
+    <div class="quick-menu" data-quick-menu hidden><button type="button" class="quick-item" data-quick-open="quick-expense"><span aria-hidden="true">🧾</span> Upload expense</button></div>
+    <button type="button" class="quick-fab" data-quick-fab aria-label="Quick actions" aria-expanded="false" aria-haspopup="true"><span aria-hidden="true">+</span></button>
+  </div>
+  <dialog class="sheet-dialog quick-dialog" id="quick-expense" aria-labelledby="quick-expense-title" data-options="{{ url_for('quick_expense_options') }}" data-read="{{ url_for('quick_read_receipt') }}">
+    <div class="sheet-dialog-head"><h2 id="quick-expense-title">Upload expense</h2><button type="button" class="btn btn-ghost btn-small" data-quick-close aria-label="Close">×</button></div>
+    <form method="POST" action="{{ url_for('quick_expense') }}" enctype="multipart/form-data" class="quick-expense-form" data-quick-expense>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path if request.method == 'GET' else request.path }}">
+      <label class="quick-photo" data-quick-photo><input type="file" name="receipt" accept="image/*,application/pdf" data-quick-receipt><img alt="" data-quick-preview hidden><span data-quick-photo-words>📷 Take or choose a photo of the receipt</span></label>
+      <p class="quick-read" data-quick-read aria-live="polite" hidden></p>
+      <div class="quick-grid">
+        <label>Where it's from<input name="vendor" required maxlength="180" placeholder="Home Depot, Cooper, Sheetz…"></label>
+        <label>Total<div class="money-input"><span>$</span><input name="total" type="number" min="0" step="0.01" inputmode="decimal" required placeholder="0.00"></div></label>
+        <label>Date<input name="expense_date" type="date" value="{{ today_iso() }}"></label>
+        <label>Accounting code<select name="category" required data-quick-codes><option value="">Choose…</option></select></label>
+      </div>
+      <fieldset class="quick-reimburse"><legend>Reimbursable?</legend><div class="gz-seg-row"><label><input type="radio" name="reimbursable" value="no" checked><span>No</span></label><label><input type="radio" name="reimbursable" value="yes"><span>Yes, pay me back</span></label></div><small class="muted" data-quick-reimburse-note>Yes marks it to be paid back to {{ current_user.username }}.</small></fieldset>
+      {% if can('view_jobs') %}<label>Job<select name="job_id" data-quick-jobs><option value="">No job</option></select><small class="muted" data-quick-job-note></small></label>{% endif %}
+      <label>Notes<input name="notes" maxlength="1000" placeholder="Optional"></label>
+      <div class="quick-foot"><small class="muted" data-quick-status aria-live="polite"></small><button type="button" class="btn btn-secondary" data-quick-close>Cancel</button><button class="btn btn-primary" data-quick-save>Save expense</button></div>
+    </form>
+  </dialog>
+  <script src="{{ url_for('static', filename='js/quick-actions.js', v=asset_version) }}"></script>
   {% endif %}
 </body>
 </html>

@@ -4375,6 +4375,130 @@ def create_expense():
     return redirect(url_for("expenses"))
 
 
+# ---------------- Quick actions: Upload expense (everyone) ----------------
+# The round + on every page. Upload expense: a receipt photo; the AI reads the store, total, date and a likely accounting
+# code; the person checks them, says if it's to be reimbursed to them, and links the job (today's job is suggested).
+QUICK_EXPENSE_CODES = ["Equipment rental", "Van gas", "Van maintenance", "Materials direct job", "Materials general overhead",
+                       "Hotel", "Small tools general overhead"]
+RECEIPT_PICTURES = {".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif"}
+
+
+def todays_jobs(user):
+    """The jobs this person is on today, most likely first: their running time-clock job, today's visits, their work days."""
+    today, found = date.today(), []
+    clock = ClockSession.query.filter_by(user_id=user.id, clock_out=None).order_by(ClockSession.clock_in.desc()).first()
+    if clock:
+        found += [v.job for v in clock.visits if not v.ended_at]
+    for visit in JobScheduleVisit.query.filter(JobScheduleVisit.start_at >= datetime.combine(today - timedelta(days=1), datetime.min.time()),
+                                               JobScheduleVisit.start_at < datetime.combine(today + timedelta(days=2), datetime.min.time())).all():
+        if visit.start_at and to_local(visit.start_at).date() == today and user.id in visit.user_ids:
+            found.append(visit.job)
+    for job in Job.query.filter(Job.assigned_user_id == user.id, Job.work_start_date.isnot(None), ~Job.status.in_(["completed", "declined"])).all():
+        if job.work_start_date <= today < job.work_start_date + timedelta(days=max(job.duration_days or 1, 1)):
+            found.append(job)
+    seen, ordered = set(), []
+    for job in found:
+        if job and job.id not in seen:
+            seen.add(job.id); ordered.append(job)
+    return ordered
+
+
+@app.route("/quick/expense-options")
+@login_required
+def quick_expense_options():
+    """What the Upload expense form needs: the accounting codes, today's job(s), and the open jobs to pick from."""
+    can_jobs = current_user.can("view_jobs")
+    today = todays_jobs(current_user) if can_jobs else []
+    open_jobs = Job.query.filter(~Job.status.in_(["completed", "declined"])).order_by(Job.updated_at.desc()).limit(150).all() if can_jobs else []
+    ids = {j.id for j in today}
+    label = lambda j: f"#{j.job_number} · {j.client.full_name} · {j.title}"  # noqa: E731
+    return jsonify({"codes": QUICK_EXPENSE_CODES, "today": [{"id": j.id, "label": label(j)} for j in today],
+                    "jobs": [{"id": j.id, "label": label(j)} for j in open_jobs if j.id not in ids], "you": current_user.username,
+                    "ai": bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY"))})
+
+
+@app.route("/quick/read-receipt", methods=["POST"])
+@login_required
+def quick_read_receipt():
+    """The AI reads a receipt photo: the store, the total, the date, and the likely accounting code. Nothing is saved."""
+    check_csrf()
+    photo = request.files.get("receipt")
+    if not photo or not photo.filename:
+        return jsonify({"ok": False, "error": "Choose a photo of the receipt."}), 400
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        return jsonify({"ok": False, "error": "The AI isn't connected, so fill in the store and total yourself."}), 503
+    body = photo.read()
+    kind = photo.mimetype if (photo.mimetype or "").startswith("image/") else "image/jpeg"
+    schema = {"type": "object", "additionalProperties": False, "required": ["vendor", "total", "date", "code", "summary"],
+              "properties": {"vendor": {"type": "string"}, "total": {"type": "number"}, "date": {"type": "string"},
+                             "code": {"type": "string", "enum": QUICK_EXPENSE_CODES + [""]}, "summary": {"type": "string"}}}
+    try:
+        response = OpenAI().responses.create(
+            model=os.environ.get("OPENAI_MODEL", "gpt-5-mini"),
+            instructions=("Read this receipt for an electrical contractor. vendor: the store or company. total: the amount paid "
+                          "(the grand total, with tax), 0 when you can't read it. date: YYYY-MM-DD or \"\". code: the accounting code "
+                          "that fits best (electrical supplies for a job: Materials direct job; supplies not for one job: Materials "
+                          "general overhead; gas station fuel: Van gas; repairs or service on a vehicle: Van maintenance; renting equipment: "
+                          "Equipment rental; a hotel: Hotel; hand or power tools: Small tools general overhead), or \"\" when unsure. "
+                          "summary: a few words on what was bought. Never guess a number you can't read."),
+            input=[{"role": "user", "content": [{"type": "input_text", "text": "The receipt:"},
+                                                 {"type": "input_image", "image_url": f"data:{kind};base64," + base64.b64encode(body).decode("ascii")}]}],
+            text={"format": {"type": "json_schema", "name": "receipt", "schema": schema, "strict": True}})
+        found = json.loads(response.output_text)
+    except Exception as exc:  # noqa: BLE001
+        app.logger.warning("Reading a receipt failed: %s", exc)
+        return jsonify({"ok": False, "error": f"Couldn't read the receipt just now; fill it in yourself. {describe_ai_error(exc)}"}), 502
+    try:
+        when = date.fromisoformat(str(found.get("date") or "")[:10]).isoformat()
+    except ValueError:
+        when = ""
+    total = found.get("total") or 0
+    return jsonify({"ok": True, "vendor": str(found.get("vendor") or "")[:180], "total": round(float(total), 2) if total else "",
+                    "date": when, "code": found.get("code") if found.get("code") in QUICK_EXPENSE_CODES else "", "summary": str(found.get("summary") or "")[:200]})
+
+
+@app.route("/quick/expense", methods=["POST"])
+@login_required
+def quick_expense():
+    """Save an expense from Upload expense: anyone can, and it's theirs (a reimbursable one is paid back to them)."""
+    check_csrf()
+    wants = request.headers.get("X-Requested-With") == "fetch"
+    back = request.form.get("next", "")
+    back = back if back.startswith("/") and not back.startswith("//") else url_for("dashboard")
+
+    def answer(ok, words, code=200):
+        if wants:
+            return jsonify({"ok": ok, "message": words}), code
+        flash(words, "success" if ok else "error")
+        return redirect(back)
+
+    vendor = " ".join(request.form.get("vendor", "").split())[:180]
+    code = request.form.get("category", "")
+    if not vendor or code not in QUICK_EXPENSE_CODES:
+        return answer(False, "Add where it's from and pick an accounting code.", 400)
+    try:
+        total = round(max(float(request.form.get("total", "") or "x"), 0), 2)
+        when = date.fromisoformat(request.form.get("expense_date") or date.today().isoformat())
+    except ValueError:
+        return answer(False, "Enter the total and a valid date.", 400)
+    job = db.session.get(Job, request.form.get("job_id", type=int) or 0) if current_user.can("view_jobs") else None
+    reimburse = request.form.get("reimbursable") == "yes"
+    notes = " ".join(request.form.get("notes", "").split())[:1000]
+    if reimburse:
+        notes = (f"Reimburse to {current_user.username}. " + notes).strip()
+    expense = Expense(submitted_by=current_user, job=job, vendor=vendor, total=total, category=code, reimbursable=reimburse, notes=notes, expense_date=when)
+    photo = request.files.get("receipt")
+    if photo and photo.filename:
+        extension = os.path.splitext(photo.filename)[1].lower()
+        if extension not in RECEIPT_PICTURES | {".pdf"}:
+            return answer(False, "The receipt must be a photo or a PDF.", 400)
+        folder = os.path.join(app.static_folder, "uploads", "receipts"); os.makedirs(folder, exist_ok=True)
+        expense.receipt_filename = f"{secrets.token_hex(8)}-{secure_filename(photo.filename) or 'receipt' + extension}"
+        photo.save(os.path.join(folder, expense.receipt_filename))
+    db.session.add(expense); db.session.commit()
+    return answer(True, f"Expense saved: ${total:,.2f} at {vendor}" + (f" on job #{job.job_number}" if job else "") + (f", to be reimbursed to {current_user.username}." if reimburse else "."))
+
+
 @app.route("/finance/receipts/<path:filename>")
 @login_required
 def expense_receipt(filename):
@@ -5776,7 +5900,7 @@ def add_user():
 EMPLOYEE_ROLE = "Employee"
 EMPLOYEE_PERMISSIONS = dict(is_admin=False, view_quoting=True, view_pricing=True, view_services=True, view_clients=True, view_jobs=True,
                             view_schedule=True, view_all_schedules=True, view_time=True, view_all_timesheets=False, view_tasks=True,
-                            view_training=True, view_finance=False, view_expenses=True, view_sales=True, manage_users=False, manage_agents=False)
+                            view_training=True, view_finance=False, view_expenses=False, view_sales=True, manage_users=False, manage_agents=False)
 
 
 def two_roles():
@@ -5807,6 +5931,7 @@ def is_admin_user(user=None):
 
 
 app.jinja_env.globals["is_admin"] = is_admin_user
+app.jinja_env.globals["today_iso"] = lambda: date.today().isoformat()
 
 
 @app.route("/settings/users/<int:user_id>", methods=["POST"])
