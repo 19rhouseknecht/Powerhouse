@@ -1705,3 +1705,15 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .step-progress-seg:focus-visible { outline:2px solid var(--accent-hover); outline-offset:2px; }
 .step-nav-count { margin:8px 0 0; text-align:center; font-size:12px; }
 @media (max-width:760px) { .step-slide { grid-template-columns:1fr; gap:12px; } .step-slide-picture img { max-height:60vh; } }
+
+/* Jobber page: schedule & time */
+.jobber-sched-counts { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin:14px 0; }
+.jobber-sched-counts > div { display:grid; gap:2px; padding:12px; border:1px solid var(--border); border-radius:10px; background:var(--bg); }
+.jobber-sched-counts strong { font-size:24px; }
+.jobber-sched-counts span { font-size:13px; font-weight:600; }
+.jobber-sched-counts small { color:var(--muted); font-size:11px; }
+.jobber-sched-counts small.warn { color:#fcd34d; }
+.jobber-people { margin:10px 0 16px; display:grid; gap:10px; justify-items:start; }
+.jobber-people h3 { margin:4px 0 0; }
+.jobber-people p { margin:0; }
+.jobber-people .item-table-wrap { width:100%; }

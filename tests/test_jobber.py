@@ -242,7 +242,7 @@ STATE["expire_next"] = True                       # Jobber turns the token away 
 r = client.post("/settings/jobber/pull", data=CSRF)
 state = wait_pull()
 check(state.get("status") == "done", "the pull finishes (%s)" % (state.get("error") or state.get("status")))
-check(state.get("counts") == {"clients": 3, "requests": 4, "quotes": 3, "jobs": 3}, "it reads every page of everything: %s" % state.get("counts"))
+check(state.get("counts") == {"clients": 3, "requests": 4, "quotes": 3, "jobs": 3, "timesheets": 0}, "it reads every page of everything (this Jobber has no time sheets): %s" % state.get("counts"))
 check(any(f["grant_type"] == "refresh_token" for f in CALLS["token"]), "an expired token is refreshed by itself")
 with app.app_context():
     tokens = json.loads(appmod.jobber_secret("tokens"))

@@ -15,7 +15,7 @@ import scheduling
 from difflib import SequenceMatcher
 from functools import wraps
 from urllib.parse import quote_plus
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 from markupsafe import Markup, escape
 from flask import Flask, render_template, request, redirect, url_for, flash, session, abort, send_from_directory, jsonify, g, has_request_context
@@ -576,6 +576,7 @@ class ClockSession(db.Model):
     clock_in = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
     clock_out = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.String(255), nullable=False, default="")
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)   # brought over from a Jobber time sheet entry
     user = db.relationship("User", backref=db.backref("clock_sessions", order_by="ClockSession.clock_in.desc()"))
     visits = db.relationship("JobVisit", backref="clock_session", cascade="all, delete-orphan", order_by="JobVisit.started_at")
 
@@ -594,6 +595,36 @@ class ClockSession(db.Model):
     @property
     def general_seconds(self):
         return max(self.total_seconds - self.visit_seconds, 0)
+
+
+class JobScheduleVisit(db.Model):
+    """A visit on the schedule (from Jobber): when, who, done or not. Times are UTC, like the time clock."""
+    id = db.Column(db.Integer, primary_key=True)
+    job_id = db.Column(db.Integer, db.ForeignKey("job.id"), nullable=False, index=True)
+    jobber_id = db.Column(db.String(80), nullable=False, default="", index=True)
+    title = db.Column(db.String(180), nullable=False, default="")
+    start_at = db.Column(db.DateTime, nullable=True, index=True)
+    end_at = db.Column(db.DateTime, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    people_json = db.Column(db.Text, nullable=False, default="")             # ["Mike Smith", …] as named in Jobber
+    user_ids_json = db.Column(db.Text, nullable=False, default="")           # the site users they are, where matched
+    job = db.relationship("Job", backref=db.backref("schedule_visits", order_by="JobScheduleVisit.start_at", cascade="all, delete-orphan", lazy="selectin"))
+
+    @property
+    def people(self):
+        try:
+            value = json.loads(self.people_json or "[]")
+        except ValueError:
+            return []
+        return value if isinstance(value, list) else []
+
+    @property
+    def user_ids(self):
+        try:
+            value = json.loads(self.user_ids_json or "[]")
+        except ValueError:
+            return []
+        return [int(v) for v in value if str(v).isdigit()] if isinstance(value, list) else []
 
 
 class JobVisit(db.Model):
@@ -1671,7 +1702,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "download_cooper_listener"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import", "download_cooper_listener"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
@@ -4514,10 +4545,27 @@ def schedule():
     week_start = anchor - timedelta(days=(anchor.weekday() + 1) % 7)
     week_days = [week_start + timedelta(days=i) for i in range(7)]
     events = {}
+    see_all = current_user.can("view_all_schedules")
     job_query = Job.query
-    if not current_user.can("view_all_schedules"):
-        job_query = job_query.filter_by(assigned_user_id=current_user.id)
+    if not see_all:                                    # their jobs, plus jobs with a visit they're on
+        mine = {v.job_id for v in JobScheduleVisit.query.filter(JobScheduleVisit.user_ids_json.like(f"%{current_user.id}%")).all()
+                if current_user.id in v.user_ids}
+        job_query = job_query.filter(db.or_(Job.assigned_user_id == current_user.id, Job.id.in_(mine or {0})))
     for job in job_query.all():
+        if job.schedule_visits:                        # brought over from Jobber: each visit on its own day, at its time, with its crew
+            for visit in job.schedule_visits:
+                if not visit.start_at or not (see_all or job.assigned_user_id == current_user.id or current_user.id in visit.user_ids):
+                    continue
+                start = to_local(visit.start_at)
+                end = to_local(visit.end_at) if visit.end_at else None
+                when = start.strftime("%-I:%M %p") + (f"–{end.strftime('%-I:%M %p')}" if end and end.date() == start.date() else "")
+                events.setdefault(start.date(), []).append({"job": job, "type": "work", "label": visit.title or "Visit",
+                                                            "time": when + (" · " + ", ".join(visit.people) if visit.people else "")})
+            if job.review_at:
+                events.setdefault(job.review_at.date(), []).append({"job": job, "type": "review", "label": "Site review", "time": job.review_at.strftime("%-I:%M %p")})
+            if job.quote_presentation_at:
+                events.setdefault(job.quote_presentation_at.date(), []).append({"job": job, "type": "quote", "label": "Read quote", "time": job.quote_presentation_at.strftime("%-I:%M %p")})
+            continue
         if job.review_at:
             events.setdefault(job.review_at.date(), []).append({"job": job, "type": "review", "label": "Site review", "time": job.review_at.strftime("%-I:%M %p")})
         if job.quote_presentation_at:
@@ -6168,6 +6216,15 @@ def calculate_estimated_drive_time(destination):
     average_speed = max(get_numeric_setting("travel_average_speed", 45), 1)
     estimated_road_miles = straight_miles * road_factor
     return (estimated_road_miles / average_speed) * 60, estimated_road_miles
+
+
+def to_local(when):
+    """A UTC time (as stored) in Pennsylvania's time."""
+    try:
+        from zoneinfo import ZoneInfo
+        return when.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001
+        return when
 
 
 DRIVE_RETRY_HOURS = 6          # a drive-time lookup that failed is tried again after this (or at once with force)
@@ -7835,7 +7892,9 @@ def jobber_page():
     state = jobber_pull_state()
     data = jobber_pulled() if state.get("status") == "done" else None
     plan = jobber_plan(data) if data else None
-    return render_template("jobber.html", client_id=jobber_setting("client_id"), has_secret=bool(jobber_secret("client_secret")),
+    schedule_plan = jobber_schedule_plan(data) if data else None
+    return render_template("jobber.html", schedule_plan=schedule_plan, site_users=User.query.order_by(User.username).all(),
+                           last_schedule_import=jobber_json("last_schedule_import"), client_id=jobber_setting("client_id"), has_secret=bool(jobber_secret("client_secret")),
                            connected=jobber_connected(), account=jobber_json("account"), callback_url=jobber_callback_url(),
                            state=state, plan=plan, data=data, last_import=jobber_json("last_import"), status_labels=JOB_STATUS_LABELS,
                            missing=(data or {}).get("missing") or [])
@@ -7947,6 +8006,178 @@ def jobber_import():
         counts["clients_new"], counts["jobs_new"], counts["clients_update"] + counts["clients_link"] + counts["clients_fill"] +
         counts["jobs_update"] + counts["jobs_fill"]), "success")
     return redirect(url_for("jobber_page"))
+
+
+# ---------------- Schedule & time from Jobber ----------------
+# After a pull, the Jobber page offers "Bring over schedule & time": each Jobber visit goes on the schedule (when, who), a job
+# with nobody assigned gets the person who worked it most, and each Jobber time sheet entry becomes a clock-in / clock-out on
+# that person's timesheet, on its job. Jobber people are matched to site users by name (fixable on the page). Everything keeps
+# its Jobber id, so bringing it over again never doubles anything; a visit or time entry already here is left as it is.
+
+def _name_key(text):
+    return re.sub(r"[^a-z]", "", (text or "").lower())
+
+
+def jobber_people(data):
+    """Every person Jobber names (visit crews and time sheets), with their hours and visits: {name: {"seconds", "visits"}}."""
+    people = {}
+    for raw in (data or {}).get("jobs") or []:
+        for visit in jb.job_fields(raw)["visits"]:
+            for name in visit.get("people") or []:
+                people.setdefault(name, {"seconds": 0, "visits": 0, "entries": 0})["visits"] += 1
+    for raw in (data or {}).get("timesheets") or []:
+        entry = jb.timesheet_fields(raw)
+        if entry["person"]:
+            row = people.setdefault(entry["person"], {"seconds": 0, "visits": 0, "entries": 0})
+            row["seconds"] += entry["seconds"]; row["entries"] += 1
+    return people
+
+
+def jobber_people_map(names):
+    """{Jobber name: user id or 0 (left out)}: what was set on the Jobber page, else a match by name (username = full name,
+    first name, or first name + last initial, ignoring case and spaces)."""
+    saved = jobber_json("people")
+    users = User.query.all()
+    by_key = {}
+    for user in users:
+        by_key.setdefault(_name_key(user.username), user.id)
+    found = {}
+    for name in names:
+        if name in saved:
+            found[name] = int(saved[name] or 0)
+            continue
+        parts = name.split()
+        tries = [_name_key(name)] + ([_name_key(parts[0]), _name_key(parts[0] + parts[-1][:1])] if parts else [])
+        found[name] = next((by_key[k] for k in tries if k and k in by_key), 0)
+    return found
+
+
+def jobber_schedule_plan(data):
+    """What "Bring over schedule & time" would do, without changing anything."""
+    people = jobber_people(data)
+    mapping = jobber_people_map(list(people))
+    local_jobs = {j.jobber_id: j for j in Job.query.filter(Job.jobber_id != "").all()}
+    have_visits = {v.jobber_id for v in JobScheduleVisit.query.filter(JobScheduleVisit.jobber_id != "").all()}
+    have_time = {c.jobber_id for c in ClockSession.query.filter(ClockSession.jobber_id != "").all()}
+    visit_job = {}
+    counts = {"visits_new": 0, "visits_here": 0, "visits_no_job": 0, "assign": 0, "time_new": 0, "time_here": 0, "time_unmatched": 0,
+              "time_open": 0, "seconds_new": 0}
+    for raw in data.get("jobs") or []:
+        fields = jb.job_fields(raw)
+        job = local_jobs.get(fields["jobber_id"])
+        for visit in fields["visits"]:
+            if visit.get("jobber_id"):
+                visit_job[visit["jobber_id"]] = fields["jobber_id"]
+            if job is None:
+                counts["visits_no_job"] += 1
+            elif visit.get("jobber_id") and visit["jobber_id"] in have_visits:
+                counts["visits_here"] += 1
+            else:
+                counts["visits_new"] += 1
+        if job is not None and not job.assigned_user_id and any(mapping.get(n) for v in fields["visits"] for n in v.get("people") or []):
+            counts["assign"] += 1
+    for raw in data.get("timesheets") or []:
+        entry = jb.timesheet_fields(raw)
+        if not entry["jobber_id"] or not entry["start"]:
+            continue
+        if entry["jobber_id"] in have_time:
+            counts["time_here"] += 1
+        elif not entry["end"]:
+            counts["time_open"] += 1
+        elif not mapping.get(entry["person"]):
+            counts["time_unmatched"] += 1
+        else:
+            counts["time_new"] += 1; counts["seconds_new"] += entry["seconds"]
+    return {"people": people, "mapping": mapping, "counts": counts, "visit_job": visit_job,
+            "has_timesheets": "timesheets" in data and "timesheets" not in (data.get("missing") or []),
+            "refused": (data.get("refused") or {}).get("timesheets", "")}
+
+
+def jobber_schedule_apply(data):
+    """Bring over Jobber's visits (the schedule, who was assigned) and time sheets (who worked, how long). Returns counts."""
+    plan = jobber_schedule_plan(data)
+    mapping = plan["mapping"]
+    local_jobs = {j.jobber_id: j for j in Job.query.filter(Job.jobber_id != "").all()}
+    have_visits = {v.jobber_id: v for v in JobScheduleVisit.query.filter(JobScheduleVisit.jobber_id != "").all()}
+    have_time = {c.jobber_id for c in ClockSession.query.filter(ClockSession.jobber_id != "").all()}
+    users = {u.id: u for u in User.query.all()}
+    done = {"visits": 0, "assigned": 0, "time": 0, "seconds": 0}
+    for raw in data.get("jobs") or []:
+        fields = jb.job_fields(raw)
+        job = local_jobs.get(fields["jobber_id"])
+        if job is None:
+            continue
+        worked = {}
+        for index, visit in enumerate(fields["visits"]):
+            key = visit.get("jobber_id") or f"{fields['jobber_id']}:{visit.get('start') or index}"
+            ids = [mapping[n] for n in visit.get("people") or [] if mapping.get(n)]
+            for uid in ids:
+                worked[uid] = worked.get(uid, 0) + 1
+            if key in have_visits:
+                continue
+            row = JobScheduleVisit(job=job, jobber_id=key, title=(visit.get("title") or "")[:180], start_at=jb.parse_time(visit.get("start")),
+                                   end_at=jb.parse_time(visit.get("end")), completed_at=jb.parse_time(visit.get("completed")),
+                                   people_json=json.dumps(visit.get("people") or []), user_ids_json=json.dumps(ids))
+            db.session.add(row)
+            have_visits[key] = row
+            done["visits"] += 1
+        if not job.assigned_user_id and worked:
+            job.assigned_user_id = max(worked, key=lambda uid: (worked[uid], -uid))
+            done["assigned"] += 1
+    for raw in data.get("timesheets") or []:
+        entry = jb.timesheet_fields(raw)
+        uid = mapping.get(entry["person"])
+        if not entry["jobber_id"] or entry["jobber_id"] in have_time or not entry["start"] or not entry["end"] or not uid or uid not in users:
+            continue
+        session_row = ClockSession(user_id=uid, clock_in=entry["start"], clock_out=entry["end"], jobber_id=entry["jobber_id"],
+                                   notes=("From Jobber" + (": " + entry["note"] if entry["note"] else ""))[:255])
+        db.session.add(session_row)
+        job = local_jobs.get(entry["job_jobber_id"] or plan["visit_job"].get(entry["visit_jobber_id"], ""))
+        if job is not None:
+            session_row.visits.append(JobVisit(job=job, started_at=entry["start"], ended_at=entry["end"], notes="From Jobber",
+                                               hourly_rate=users[uid].hourly_rate or 0))
+        have_time.add(entry["jobber_id"])
+        done["time"] += 1; done["seconds"] += entry["seconds"]
+    db.session.commit()
+    return done
+
+
+@app.route("/settings/jobber/people", methods=["POST"])
+@login_required
+def jobber_people_save():
+    """Who each Jobber person is on this site (or leave them out)."""
+    check_csrf()
+    names, chosen = request.form.getlist("jobber_name"), request.form.getlist("user_id")
+    valid = {u.id for u in User.query.all()}
+    saved = jobber_json("people")
+    for name, value in zip(names, chosen):
+        uid = int(value) if str(value).isdigit() else 0
+        saved[name[:120]] = uid if uid in valid else 0
+    put_jobber_setting("people", saved)
+    flash("Saved who's who.", "success")
+    return redirect(url_for("jobber_page") + "#jobber-schedule")
+
+
+@app.route("/settings/jobber/schedule-import", methods=["POST"])
+@login_required
+def jobber_schedule_import():
+    check_csrf()
+    data = jobber_pulled()
+    if data is None:
+        flash("Pull from Jobber first.", "error")
+        return redirect(url_for("jobber_page"))
+    backup = rel.backup_database(os.path.join(basedir, "instance", "app.db"), RELEASE_BACKUPS, "before-jobber-schedule")
+    try:
+        done = jobber_schedule_apply(data)
+    except Exception as exc:  # noqa: BLE001
+        db.session.rollback()
+        flash("It stopped and nothing was saved (%s: %s)." % (exc.__class__.__name__, exc), "error")
+        return redirect(url_for("jobber_page") + "#jobber-schedule")
+    put_jobber_setting("last_schedule_import", {"at": datetime.utcnow().isoformat(timespec="seconds"), "by": current_user.username,
+                                                "done": done, "backup": os.path.basename(backup) if backup else ""})
+    flash("From Jobber: %d visits put on the schedule, %d jobs assigned, %d time entries (%.1f hours) put on timesheets." % (
+        done["visits"], done["assigned"], done["time"], done["seconds"] / 3600), "success")
+    return redirect(url_for("jobber_page") + "#jobber-schedule")
 
 
 # ---------------- Generators ----------------
@@ -9026,6 +9257,7 @@ with app.app_context():
     add_column_if_missing("service", "has_steps", "BOOLEAN NOT NULL DEFAULT 0")
     add_column_if_missing("job", "work_start_time", "VARCHAR(5) NOT NULL DEFAULT ''")
     add_column_if_missing("service", "drawing_spots_json", "TEXT NOT NULL DEFAULT ''")
+    add_column_if_missing("clock_session", "jobber_id", "VARCHAR(80) NOT NULL DEFAULT ''")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

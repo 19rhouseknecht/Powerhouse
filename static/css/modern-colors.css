@@ -458,3 +458,4 @@
 :where(html[data-theme="modern"]) .crop-shape[aria-checked="true"] { color: #f5f4f9; }
 :where(html[data-theme="modern"]) .step-slide-picture { background: #fcfcfd; }
 :where(html[data-theme="modern"]) .step-progress-seg.is-done { background: rgba(108, 78, 255, .55); }
+:where(html[data-theme="modern"]) .jobber-sched-counts small.warn { color: #9b7700; }
