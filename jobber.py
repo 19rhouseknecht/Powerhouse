@@ -19,7 +19,7 @@ does the matching and saving), so it can be tested on its own.
 import base64
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 API = "https://api.getjobber.com/api/graphql"
@@ -29,7 +29,7 @@ VERSION = "2025-04-16"           # X-JOBBER-GRAPHQL-VERSION; Jobber supports a v
 AGENT = "Power House"
 TRANSPORT = None                 # tests: callable(method, url, headers, body_bytes) -> (status, bytes)
 SLEEP = time.sleep               # tests replace it
-PAGE = {"clients": 25, "requests": 25, "quotes": 15, "jobs": 10}
+PAGE = {"clients": 25, "requests": 25, "quotes": 15, "jobs": 10, "timesheets": 50}
 
 
 class JobberError(Exception):
@@ -244,13 +244,19 @@ WANT = {
         "quote": {"id": None, "quoteNumber": None}, "request": {"id": None},
         "salesperson": {"name": NAME},
         "lineItems(first: 40)": LINE_ITEMS,
-        "visits(first: 20)": {"nodes": {"title": None, "startAt": None, "endAt": None, "completedAt": None, "visitStatus": None,
+        "visits(first: 20)": {"nodes": {"id": None, "title": None, "startAt": None, "endAt": None, "completedAt": None, "visitStatus": None,
                                         "assignedUsers(first: 10)": {"nodes": {"name": NAME}}}},
         "invoices(first: 10)": {"nodes": {"invoiceNumber": None, "invoiceStatus": None, "subject": None, "issuedDate": None,
                                           "dueDate": None, "total": None, "amounts": AMOUNTS}},
     },
+    # who worked, on which job, from when to when (Jobber's time sheets; needs the app's "time sheets: read" permission)
+    "timesheets": {
+        "id": None, "startAt": None, "endAt": None, "finalDuration": None, "duration": None, "note": None, "label": None,
+        "user": {"id": None, "name": NAME}, "job": {"id": None}, "visit": {"id": None},
+    },
 }
-ORDER = ("clients", "requests", "quotes", "jobs")
+ORDER = ("clients", "requests", "quotes", "jobs", "timesheets")
+ROOT_FIELD = {"timesheets": "timeSheetEntries"}           # our name -> Jobber's query name, where they differ
 
 
 def pull(session, progress=None):
@@ -265,22 +271,31 @@ def pull(session, progress=None):
             raise
     for what in ORDER:
         out[what] = []
-        if what not in root:
+        field = ROOT_FIELD.get(what, what)
+        if field not in root:
             out["missing"].append(what)
             say("This Jobber account's API has no %s; skipped." % what)
             continue
-        connection = root[what][1]
+        connection = root[field][1]
         node_type = session.fields_of(connection).get("nodes", (None, None))[1]
         if not node_type:
             out["missing"].append(what)
             continue
         fields = session.selection(node_type, WANT[what], out["missing"], what)
         query = "query($after: String) { %s(first: %d, after: $after) { nodes { %s } pageInfo { hasNextPage endCursor } } }" % (
-            what, PAGE[what], fields)
+            field, PAGE[what], fields)
         after = None
         while True:
-            data = session.gql(query, {"after": after})
-            block = data.get(what) or {}
+            try:
+                data = session.gql(query, {"after": after})
+            except JobberError as exc:
+                if what in ROOT_FIELD and exc.kind == "refused":        # time sheets need their own permission: the rest still comes over
+                    out["missing"].append(what)
+                    out.setdefault("refused", {})[what] = str(exc)
+                    say("Jobber didn't allow reading %s (%s); the rest came over." % (what, exc))
+                    break
+                raise
+            block = data.get(field) or {}
             out[what].extend(block.get("nodes") or [])
             say("Read %d %s…" % (len(out[what]), what))
             info = block.get("pageInfo") or {}
@@ -410,13 +425,43 @@ def job_fields(raw, now=None):
                 created_at=parse_time(raw.get("createdAt")), salesperson=sales, job_type=(raw.get("jobType") or "").lower(),
                 line_items=_lines(raw),
                 visits=[{"title": v.get("title") or "", "start": v.get("startAt"), "end": v.get("endAt"), "completed": v.get("completedAt"),
-                         "status": v.get("visitStatus") or "",
+                         "status": v.get("visitStatus") or "", "jobber_id": v.get("id") or "",
+                         "people": [p for p in (person_name(u) for u in _nodes(v.get("assignedUsers"))) if p],
                          "crew": ", ".join(((u.get("name") or {}).get("full") or "") for u in _nodes(v.get("assignedUsers")))}
                         for v in _nodes(raw.get("visits"))],
                 invoices=[{"number": str(i.get("invoiceNumber") or ""), "status": i.get("invoiceStatus") or "", "subject": i.get("subject") or "",
                            "issued": i.get("issuedDate") or "", "due": i.get("dueDate") or "",
                            "total": money(i.get("total") if i.get("total") is not None else (i.get("amounts") or {}).get("total"))}
                           for i in _nodes(raw.get("invoices"))])
+
+
+def person_name(user):
+    """A Jobber user's name as one string ("Mike Smith")."""
+    name = (user or {}).get("name") or {}
+    if isinstance(name, str):
+        return " ".join(name.split())
+    return " ".join((name.get("full") or " ".join(filter(None, [name.get("first"), name.get("last")])) or "").split())
+
+
+def timesheet_fields(raw):
+    """One Jobber time sheet entry: who, when (UTC, like the time clock), how long, and its job / visit."""
+    start, end = parse_time(raw.get("startAt")), parse_time(raw.get("endAt"))
+    seconds = None
+    for key in ("finalDuration", "duration"):
+        try:
+            seconds = int(float(raw.get(key))) if raw.get(key) not in (None, "") else seconds
+        except (TypeError, ValueError):
+            pass
+        if seconds:
+            break
+    if start and not end and seconds:
+        end = start + timedelta(seconds=seconds)
+    if start and end and not seconds:
+        seconds = int((end - start).total_seconds())
+    return {"jobber_id": raw.get("id") or "", "start": start, "end": end, "seconds": seconds or 0,
+            "person": person_name(raw.get("user")), "job_jobber_id": (raw.get("job") or {}).get("id") or "",
+            "visit_jobber_id": (raw.get("visit") or {}).get("id") or "",
+            "note": " · ".join(filter(None, [(raw.get("label") or "").strip(), (raw.get("note") or "").strip()]))[:255]}
 
 
 def quote_fields(raw):

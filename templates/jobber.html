@@ -66,6 +66,36 @@
 </section>
 {% endif %}
 
+{% if schedule_plan %}{% set sp = schedule_plan %}{% set c = sp.counts %}
+<section class="panel section-panel jobber-schedule" id="jobber-schedule">
+  <div class="section-title"><div><span class="eyebrow">Step 3 · Schedule &amp; time</span><h2>Bring over the schedule and who worked</h2>
+    <p class="muted">Puts every Jobber visit on the schedule (when, and who was on it), assigns each job with nobody on it to the person who worked it most, and puts each Jobber time sheet entry on that person's timesheet, on its job. Import the jobs first (step 2). Nothing is ever doubled, and nothing is changed in Jobber.</p></div></div>
+  {% if not sp.has_timesheets %}<p class="sizing-note">{% if sp.refused %}Jobber didn't allow reading time sheets ({{ sp.refused }}).{% else %}This pull has no time sheets.{% endif %} In Jobber's Developer Center, give your app permission to <strong>read time sheets</strong> (and users), then connect again and pull. The schedule still comes over without them.</p>{% endif %}
+  <div class="jobber-sched-counts">
+    <div><strong>{{ c.visits_new }}</strong><span>visits to put on the schedule</span>{% if c.visits_here %}<small>{{ c.visits_here }} already here</small>{% endif %}{% if c.visits_no_job %}<small>{{ c.visits_no_job }} on jobs not imported yet</small>{% endif %}</div>
+    <div><strong>{{ c.assign }}</strong><span>jobs to assign</span><small>only jobs with nobody assigned</small></div>
+    <div><strong>{{ c.time_new }}</strong><span>time entries · {{ '%.1f'|format(c.seconds_new / 3600) }} hours</span>{% if c.time_here %}<small>{{ c.time_here }} already here</small>{% endif %}{% if c.time_unmatched %}<small class="warn">{{ c.time_unmatched }} for people not matched below</small>{% endif %}{% if c.time_open %}<small>{{ c.time_open }} still running in Jobber (left out)</small>{% endif %}</div>
+  </div>
+  {% if sp.people %}
+  <form method="POST" action="{{ url_for('jobber_people_save') }}" class="jobber-people">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <h3>Who's who</h3><p class="muted">Each person in Jobber, and who they are here. Matched by name; change any that are wrong, or leave someone out.</p>
+    <div class="item-table-wrap"><table class="item-table"><thead><tr><th>In Jobber</th><th>Visits</th><th>Time</th><th>On this site</th></tr></thead><tbody>
+      {% for name, row in sp.people|dictsort %}<tr><td><strong>{{ name }}</strong></td><td>{{ row.visits }}</td><td>{{ '%.1f'|format(row.seconds / 3600) }} h{% if row.entries %} <small>({{ row.entries }} entries)</small>{% endif %}</td>
+        <td><input type="hidden" name="jobber_name" value="{{ name }}"><select name="user_id" aria-label="{{ name }} on this site"><option value="0" {{ 'selected' if not sp.mapping.get(name) }}>Leave out</option>{% for user in site_users %}<option value="{{ user.id }}" {{ 'selected' if sp.mapping.get(name) == user.id }}>{{ user.username }}</option>{% endfor %}</select></td></tr>{% endfor %}
+    </tbody></table></div>
+    <button class="btn btn-secondary">Save who's who</button>
+  </form>
+  {% endif %}
+  <form method="POST" action="{{ url_for('jobber_schedule_import') }}" class="jobber-import" onsubmit="return confirm('Bring over the schedule and time from Jobber? The database is backed up first.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-primary" {{ 'disabled' if not (c.visits_new or c.assign or c.time_new) }}>Bring over schedule &amp; time</button>
+    <small class="muted">The database is backed up first. Time goes on timesheets at the hours Jobber recorded; each person's pay rate on this site is used for job labor.</small>
+  </form>
+  {% if last_schedule_import.at %}<p class="muted">Last brought over {{ last_schedule_import.at.replace('T', ' ') }} UTC by {{ last_schedule_import.by }}: {{ last_schedule_import.done.visits }} visits, {{ last_schedule_import.done.assigned }} jobs assigned, {{ last_schedule_import.done.time }} time entries.</p>{% endif %}
+</section>
+{% endif %}
+
 {% if last_import.at %}
 <section class="panel section-panel">
   <span class="eyebrow">Last import</span>
