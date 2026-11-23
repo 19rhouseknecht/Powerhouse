@@ -19,9 +19,10 @@
         <input type="hidden" name="key_{{ loop.index0 }}" value="{{ row.key }}"><input type="hidden" name="name_{{ loop.index0 }}" value="{{ row.name }}">
         <div class="needs-price-top"><div><strong>{{ row.name }}</strong><small>{{ row.tiers|join(', ') }}{% if row.quantity_text %} · qty {{ row.quantity_text }}{% endif %}</small></div>
           <label class="needs-price-save" title="Already covered: remove it from the quote"><input type="checkbox" name="skip_{{ loop.index0 }}" value="1" data-not-needed><span>Not needed</span></label></div>
-        {% if row.candidates %}<div class="sheet-picks"><small class="sheet-picks-label">Likely matches on the Pricing Sheet:{% if is_admin() and row.candidates|selectattr('part')|list %} <button type="button" class="btn btn-ghost btn-small cooper-refresh" data-cooper-update="{{ row.candidates|selectattr('part')|map(attribute='id')|join(',') }}" title="Get these items' pictures and prices from Cooper">⟳ Update from Cooper</button><span class="cooper-refresh-said" data-cooper-said aria-live="polite"></span>{% endif %}</small>{% for c in row.candidates %}<span class="sheet-pick has-pic">{% if c.image %}<img class="pick-thumb" src="{{ c.image }}" alt="" loading="lazy">{% else %}<span class="pick-thumb pick-thumb-none" title="No picture yet{{ ': Update from Cooper brings it' if c.part }}">▢</span>{% endif %}<span><b>{{ c.name }}</b> · ${{ '{:,.2f}'.format(c.price) }}/{{ c.unit }}{% if c.labor %} + {{ '%g'|format(c.labor) }} hr{% endif %}{% if c.unconfirmed %} <em class="unconfirmed-tag">Unconfirmed</em>{% endif %}{% if c.part %} <small class="muted">Cooper #{{ c.part }}</small>{% endif %}</span><button class="btn btn-small btn-secondary" formaction="{{ url_for('use_sheet_item', quote_id=quote.id) }}" formnovalidate name="pick" value="{{ row_index }}:{{ c.id }}">Use this</button></span>{% endfor %}</div>{% endif %}
-        {% if row.candidates %}<div class="more-like" data-more-like data-index="{{ row_index }}" data-name="{{ row.name }}" data-shown="{{ row.candidates|map(attribute='id')|join(',') }}">
-          <button type="button" class="btn btn-ghost btn-small" data-more-go>▾ Show more like these</button><div class="sheet-picks more-like-results" data-more-results></div></div>{% endif %}
+        {% if row.candidates %}<div class="sheet-picks"><small class="sheet-picks-label">Likely matches on the Pricing Sheet:{% if is_admin() and row.candidates|selectattr('part')|list %} <button type="button" class="btn btn-ghost btn-small cooper-refresh" data-cooper-update="{{ row.candidates|selectattr('part')|map(attribute='id')|join(',') }}" title="Get these items' pictures and prices from Cooper">⟳ Update from Cooper</button><span class="cooper-refresh-said" data-cooper-said aria-live="polite"></span>{% endif %}</small>{% for c in row.candidates %}<span class="sheet-pick has-pic">{% if c.image %}<img class="pick-thumb" src="{{ c.image }}" alt="" loading="lazy">{% else %}<span class="pick-thumb pick-thumb-none" title="No picture yet{{ ': Update from Cooper brings it' if c.part }}">▢</span>{% endif %}<span><b>{{ c.name }}</b> · ${{ '{:,.2f}'.format(c.price) }}/{{ c.unit }}{% if c.labor %} + {{ '%g'|format(c.labor) }} hr{% endif %}{% if c.unconfirmed %} <em class="unconfirmed-tag">Unconfirmed</em>{% endif %}{% if c.part %} <small class="muted">Cooper #{{ c.part }}</small>{% endif %}</span><button class="btn btn-small btn-secondary" formaction="{{ url_for('use_sheet_item', quote_id=quote.id) }}" formnovalidate data-busy="Pricing it from the Pricing Sheet…" name="pick" value="{{ row_index }}:{{ c.id }}">Use this</button></span>{% endfor %}</div>{% endif %}
+        {% if row.candidates %}<div class="more-like" data-more-like data-index="{{ row_index }}" data-name="{{ row.name }}" data-shown="{{ row.candidates|map(attribute='id')|join(',') }}" data-can-cooper="{{ '1' if is_admin() else '' }}">
+          <button type="button" class="btn btn-ghost btn-small" data-more-go>▾ Show more like these</button><div class="sheet-picks more-like-results" data-more-results></div>
+          <div class="more-like-cooper" data-more-cooper hidden><button type="button" class="btn btn-ghost btn-small more-cooper-go" data-more-cooper-go>⟳ Update these from Cooper</button><span class="cooper-refresh-said" data-more-said aria-live="polite"></span></div></div>{% endif %}
         <div class="sheet-search" data-sheet-search data-index="{{ row_index }}">
           <small class="sheet-search-label">{{ 'Not it at all? Search the Pricing Sheet:' if row.candidates else 'Search the Pricing Sheet:' }}</small>
           <input type="search" placeholder="Find it on the Pricing Sheet (name, part number) or in Services…" aria-label="Find {{ row.name }} on the Pricing Sheet" data-find="{{ url_for('find_pricing_items') }}" value="">
@@ -53,32 +54,59 @@
         .catch(function () { said.textContent = 'Not sent: check the connection.'; button.disabled = false; });
     });
   });
-  /* Show more like these: more Pricing Sheet items like the suggestions (right kind, another style), each with Use this */
+  /* Show more like these: more Pricing Sheet items like the suggestions (right kind, another style), each with Use this.
+     Admins can send the ones shown to Update from Cooper; after the page reloads with the new pictures, the lists that were
+     open open again by themselves. */
+  var reopen = {};
+  try { reopen = JSON.parse(sessionStorage.getItem('more-open') || '{}'); sessionStorage.removeItem('more-open'); } catch (e) {}
   document.querySelectorAll('[data-more-like]').forEach(function (box) {
-    var go = box.querySelector('[data-more-go]'), out = box.querySelector('[data-more-results]'), index = box.getAttribute('data-index'), page = 0;
-    var useUrl = {{ url_for('use_sheet_item', quote_id=quote.id)|tojson }};
-    go.addEventListener('click', function () {
+    var go = box.querySelector('[data-more-go]'), out = box.querySelector('[data-more-results]'), index = box.getAttribute('data-index'), pages = 0;
+    var cooper = box.querySelector('[data-more-cooper]'), cooperGo = box.querySelector('[data-more-cooper-go]'), said = cooper.querySelector('[data-more-said]');
+    var useUrl = {{ url_for('use_sheet_item', quote_id=quote.id)|tojson }}, withParts = [];
+    function more() {
       go.disabled = true; go.textContent = 'Looking…';
       var url = {{ url_for('more_sheet_matches')|tojson }} + '?name=' + encodeURIComponent(box.getAttribute('data-name')) +
-                '&shown=' + encodeURIComponent(box.getAttribute('data-shown')) + '&page=' + page;
-      fetch(url, {headers: {'Accept': 'application/json'}}).then(function (r) { return r.json(); }).then(function (data) {
+                '&shown=' + encodeURIComponent(box.getAttribute('data-shown'));
+      return fetch(url, {headers: {'Accept': 'application/json'}}).then(function (r) { return r.json(); }).then(function (data) {
         (data.results || []).forEach(function (r) {
           var row = document.createElement('span'); row.className = 'sheet-pick has-pic';
           var pic = document.createElement(r.image ? 'img' : 'span'); pic.className = 'pick-thumb' + (r.image ? '' : ' pick-thumb-none');
-          if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.textContent = '▢'; }
+          if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.textContent = '▢'; pic.title = 'No picture yet'; }
           var words = document.createElement('span'); var name = document.createElement('b'); name.textContent = r.name;
           words.append(name, document.createTextNode(' · $' + Number(r.price).toFixed(2) + '/' + r.unit + (r.unconfirmed ? ' · Unconfirmed' : '')));
-          if (r.part) { var part = document.createElement('small'); part.className = 'muted'; part.textContent = ' Cooper #' + r.part; words.append(part); }
+          if (r.part) { var part = document.createElement('small'); part.className = 'muted'; part.textContent = ' Cooper #' + r.part; words.append(part); withParts.push(r.id); }
           var use = document.createElement('button'); use.className = 'btn btn-small btn-secondary'; use.textContent = 'Use this';
-          use.name = 'pick'; use.value = index + ':' + r.id; use.formAction = useUrl; use.formNoValidate = true;
+          use.name = 'pick'; use.value = index + ':' + r.id; use.formAction = useUrl; use.formNoValidate = true; use.setAttribute('data-busy', 'Pricing it from the Pricing Sheet…');
           row.append(pic, words, use); out.append(row);
           box.setAttribute('data-shown', box.getAttribute('data-shown') + ',' + r.id);
         });
-        page += 1;
-        if (!data.more) { go.hidden = true; if (!(data.results || []).length && !out.children.length) { var none = document.createElement('small'); none.className = 'muted'; none.textContent = 'Nothing else like these: try the search below.'; out.append(none); } }
+        pages += 1;
+        if (box.getAttribute('data-can-cooper') && withParts.length) {
+          cooper.hidden = false; cooperGo.textContent = '⟳ Update these ' + withParts.length + ' from Cooper';
+        }
+        if (!data.more) { go.hidden = true; if (!out.children.length) { var none = document.createElement('small'); none.className = 'muted'; none.textContent = 'Nothing else like these: try the search below.'; out.append(none); } }
         else { go.disabled = false; go.textContent = '▾ Show more like these'; }
       }).catch(function () { go.disabled = false; go.textContent = '▾ Show more like these'; });
+    }
+    go.addEventListener('click', more);
+    cooperGo.addEventListener('click', function () {
+      var body = new FormData(); body.append('csrf_token', {{ csrf_token()|tojson }}); body.append('scope', 'selected');
+      withParts.forEach(function (id) { body.append('item_ids[]', id); });
+      cooperGo.disabled = true; said.textContent = 'Sending…';
+      fetch({{ url_for('check_cooper_prices')|tojson }}, {method: 'POST', body: body, headers: {'Accept': 'application/json', 'X-Requested-With': 'fetch'}})
+        .then(function (r) { return r.json().then(function (d) { return [r.ok, d]; }); })
+        .then(function (res) {
+          var d = res[1];
+          if (!res[0] && !d.status_url) { said.textContent = d.error || 'Not sent.'; cooperGo.disabled = false; return; }
+          var open = {}; document.querySelectorAll('[data-more-like]').forEach(function (b) { if (b._pages && b._pages()) open[b.getAttribute('data-name')] = b._pages(); });
+          try { sessionStorage.setItem('more-open', JSON.stringify(open)); } catch (e) {}
+          window.PHWatchCooper(d.status_url, said, d.preview_url);
+        })
+        .catch(function () { said.textContent = 'Not sent: check the connection.'; cooperGo.disabled = false; });
     });
+    box._pages = function () { return pages; };
+    var again = reopen[box.getAttribute('data-name')] || 0;
+    (function replay(n) { if (n > 0) more().then(function () { replay(n - 1); }); })(again);
   });
   document.querySelectorAll('[data-sheet-search]').forEach(function (box) {
     var input = box.querySelector('input'), out = box.querySelector('[data-results]'), timer = null, index = box.getAttribute('data-index');
@@ -103,7 +131,7 @@
               var name = document.createElement('b'); name.textContent = r.name;
               words.append(name, document.createTextNode(' · $' + Number(r.price).toFixed(2) + (r.unit ? ' / ' + r.unit : '') + ' · ' + r.kind + (r.part ? ' · ' + r.part : '')));
               var use = document.createElement('button'); use.className = 'btn btn-small btn-secondary'; use.textContent = 'Use this';
-              use.name = 'pick'; use.value = index + ':' + r.id; use.formAction = useUrl; use.formNoValidate = true;
+              use.name = 'pick'; use.value = index + ':' + r.id; use.formAction = useUrl; use.setAttribute('data-busy', 'Pricing it from the Pricing Sheet…'); use.formNoValidate = true;
               row.append(words, use); out.append(row);
             });
           });
