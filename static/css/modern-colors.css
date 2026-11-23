@@ -450,3 +450,11 @@
 :where(html[data-theme="modern"]) .after-box.is-on { box-shadow: 0 0 0 3px rgba(30, 22, 70, 0.42), 0 0 0 9999px rgba(30, 22, 70, 0.122); }
 :where(html[data-theme="modern"]) .after-label { background: rgba(252, 252, 253, .85); color: #16141f; }
 :where(html[data-theme="modern"]) .after-parts .marker-part[aria-pressed="true"] { box-shadow: 0 0 0 2px rgba(108, 78, 255, .3); }
+:where(html[data-theme="modern"]) .crop-body { background: #fcfcfd; }
+:where(html[data-theme="modern"]) .crop-box { border: 2px solid #16141f; box-shadow: 0 0 0 9999px rgba(30, 22, 70, 0.193); }
+:where(html[data-theme="modern"]) .crop-box::before, :where(html[data-theme="modern"]) .crop-box::after { border-top: 1px solid rgba(30, 22, 70, 0.27); border-bottom: 1px solid rgba(30, 22, 70, 0.27); }
+:where(html[data-theme="modern"]) .crop-box::after { border-left: 1px solid rgba(30, 22, 70, 0.27); border-right: 1px solid rgba(30, 22, 70, 0.27); }
+:where(html[data-theme="modern"]) .crop-box i { background: #16141f; box-shadow: 0 1px 4px rgba(30, 22, 70, 0.175); }
+:where(html[data-theme="modern"]) .crop-shape[aria-checked="true"] { color: #f5f4f9; }
+:where(html[data-theme="modern"]) .step-slide-picture { background: #fcfcfd; }
+:where(html[data-theme="modern"]) .step-progress-seg.is-done { background: rgba(108, 78, 255, .55); }

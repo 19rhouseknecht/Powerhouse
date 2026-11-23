@@ -154,3 +154,11 @@ html[data-theme="modern"] .user-menu-label { color: #9a96b2; }
 html[data-theme="modern"] .step-row { background: #fff; box-shadow: var(--shadow); border-radius: 16px; }
 html[data-theme="modern"] :is(.step-number, .service-step-number) { color: #fff; }
 html[data-theme="modern"] .step-picture-box { background: #faf9ff; }
+
+/* the crop window keeps dark surroundings and a white crop box in Modern (a crop box has to stand out on any picture) */
+html[data-theme="modern"] .crop-body { background: #1b1740; }
+html[data-theme="modern"] .crop-box { border-color: #fff; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); }
+html[data-theme="modern"] .crop-box::before, html[data-theme="modern"] .crop-box::after { border-color: rgba(255, 255, 255, .45); }
+html[data-theme="modern"] .crop-box i { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
+html[data-theme="modern"] .crop-shape[aria-checked="true"] { color: #fff; }
+html[data-theme="modern"] .step-progress-seg.is-done { background: #b9a8ff; }

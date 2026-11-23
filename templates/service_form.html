@@ -31,6 +31,7 @@
   </div></section>
   <div class="form-actions"><a class="btn btn-secondary" href="{{ url_for('service_detail', service_id=service.id) if service else url_for('services') }}">Cancel</a><button class="btn btn-primary" type="submit">{{ 'Save changes' if service else 'Create service' }}</button></div>
 </form>
+<script src="{{ url_for('static', filename='js/image-crop.js', v=asset_version) }}"></script>
 <template id="step-row-template">{% with key='KEY', number='N', step=none, title='', body='' %}{% include '_step_row.html' %}{% endwith %}</template>
 <template id="item-row-template">{% include '_item_row.html' %}</template><template id="tool-row-template">{% include '_tool_row.html' %}</template>
 <script id="pricing-find" type="application/json">{{ url_for('find_pricing_items', items=1, unpriced=1)|tojson }}</script>{# the item box searches the Pricing Sheet as you type: the whole sheet is too big to send with the page #}
@@ -49,16 +50,28 @@
     row.querySelector('[data-step-up]').addEventListener('click', function () { if (row.previousElementSibling) { list.insertBefore(row, row.previousElementSibling); renumber(); } });
     row.querySelector('[data-step-down]').addEventListener('click', function () { if (row.nextElementSibling) { list.insertBefore(row.nextElementSibling, row); renumber(); } });
     var file = row.querySelector('[data-step-file]'), preview = row.querySelector('[data-step-preview]'), empty = row.querySelector('[data-step-empty]'), note = row.querySelector('[data-step-file-note]');
+    var cropButton = row.querySelector('[data-step-crop]'), original = null;
+    function use(picture, words) {                    /* put this picture in the step's box, ready to send */
+      if (window.DataTransfer) { var dt = new DataTransfer(); dt.items.add(picture); file.files = dt.files; }
+      var shown = file.files[0] || picture;
+      preview.src = URL.createObjectURL(shown); preview.hidden = false; if (empty) empty.hidden = true;
+      note.textContent = (words ? words + ', ' : '') + Math.round(shown.size / 1024) + ' KB, ready';
+      cropButton.hidden = false;
+    }
+    function crop(source, name) {                      /* the crop window; "Use it as it is" just makes it smaller */
+      if (!window.PHCrop) { if (source instanceof File) shrink(source, function (s) { use(s || source); }); return; }
+      window.PHCrop.open(source, name, function (cropped) {
+        if (cropped) { use(cropped, 'Cropped'); return; }
+        if (source instanceof File) shrink(source, function (smaller) { use(smaller || source); });
+      });
+    }
     file.addEventListener('change', function () {
       var picked = file.files[0];
       if (!picked) return;
-      shrink(picked, function (smaller) {
-        if (smaller && window.DataTransfer) { var dt = new DataTransfer(); dt.items.add(smaller); file.files = dt.files; }
-        var shown = file.files[0];
-        preview.src = URL.createObjectURL(shown); preview.hidden = false; if (empty) empty.hidden = true;
-        note.textContent = Math.round(shown.size / 1024) + ' KB, ready';
-      });
+      original = picked;
+      crop(picked, picked.name);
     });
+    cropButton.addEventListener('click', function () { crop(original || preview.src, original ? original.name : 'step-picture'); });
   }
   function shrink(picked, done) {                       /* a phone photo: at most 1600 px on its long side, as JPEG */
     if (!/^image\/(jpeg|png|webp)$/.test(picked.type) || picked.size < 400 * 1024) { done(null); return; }

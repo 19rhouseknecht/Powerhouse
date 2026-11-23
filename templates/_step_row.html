@@ -11,6 +11,7 @@
         {% if step and step.image_filename %}<img src="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" alt="Step picture" data-step-preview>{% else %}<img alt="" data-step-preview hidden><span data-step-empty>＋ Picture</span>{% endif %}
       </label>
       {% if step and step.image_filename %}<label class="step-picture-remove"><input type="checkbox" name="step_image_remove_{{ key }}" value="on"> Remove picture</label>{% endif %}
+      <button type="button" class="btn btn-ghost btn-small step-crop" data-step-crop {{ '' if step and step.image_filename else 'hidden' }}>✂ Crop</button>
       <small class="muted" data-step-file-note></small>
     </div>
   </div>
