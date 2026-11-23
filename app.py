@@ -61,7 +61,12 @@ class User(UserMixin, db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     role_id = db.Column(db.Integer, db.ForeignKey("role.id"), nullable=True, index=True)
     hourly_rate = db.Column(db.Float, nullable=False, default=0)
+    theme = db.Column(db.String(10), nullable=False, default="")             # '' = Modern (the default) · 'dark' = the classic dark look
     role = db.relationship("Role", backref="users")
+
+    @property
+    def look(self):
+        return "dark" if self.theme == "dark" else "modern"
 
     def set_password(self, raw_password):
         self.password_hash = generate_password_hash(raw_password)
@@ -1666,6 +1671,20 @@ def login():
         return render_template("login.html", username=username)
 
     return render_template("login.html", username="")
+
+
+@app.route("/account/theme", methods=["POST"])
+@login_required
+def set_theme():
+    """Your name -> Modern or Dark: kept on your account, so every page and device shows the look you picked."""
+    check_csrf()
+    look = request.form.get("theme", "")
+    current_user.theme = "dark" if look == "dark" else ""
+    db.session.commit()
+    if request.headers.get("X-Requested-With") == "fetch":
+        return jsonify({"ok": True, "theme": current_user.look})
+    back = request.form.get("next", "")
+    return redirect(back if back.startswith("/") and not back.startswith("//") else url_for("dashboard"))
 
 
 @app.route("/logout")
@@ -8633,6 +8652,7 @@ with app.app_context():
         add_column_if_missing(table, column, sql)
     add_column_if_missing("user", "role_id", "INTEGER")
     add_column_if_missing("user", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
+    add_column_if_missing("user", "theme", "VARCHAR(10) NOT NULL DEFAULT ''")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

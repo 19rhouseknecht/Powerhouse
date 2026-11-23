@@ -49,3 +49,10 @@ pretend Cooper site (`COOPER_HOME`, `COOPER_BROWSER_CHANNEL`, `COOPER_BROWSER_PA
 
 ## Never commit
 `instance/`, databases, uploads, keys or tokens (`.gitignore` covers the usual ones; look anyway).
+
+## Looks: Modern (default) and Dark (`base.html`, `static/css/`, `tools/build_modern_css.py`)
+Each person picks Modern or Dark from the menu on their name (`User.theme`: '' = Modern, 'dark'; `set_theme`). Dark is
+`style.css` alone, exactly the classic look. Modern = `style.css` + `modern-colors.css` (GENERATED: every color in style.css
+mapped to the light violet palette) + `modern.css` (hand-written: fonts, shapes, the sidebar, the navy hero), every rule
+scoped to `html[data-theme="modern"]`. **After any change to style.css run `python tools/build_modern_css.py`**
+(`tests/test_theme.py` fails while it is stale), then check the page in both looks; fix a Modern-only problem in modern.css.

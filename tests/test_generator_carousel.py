@@ -44,7 +44,9 @@ check("NEC 220.82 optional calculation" in page and "14RCA" in page and "20RCA" 
 est = owner.get("/generators/sizing/estimate", query_string=query).json
 check(est["total_va"] == expected["total_va"] and est["required_kw"] == expected["required_kw"] and est["model"] == expected["model"]["model"],
       "the load so far is the server's own calculation")
-check(page.count("<form") == 2 and 'id="gz-save-form"' in page and 'form="gz-save-form"' in page, "the save form is not inside the sizing form")
+sizing_end = page.index("</form>", page.index('id="sizing-form"'))
+check(page.index('id="gz-save-form"') > sizing_end and page[page.index('id="sizing-form"'):sizing_end].count("<form") == 0 and 'form="gz-save-form"' in page,
+      "the save form is not inside the sizing form")
 
 try:
     from playwright.sync_api import sync_playwright
