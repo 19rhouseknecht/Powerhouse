@@ -20,7 +20,10 @@
         <div class="needs-price-top"><div><strong>{{ row.name }}</strong><small>{{ row.tiers|join(', ') }}{% if row.quantity_text %} · qty {{ row.quantity_text }}{% endif %}</small></div>
           <label class="needs-price-save" title="Already covered: remove it from the quote"><input type="checkbox" name="skip_{{ loop.index0 }}" value="1" data-not-needed><span>Not needed</span></label></div>
         {% if row.candidates %}<div class="sheet-picks"><small class="sheet-picks-label">Likely matches on the Pricing Sheet:{% if is_admin() and row.candidates|selectattr('part')|list %} <button type="button" class="btn btn-ghost btn-small cooper-refresh" data-cooper-update="{{ row.candidates|selectattr('part')|map(attribute='id')|join(',') }}" title="Get these items' pictures and prices from Cooper">⟳ Update from Cooper</button><span class="cooper-refresh-said" data-cooper-said aria-live="polite"></span>{% endif %}</small>{% for c in row.candidates %}<span class="sheet-pick has-pic">{% if c.image %}<img class="pick-thumb" src="{{ c.image }}" alt="" loading="lazy">{% else %}<span class="pick-thumb pick-thumb-none" title="No picture yet{{ ': Update from Cooper brings it' if c.part }}">▢</span>{% endif %}<span><b>{{ c.name }}</b> · ${{ '{:,.2f}'.format(c.price) }}/{{ c.unit }}{% if c.labor %} + {{ '%g'|format(c.labor) }} hr{% endif %}{% if c.unconfirmed %} <em class="unconfirmed-tag">Unconfirmed</em>{% endif %}{% if c.part %} <small class="muted">Cooper #{{ c.part }}</small>{% endif %}</span><button class="btn btn-small btn-secondary" formaction="{{ url_for('use_sheet_item', quote_id=quote.id) }}" formnovalidate name="pick" value="{{ row_index }}:{{ c.id }}">Use this</button></span>{% endfor %}</div>{% endif %}
+        {% if row.candidates %}<div class="more-like" data-more-like data-index="{{ row_index }}" data-name="{{ row.name }}" data-shown="{{ row.candidates|map(attribute='id')|join(',') }}">
+          <button type="button" class="btn btn-ghost btn-small" data-more-go>▾ Show more like these</button><div class="sheet-picks more-like-results" data-more-results></div></div>{% endif %}
         <div class="sheet-search" data-sheet-search data-index="{{ row_index }}">
+          <small class="sheet-search-label">{{ 'Not it at all? Search the Pricing Sheet:' if row.candidates else 'Search the Pricing Sheet:' }}</small>
           <input type="search" placeholder="Find it on the Pricing Sheet (name, part number) or in Services…" aria-label="Find {{ row.name }} on the Pricing Sheet" data-find="{{ url_for('find_pricing_items') }}" value="">
           <div class="sheet-results" data-results></div>
         </div>
@@ -44,12 +47,37 @@
         .then(function (r) { return r.json().then(function (d) { return [r.ok, d]; }); })
         .then(function (res) {
           var d = res[1];
-          if (!res[0]) { said.textContent = d.error || 'Not sent.'; button.disabled = false; return; }
-          said.innerHTML = '';
-          said.append(document.createTextNode('Sent to the office listener: pictures arrive as they\'re found (reload to see them); prices come back for review. '));
-          var link = document.createElement('a'); link.href = d.preview_url; link.textContent = 'Review prices'; link.target = '_blank'; said.append(link);
+          if (!res[0] && !d.status_url) { said.textContent = d.error || 'Not sent.'; button.disabled = false; return; }
+          window.PHWatchCooper(d.status_url, said, d.preview_url);      // the page shows the new pictures by itself when it's done
         })
         .catch(function () { said.textContent = 'Not sent: check the connection.'; button.disabled = false; });
+    });
+  });
+  /* Show more like these: more Pricing Sheet items like the suggestions (right kind, another style), each with Use this */
+  document.querySelectorAll('[data-more-like]').forEach(function (box) {
+    var go = box.querySelector('[data-more-go]'), out = box.querySelector('[data-more-results]'), index = box.getAttribute('data-index'), page = 0;
+    var useUrl = {{ url_for('use_sheet_item', quote_id=quote.id)|tojson }};
+    go.addEventListener('click', function () {
+      go.disabled = true; go.textContent = 'Looking…';
+      var url = {{ url_for('more_sheet_matches')|tojson }} + '?name=' + encodeURIComponent(box.getAttribute('data-name')) +
+                '&shown=' + encodeURIComponent(box.getAttribute('data-shown')) + '&page=' + page;
+      fetch(url, {headers: {'Accept': 'application/json'}}).then(function (r) { return r.json(); }).then(function (data) {
+        (data.results || []).forEach(function (r) {
+          var row = document.createElement('span'); row.className = 'sheet-pick has-pic';
+          var pic = document.createElement(r.image ? 'img' : 'span'); pic.className = 'pick-thumb' + (r.image ? '' : ' pick-thumb-none');
+          if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.textContent = '▢'; }
+          var words = document.createElement('span'); var name = document.createElement('b'); name.textContent = r.name;
+          words.append(name, document.createTextNode(' · $' + Number(r.price).toFixed(2) + '/' + r.unit + (r.unconfirmed ? ' · Unconfirmed' : '')));
+          if (r.part) { var part = document.createElement('small'); part.className = 'muted'; part.textContent = ' Cooper #' + r.part; words.append(part); }
+          var use = document.createElement('button'); use.className = 'btn btn-small btn-secondary'; use.textContent = 'Use this';
+          use.name = 'pick'; use.value = index + ':' + r.id; use.formAction = useUrl; use.formNoValidate = true;
+          row.append(pic, words, use); out.append(row);
+          box.setAttribute('data-shown', box.getAttribute('data-shown') + ',' + r.id);
+        });
+        page += 1;
+        if (!data.more) { go.hidden = true; if (!(data.results || []).length && !out.children.length) { var none = document.createElement('small'); none.className = 'muted'; none.textContent = 'Nothing else like these: try the search below.'; out.append(none); } }
+        else { go.disabled = false; go.textContent = '▾ Show more like these'; }
+      }).catch(function () { go.disabled = false; go.textContent = '▾ Show more like these'; });
     });
   });
   document.querySelectorAll('[data-sheet-search]').forEach(function (box) {

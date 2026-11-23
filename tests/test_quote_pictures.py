@@ -16,6 +16,9 @@ with app.app_context():
     plain = m.PriceItem(name="RAB 6in LED wafer light", lookup_key="rab6", unit="ea", price=19, cooper_part_number="SLIM6")
     breaker = m.PriceItem(name="20A breaker", lookup_key="qo120", unit="ea", price=9, cooper_part_number="QO120")
     db.session.add_all([pictured, plain, breaker])
+    more = [m.PriceItem(name="Juno %din LED wafer light style %d" % (4 + i % 3, i), lookup_key="juno%d" % i, unit="ea", price=20 + i,
+                        cooper_part_number="JW%d" % i, image_path="img/logo-wordmark.png" if i % 2 else None) for i in range(12)]
+    db.session.add_all(more)
     person = m.Client(first_name="Kim", last_name="Doe"); db.session.add(person); db.session.flush()
     job = m.Job(client=person, title="Kitchen", job_number=880, address_line1="9 Oak Ln", city="Lititz", state="PA", postal_code="17543"); db.session.add(job)
     db.session.commit(); job_id = job.id; ids = {"pictured": pictured.id, "plain": plain.id, "breaker": breaker.id}
@@ -38,10 +41,22 @@ check("Cooper #SLIM6" in needs and "data-cooper-update" in needs and "Update all
 check("line-thumb-none" in page, "an option's line from the Pricing Sheet with no picture shows that it has none")
 found = owner.get("/quoting/pricing/find.json?q=wafer").json["results"]
 check(any(r["image"].endswith("logo-wordmark.png") for r in found) and any(r["image"] == "" for r in found if r["kind"].startswith("Pricing")), "the search gives each item's picture")
+first = owner.get("/quoting/pricing/more-like.json?name=6in+LED+wafer+light&shown=%d,%d" % (ids["pictured"], ids["plain"])).json
+check(len(first["results"]) == 8 and first["more"] and all(r["id"] not in (ids["pictured"], ids["plain"]) for r in first["results"]),
+      "Show more like these: 8 more like the suggestions, never one already shown")
+check(all("wafer" in r["name"].lower() for r in first["results"]) and any(r["image"] for r in first["results"]), "the same kind of thing, with pictures")
+shown = ",".join(str(i) for i in [ids["pictured"], ids["plain"]] + [r["id"] for r in first["results"]])
+second = owner.get("/quoting/pricing/more-like.json?name=6in+LED+wafer+light&shown=" + shown).json
+check(second["results"] and not set(r["id"] for r in second["results"]) & set(r["id"] for r in first["results"]), "and more again, without repeats")
 crew = sign_in(m, "crew", admin=False)
 with app.app_context():
     role = m.User.query.filter_by(username="crew").first().role; role.view_quoting = True; role.view_jobs = True; db.session.commit()
 check("data-cooper-update" not in crew.get(url).get_data(as_text=True), "Update from Cooper is for admins only")
+
+def db_has_pic(item_id):
+    with app.app_context():
+        return bool(db.session.get(m.PriceItem, item_id).image_path)
+
 
 try:
     from playwright.sync_api import sync_playwright
@@ -68,11 +83,31 @@ with sync_playwright() as pw:
     card.locator("[data-sheet-search] input").fill("wafer")
     card.locator("[data-results] .pick-thumb").first.wait_for(timeout=5000)
     check(card.locator("[data-results] img.pick-thumb").count() >= 1, "search results show pictures too")
+    check("Not it at all? Search the Pricing Sheet" in card.inner_text(), "the search is labeled for when the suggestions are wrong")
+    card.locator("[data-more-go]").click()
+    card.locator("[data-more-results] .sheet-pick").first.wait_for(timeout=5000)
+    check(card.locator("[data-more-results] .sheet-pick").count() == 8 and card.locator("[data-more-results] img.pick-thumb").count() >= 1, "Show more like these lists 8 more, with pictures")
+    page.evaluate("window.notReloaded = true")
+    wanted = sorted(int(v) for v in card.locator(".cooper-refresh").get_attribute("data-cooper-update").split(","))
     card.locator(".cooper-refresh").click()
-    card.locator("[data-cooper-said]", has_text="Sent to the office listener").wait_for(timeout=5000)
+    card.locator("[data-cooper-said]", has_text="the page updates by itself").wait_for(timeout=8000)
     with app.app_context():
         run = m.PriceSyncRun.query.order_by(m.PriceSyncRun.id.desc()).first()
-        check(run is not None and sorted(run.item_ids) == sorted([ids["pictured"], ids["plain"]]), "Update from Cooper sends just those items to the office listener")
+        check(run is not None and sorted(run.item_ids) == wanted and len(wanted) == 3, "Update from Cooper sends just the suggested items to the office listener")
+        unpictured = next(i for i in wanted if not db.session.get(m.PriceItem, i).image_path)
+        db.session.get(m.PriceItem, unpictured).image_path = "img/logo-wordmark.png"      # the listener saved its picture
+        run.status = "complete"; db.session.commit()
+    page.wait_for_function("window.notReloaded !== true", timeout=15000)
+    page.wait_for_load_state()
+    before_pics = sum(1 for i in wanted if i != unpictured and db_has_pic(i))
+    check(page.locator(".needs-price-card").first.locator(".sheet-picks > .sheet-pick img.pick-thumb").count() == before_pics + 1, "when it's done the page shows the new picture by itself, no refresh")
+    card = page.locator(".needs-price-card").first
+    card.locator("[data-more-go]").click()
+    card.locator("[data-more-results] .sheet-pick").first.wait_for(timeout=5000)
+    card.locator("[data-more-results] .sheet-pick button", has_text="Use this").first.click()
+    page.wait_for_load_state()
+    with app.app_context():
+        check(all(not line.is_missing for o in m.Quote.query.filter_by(job_id=job_id).first().options for line in o.lines), "Use this on a 'more' item prices the line")
     check(not errors, "no script errors" + ("" if not errors else ": " + "; ".join(errors)))
     browser.close()
 done()

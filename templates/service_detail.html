@@ -128,9 +128,8 @@
       .then(function (r) { return r.json().then(function (d) { return [r.ok, d]; }); })
       .then(function (res) {
         var d = res[1];
-        if (!res[0]) { said.textContent = d.error || 'Not sent.'; count(); return; }
-        said.textContent = 'Sent to the office listener: pictures arrive as they are found (reload to see them); prices come back for review. ';
-        var link = document.createElement('a'); link.href = d.preview_url; link.textContent = 'Review prices'; link.target = '_blank'; said.append(link);
+        if (!res[0] && !d.status_url) { said.textContent = d.error || 'Not sent.'; count(); return; }
+        window.PHWatchCooper(d.status_url, said, d.preview_url);
       })
       .catch(function () { said.textContent = 'Not sent: check the connection.'; count(); });
   });

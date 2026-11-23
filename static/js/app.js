@@ -266,3 +266,28 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 })();
+
+/* After "Update from Cooper": follow the office listener's progress and, when it's done, reload in place (same scroll)
+   so the new pictures show without a manual refresh. Prices still come back for review. */
+window.PHWatchCooper = function (statusUrl, said, reviewUrl) {
+  var started = Date.now();
+  function line(text) {
+    said.textContent = text + " ";
+    if (reviewUrl) { var a = document.createElement("a"); a.href = reviewUrl; a.target = "_blank"; a.textContent = "Review prices"; said.append(a); }
+  }
+  (function check() {
+    fetch(statusUrl, {headers: {"Accept": "application/json"}}).then(function (r) { return r.json(); }).then(function (d) {
+      if (d.status === "complete" || d.status === "failed" || d.status === "cancelled") {
+        if (d.status !== "complete") { line("Cooper update " + d.status + (d.error ? ": " + d.error : ".")); return; }
+        line("Done: showing the new pictures…");
+        try { sessionStorage.setItem("keep-scroll", JSON.stringify({path: location.pathname, y: window.scrollY})); } catch (e) {}
+        setTimeout(function () { location.reload(); }, 600);
+        return;
+      }
+      var mins = Math.floor((Date.now() - started) / 60000);
+      line((d.status === "queued" ? "Waiting for the office listener" : "Getting pictures and prices from Cooper") +
+           (d.total ? " (" + (d.current || 0) + " of " + d.total + ")" : "") + (mins ? ", " + mins + " min" : "") + "… the page updates by itself.");
+      setTimeout(check, 4000);
+    }).catch(function () { setTimeout(check, 8000); });
+  })();
+};
