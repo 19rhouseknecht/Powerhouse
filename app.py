@@ -41,7 +41,7 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-in-production")
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(basedir, "instance", "app.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["MAX_CONTENT_LENGTH"] = 12 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024        # a service with step pictures (the page shrinks phone photos first)
 
 os.makedirs(os.path.join(basedir, "instance"), exist_ok=True)
 
@@ -110,8 +110,10 @@ class Service(db.Model):
     estimated_labor_hours = db.Column(db.Float, nullable=False, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    has_steps = db.Column(db.Boolean, nullable=False, default=False)          # "This service has step-by-step instructions"
     items = db.relationship("ServiceItem", backref="service", cascade="all, delete-orphan", order_by="ServiceItem.position")
     tools = db.relationship("ServiceTool", backref="service", cascade="all, delete-orphan", order_by="ServiceTool.position")
+    steps = db.relationship("ServiceStep", backref="service", cascade="all, delete-orphan", order_by="ServiceStep.position")
 
     @property
     def example_total(self):
@@ -132,6 +134,16 @@ class Service(db.Model):
     @property
     def labor_total(self):
         return (self.estimated_labor_hours or 0) * get_labor_rate()
+
+
+class ServiceStep(db.Model):
+    """One step of a service's step-by-step instructions: a title, what to do, and a picture."""
+    id = db.Column(db.Integer, primary_key=True)
+    service_id = db.Column(db.Integer, db.ForeignKey("service.id"), nullable=False, index=True)
+    position = db.Column(db.Integer, nullable=False, default=0)
+    title = db.Column(db.String(200), nullable=False, default="")
+    body = db.Column(db.Text, nullable=False, default="")
+    image_filename = db.Column(db.String(255))
 
 
 class PriceItem(db.Model):
@@ -6964,6 +6976,48 @@ def save_price_item_from_form(item=None):
     return None, item
 
 
+STEP_PICTURES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+STEP_LIMIT = 60
+
+
+def save_service_steps(service):
+    """The step builder: rows in the order they are on the page (step_key[] names each row's picture box). A row with no
+    title, words or picture is left out; a step removed on the page is removed; pictures are never deleted from disk.
+    Steps are kept when the switch is turned off (they just aren't shown), so turning it back on brings them back."""
+    service.has_steps = request.form.get("has_steps") == "on"
+    keys = request.form.getlist("step_key[]")
+    if not keys and "steps_sent" not in request.form:
+        return None                                    # a form without the builder (an older page) leaves the steps alone
+    ids, titles, bodies = request.form.getlist("step_id[]"), request.form.getlist("step_title[]"), request.form.getlist("step_body[]")
+    existing = {str(step.id): step for step in service.steps}
+    upload_dir = os.path.join(app.static_folder, "uploads", "services")
+    kept = []
+    for index, key in enumerate(keys[:STEP_LIMIT]):
+        key = re.sub(r"[^0-9a-z_-]", "", key.lower())[:40]
+        step = existing.get(ids[index] if index < len(ids) else "") or ServiceStep()
+        title = (titles[index] if index < len(titles) else "").strip()[:200]
+        body = (bodies[index] if index < len(bodies) else "").strip()[:8000]
+        picture = request.files.get(f"step_image_{key}")
+        if request.form.get(f"step_image_remove_{key}") == "on":
+            step.image_filename = None
+        if picture and picture.filename:
+            extension = os.path.splitext(picture.filename)[1].lower()
+            if extension not in STEP_PICTURES:
+                return f"Step {len(kept) + 1}: the picture must be a PNG, JPG, WEBP or GIF (not {picture.filename})."
+            os.makedirs(upload_dir, exist_ok=True)
+            stored = f"{secrets.token_hex(8)}-step-{secure_filename(picture.filename) or 'picture' + extension}"
+            picture.save(os.path.join(upload_dir, stored))
+            step.image_filename = stored
+        if not (title or body or step.image_filename):
+            continue
+        step.title, step.body, step.position = title, body, len(kept)
+        kept.append(step)
+    service.steps[:] = kept
+    if service.has_steps and not kept:
+        return "Add at least one step, or turn off step-by-step instructions."
+    return None
+
+
 def populate_service_from_form(service):
     name = request.form.get("name", "").strip()
     if not name:
@@ -6991,6 +7045,10 @@ def populate_service_from_form(service):
         unique_name = f"{secrets.token_hex(8)}-{safe_name}"
         drawing.save(os.path.join(upload_dir, unique_name))
         service.drawing_filename = unique_name
+
+    error = save_service_steps(service)
+    if error:
+        return error
 
     service.items.clear()
     item_names = request.form.getlist("item_name[]")
@@ -8653,6 +8711,7 @@ with app.app_context():
     add_column_if_missing("user", "role_id", "INTEGER")
     add_column_if_missing("user", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("user", "theme", "VARCHAR(10) NOT NULL DEFAULT ''")
+    add_column_if_missing("service", "has_steps", "BOOLEAN NOT NULL DEFAULT 0")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

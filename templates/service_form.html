@@ -14,9 +14,81 @@
     {% if service and service.tools %}{% for tool in service.tools %}{% include '_tool_row.html' %}{% endfor %}{% else %}{% include '_tool_row.html' %}{% endif %}
   </div></div></section>
   <section class="panel form-section"><div class="form-section-number">4</div><div class="form-section-content"><h2>Service drawing</h2><p class="muted">Upload the field example for this quantity. PNG, JPG, WEBP, GIF, or PDF; up to 12 MB.</p><label class="upload-box"><input type="file" name="drawing" accept="image/png,image/jpeg,image/webp,image/gif,application/pdf"><span>▧</span><strong>{{ 'Replace current drawing' if service and service.drawing_filename else 'Choose a drawing' }}</strong><small data-file-name>{{ service.drawing_filename if service and service.drawing_filename else 'or drag a file here' }}</small></label></div></section>
+  {% set sent_titles = form.getlist('step_title[]') if form.getlist is defined and not service else [] %}{% set sent_bodies = form.getlist('step_body[]') if form.getlist is defined else [] %}
+  {% set steps_on = (form.get('has_steps') == 'on') if form.getlist is defined and form.get('name') is not none else (service.has_steps if service else false) %}
+  <section class="panel form-section steps-section"><div class="form-section-number">5</div><div class="form-section-content">
+    <input type="hidden" name="steps_sent" value="1">
+    <label class="steps-switch"><input type="checkbox" name="has_steps" value="on" data-steps-switch {{ 'checked' if steps_on }}><span><strong>This service has step-by-step instructions</strong><small>Build it as numbered steps, each with its own picture, for the crew to follow. Everything above stays.</small></span></label>
+    <div class="steps-builder" data-steps-builder {{ '' if steps_on else 'hidden' }}>
+      <div class="steps-list" data-steps-list>
+        {% if sent_titles %}{% for title in sent_titles %}{% with key='s' ~ loop.index, number=loop.index, step=none, body=sent_bodies[loop.index0] if loop.index0 < sent_bodies|length else '' %}{% include '_step_row.html' %}{% endwith %}{% endfor %}
+        {% elif service and service.steps %}{% for step in service.steps %}{% with key='e' ~ step.id, number=loop.index, title=step.title, body=step.body %}{% include '_step_row.html' %}{% endwith %}{% endfor %}
+        {% else %}{% with key='n1', number=1, step=none, title='', body='' %}{% include '_step_row.html' %}{% endwith %}{% endif %}
+      </div>
+      <button class="btn btn-secondary" type="button" data-step-add>＋ Add a step</button>
+      <p class="muted steps-note">Pictures from a phone are made smaller before they're sent, so a long list of steps still saves.</p>
+    </div>
+  </div></section>
   <div class="form-actions"><a class="btn btn-secondary" href="{{ url_for('service_detail', service_id=service.id) if service else url_for('services') }}">Cancel</a><button class="btn btn-primary" type="submit">{{ 'Save changes' if service else 'Create service' }}</button></div>
 </form>
+<template id="step-row-template">{% with key='KEY', number='N', step=none, title='', body='' %}{% include '_step_row.html' %}{% endwith %}</template>
 <template id="item-row-template">{% include '_item_row.html' %}</template><template id="tool-row-template">{% include '_tool_row.html' %}</template>
 <script id="pricing-catalog" type="application/json">{{ pricing_items|map_price_items|tojson }}</script>
 <script id="tool-catalog" type="application/json">{{ tool_catalog|map_tools|tojson }}</script>
+<script>
+(function () {           /* step-by-step instructions: the switch, add / remove / move steps, and step pictures made smaller before sending */
+  var form = document.querySelector('.service-form'), toggle = document.querySelector('[data-steps-switch]'), builder = document.querySelector('[data-steps-builder]');
+  if (!form || !toggle) return;
+  var list = builder.querySelector('[data-steps-list]'), template = document.getElementById('step-row-template'), made = 0;
+  function renumber() { list.querySelectorAll('[data-step-row]').forEach(function (row, i) { row.querySelector('[data-step-number]').textContent = i + 1; }); }
+  function wire(row) {
+    row.querySelector('[data-step-remove]').addEventListener('click', function () {
+      if (list.children.length === 1) { row.querySelectorAll('input[name="step_title[]"], textarea').forEach(function (f) { f.value = ''; }); return; }
+      row.remove(); renumber();
+    });
+    row.querySelector('[data-step-up]').addEventListener('click', function () { if (row.previousElementSibling) { list.insertBefore(row, row.previousElementSibling); renumber(); } });
+    row.querySelector('[data-step-down]').addEventListener('click', function () { if (row.nextElementSibling) { list.insertBefore(row.nextElementSibling, row); renumber(); } });
+    var file = row.querySelector('[data-step-file]'), preview = row.querySelector('[data-step-preview]'), empty = row.querySelector('[data-step-empty]'), note = row.querySelector('[data-step-file-note]');
+    file.addEventListener('change', function () {
+      var picked = file.files[0];
+      if (!picked) return;
+      shrink(picked, function (smaller) {
+        if (smaller && window.DataTransfer) { var dt = new DataTransfer(); dt.items.add(smaller); file.files = dt.files; }
+        var shown = file.files[0];
+        preview.src = URL.createObjectURL(shown); preview.hidden = false; if (empty) empty.hidden = true;
+        note.textContent = Math.round(shown.size / 1024) + ' KB, ready';
+      });
+    });
+  }
+  function shrink(picked, done) {                       /* a phone photo: at most 1600 px on its long side, as JPEG */
+    if (!/^image\/(jpeg|png|webp)$/.test(picked.type) || picked.size < 400 * 1024) { done(null); return; }
+    var img = new Image();
+    img.onload = function () {
+      var scale = Math.min(1, 1600 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob(function (blob) {
+        if (!blob || blob.size >= picked.size) { done(null); return; }
+        done(new File([blob], picked.name.replace(/\.[^.]+$/, '') + '.jpg', {type: 'image/jpeg'}));
+      }, 'image/jpeg', 0.85);
+    };
+    img.onerror = function () { done(null); };
+    img.src = URL.createObjectURL(picked);
+  }
+  list.querySelectorAll('[data-step-row]').forEach(wire);
+  builder.querySelector('[data-step-add]').addEventListener('click', function () {
+    made += 1;
+    var holder = document.createElement('div');
+    holder.innerHTML = template.innerHTML.replace(/KEY/g, 'a' + Date.now().toString(36) + made);
+    var row = holder.firstElementChild.matches('[data-step-row]') ? holder.firstElementChild : holder.querySelector('[data-step-row]');
+    list.appendChild(row); wire(row); renumber();
+    row.querySelector('input[name="step_title[]"]').focus();
+  });
+  toggle.addEventListener('change', function () {
+    builder.hidden = !toggle.checked;
+    if (toggle.checked) { var first = list.querySelector('input[name="step_title[]"]'); if (first && !first.value) first.focus(); }
+  });
+  renumber();
+})();
+</script>
 {% endblock %}
