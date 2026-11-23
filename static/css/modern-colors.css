@@ -467,3 +467,6 @@
 :where(html[data-theme="modern"]) .analytics-profit.is-loss dd { color: #830101; }
 :where(html[data-theme="modern"]) .role-cannot { color: #830101; }
 :where(html[data-theme="modern"]) .jobber-updated { border-color: rgba(54, 225, 117, .45); }
+:where(html[data-theme="modern"]) .quick-fab { color: #f5f4f9; box-shadow: 0 10px 28px rgba(30, 22, 70, 0.158); }
+:where(html[data-theme="modern"]) .quick-menu { box-shadow: 0 16px 40px rgba(30, 22, 70, 0.158); }
+:where(html[data-theme="modern"]) .quick-read { color: #444059; }

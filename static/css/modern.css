@@ -162,3 +162,7 @@ html[data-theme="modern"] .crop-box::before, html[data-theme="modern"] .crop-box
 html[data-theme="modern"] .crop-box i { background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
 html[data-theme="modern"] .crop-shape[aria-checked="true"] { color: #fff; }
 html[data-theme="modern"] .step-progress-seg.is-done { background: #b9a8ff; }
+
+/* the round + : violet with a white plus */
+html[data-theme="modern"] .quick-fab { color: #fff; box-shadow: 0 12px 30px -8px rgba(106, 76, 245, .7); }
+html[data-theme="modern"] .quick-menu { box-shadow: 0 18px 50px -12px rgba(23, 16, 60, .3); }

@@ -8,8 +8,8 @@
     <p class="muted">{{ admins|length }} admin{{ 's' if admins|length != 1 }}: {{ admins|map(attribute='username')|join(', ') or 'none' }}</p></section>
   <section class="panel section-panel role-card"><span class="eyebrow">Role</span><h2>Employee</h2>
     <p>Does the work, without the company's numbers or settings.</p>
-    <ul class="role-can"><li>Quoting, the Pricing Sheet, Services, Clients, Jobs, the Schedule</li><li>Their own time clock and timesheet, expenses, tasks, training, sales, generators</li></ul>
-    <ul class="role-cannot"><li>No Settings (users, pay rates, AI agents, Cooper, Jobber, releases)</li><li>No job analytics, Finance, or anyone else's timesheet or pay</li><li>No labor rate, Labor calculator, or Cooper price updates</li></ul>
+    <ul class="role-can"><li>Quoting, the Pricing Sheet, Services, Clients, Jobs, the Schedule</li><li>Their own time clock and timesheet, tasks, training, sales, generators</li><li>Upload expenses with the round + (they can't see the expense list)</li></ul>
+    <ul class="role-cannot"><li>No Settings (users, pay rates, AI agents, Cooper, Jobber, releases)</li><li>No job analytics, Finance, Expenses, or anyone else's timesheet or pay</li><li>No labor rate, Labor calculator, or Cooper price updates</li></ul>
     <p class="muted">{{ employees|length }} employee{{ 's' if employees|length != 1 }}: {{ employees|map(attribute='username')|join(', ') or 'none' }}</p></section>
 </div>
 {% endblock %}
