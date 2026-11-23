@@ -1580,3 +1580,42 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .schedule-chip small { color:var(--muted); font-size:11px; }
 .schedule-chip:hover { border-color:var(--accent); }
 .schedule-chip.is-picked { border-color:var(--accent); box-shadow:0 0 0 2px rgba(217,119,6,.3); }
+
+/* A service's drawing: marks where each part is (click a part in the materials list), and the marking window */
+.drawing-stage { position:relative; margin-top:16px; line-height:0; }
+.drawing-stage img { width:100%; height:auto; display:block; border-radius:9px; background:#fff; user-select:none; }
+.drawing-image-staged { max-height:none; margin-top:0; object-fit:fill; }
+.drawing-marks { position:absolute; inset:0; pointer-events:none; }
+.drawing-mark { position:absolute; width:22px; height:22px; margin:-11px 0 0 -11px; border-radius:50%; border:3px solid var(--mark, #ef4444); background:rgba(255,255,255,.35); box-shadow:0 0 0 2px rgba(0,0,0,.35); padding:0; }
+.drawing-mark.is-pulsing { animation:mark-pulse 1.4s ease-out infinite; }
+@keyframes mark-pulse { 0% { box-shadow:0 0 0 0 var(--mark, #ef4444), 0 0 0 2px rgba(0,0,0,.35); } 70% { box-shadow:0 0 0 12px rgba(0,0,0,0), 0 0 0 2px rgba(0,0,0,.35); } 100% { box-shadow:0 0 0 0 rgba(0,0,0,0), 0 0 0 2px rgba(0,0,0,.35); } }
+@media (prefers-reduced-motion: reduce) { .drawing-mark.is-pulsing { animation:none; } }
+.drawing-hint { margin:10px 0 0; font-size:12px; line-height:1.5; }
+.drawing-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.spot-row { cursor:pointer; }
+.spot-row:hover td, .spot-row:focus-visible td { background:rgba(255,255,255,.03); }
+.spot-row.is-active td { background:rgba(217,119,6,.12); }
+.spot-row:focus-visible { outline:2px solid var(--accent-hover); outline-offset:-2px; }
+.spot-count { display:inline-block; margin-left:6px; padding:1px 7px; border-radius:99px; background:rgba(217,119,6,.16); color:#fdba74; font-size:10px; font-weight:700; white-space:nowrap; }
+.marker-dialog { width:min(1180px, calc(100vw - 24px)); }
+.marker-body { display:grid; grid-template-columns:260px minmax(0, 1fr); gap:14px; padding:14px 16px; max-height:calc(100vh - 170px); }
+.marker-parts { overflow:auto; display:grid; gap:6px; align-content:start; }
+.marker-parts p { margin:0 0 4px; font-size:12px; line-height:1.5; }
+.marker-part { display:flex; align-items:center; gap:8px; width:100%; padding:7px 9px; border:1px solid var(--border); border-radius:9px; background:var(--panel-2); color:var(--text); font:inherit; font-size:12px; text-align:left; cursor:pointer; }
+.marker-part i { flex:none; width:12px; height:12px; border-radius:50%; }
+.marker-part span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.marker-part em { font-style:normal; color:var(--muted); font-size:11px; }
+.marker-part[aria-checked="true"] { border-color:var(--accent); box-shadow:0 0 0 2px rgba(217,119,6,.3); }
+.marker-stage-wrap { overflow:auto; min-height:0; }
+.marker-stage { margin:0; cursor:crosshair; }
+.marker-stage .drawing-marks { pointer-events:none; }
+.marker-stage .drawing-mark { pointer-events:auto; cursor:pointer; }
+.marker-stage .drawing-mark.is-dim { opacity:.35; }
+.marker-foot { display:flex; align-items:center; gap:8px; justify-content:flex-end; padding:12px 16px; border-top:1px solid var(--border); }
+.marker-foot small { margin-right:auto; }
+@media (max-width:760px) { .marker-body { grid-template-columns:1fr; max-height:none; } .marker-parts { max-height:180px; } }
+.marker-dialog[open] { display:flex; flex-direction:column; max-height:calc(100vh - 24px); overflow:hidden; }
+.marker-dialog .marker-body { flex:1 1 auto; min-height:0; max-height:none; overflow:hidden; }
+.marker-dialog .marker-stage-wrap { max-height:calc(100vh - 190px); overscroll-behavior:contain; }
+.marker-dialog .marker-foot { flex:none; }
+@media (max-width:760px) { .marker-dialog .marker-body { overflow:auto; } .marker-dialog .marker-stage-wrap { max-height:none; } }

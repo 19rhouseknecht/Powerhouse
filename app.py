@@ -112,6 +112,7 @@ class Service(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     has_steps = db.Column(db.Boolean, nullable=False, default=False)          # "This service has step-by-step instructions"
+    drawing_spots_json = db.Column(db.Text, nullable=False, default="")       # where each part is on the drawing: {spot_key: [{x, y}]} in % of the picture
     items = db.relationship("ServiceItem", backref=db.backref("service", lazy="joined"), cascade="all, delete-orphan", order_by="ServiceItem.position", lazy="selectin")
     tools = db.relationship("ServiceTool", backref="service", cascade="all, delete-orphan", order_by="ServiceTool.position", lazy="selectin")
     steps = db.relationship("ServiceStep", backref="service", cascade="all, delete-orphan", order_by="ServiceStep.position")
@@ -119,6 +120,18 @@ class Service(db.Model):
     @property
     def example_total(self):
         return self.material_total + self.labor_total
+
+    @property
+    def drawing_spots(self):
+        try:
+            value = json.loads(self.drawing_spots_json or "{}")
+        except ValueError:
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def drawing_is_picture(self):
+        return bool(self.drawing_filename) and not self.drawing_filename.lower().endswith(".pdf")
 
     @property
     def material_total(self):
@@ -272,6 +285,11 @@ class ServiceItem(db.Model):
     notes = db.Column(db.String(255), nullable=False, default="")
     position = db.Column(db.Integer, nullable=False, default=0)
     pricing_link = db.relationship("ServiceItemPricingLink", backref=db.backref("service_item", lazy="joined"), uselist=False, cascade="all, delete-orphan", lazy="selectin")
+
+    @property
+    def spot_key(self):
+        """What its marks on the drawing are kept under: its Pricing Sheet item, else its name (so they survive an edit)."""
+        return f"p{self.pricing_link.price_item_id}" if self.pricing_link else "n" + (canonical_item_name(self.name) or str(self.id))[:80]
 
     @property
     def catalog_item(self):
@@ -1624,7 +1642,7 @@ def enforce_role_permissions():
         abort(403)
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
-        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
+        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
@@ -2269,6 +2287,48 @@ def build_service_order_checklist(service):
 def service_order_checklist(service_id):
     service = db.get_or_404(Service, service_id)
     return render_template("service_order_checklist.html", service=service, checklist_groups=build_service_order_checklist(service))
+
+
+SPOTS_PER_PART = 200
+
+
+def clean_drawing_spots(raw, keys):
+    """{key: [{x, y}]} for this service's parts only, each mark inside the picture (% of its width and height)."""
+    clean = {}
+    for key, marks in (raw or {}).items() if isinstance(raw, dict) else []:
+        if key not in keys or not isinstance(marks, list):
+            continue
+        kept = []
+        for mark in marks[:SPOTS_PER_PART]:
+            try:
+                x, y = float(mark["x"]), float(mark["y"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 0 <= x <= 100 and 0 <= y <= 100:
+                kept.append({"x": round(x, 2), "y": round(y, 2)})
+        if kept:
+            clean[key] = kept
+    return clean
+
+
+@app.route("/quoting/services/<int:service_id>/drawing-spots", methods=["POST"])
+@login_required
+def save_drawing_spots(service_id):
+    """Mark parts on the drawing: where each of the service's parts is on its picture."""
+    check_csrf()
+    service = db.get_or_404(Service, service_id)
+    if not service.drawing_is_picture:
+        return jsonify({"ok": False, "error": "This service's drawing isn't a picture, so parts can't be marked on it."}), 400
+    try:
+        raw = json.loads(request.form.get("spots", "{}"))
+    except ValueError:
+        return jsonify({"ok": False, "error": "The marks couldn't be read. Reload the page and try again."}), 400
+    keys = {item.spot_key for item in service.items}
+    kept = {key: marks for key, marks in service.drawing_spots.items() if key not in keys}       # marks of parts no longer listed stay, unseen
+    kept.update(clean_drawing_spots(raw, keys))
+    service.drawing_spots_json = json.dumps(kept)
+    db.session.commit()
+    return jsonify({"ok": True, "spots": {key: marks for key, marks in kept.items() if key in keys}})
 
 
 @app.route("/quoting/services/<int:service_id>/edit", methods=["GET", "POST"])
@@ -8800,6 +8860,7 @@ with app.app_context():
     add_column_if_missing("user", "theme", "VARCHAR(10) NOT NULL DEFAULT ''")
     add_column_if_missing("service", "has_steps", "BOOLEAN NOT NULL DEFAULT 0")
     add_column_if_missing("job", "work_start_time", "VARCHAR(5) NOT NULL DEFAULT ''")
+    add_column_if_missing("service", "drawing_spots_json", "TEXT NOT NULL DEFAULT ''")
     add_column_if_missing("job_visit", "hourly_rate", "FLOAT NOT NULL DEFAULT 0")
     add_column_if_missing("job", "job_number", "INTEGER")
     add_column_if_missing("job", "contract_amount", "FLOAT NOT NULL DEFAULT 0")

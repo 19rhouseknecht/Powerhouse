@@ -170,6 +170,9 @@ real_reload = rel.reload_web_app
 rel.reload_web_app = lambda path: (lock_at_reload.append(os.path.exists(appmod._release_lock.path)), (True, "Reloaded (test)."))[1]
 sha_lock = make_build("Lock check", {"templates/lock.html": b"x"})
 auto()
+waited = time.time()
+while not lock_at_reload and time.time() - waited < 10:      # the deploy is marked done just before it reloads: wait for the reload
+    time.sleep(0.05)
 check(live()[0] == sha_lock and lock_at_reload == [False], "the web app is reloaded only after the deploy lock is let go")
 with open(appmod._release_lock.path, "w") as handle:
     handle.write("left by a stopped worker")
