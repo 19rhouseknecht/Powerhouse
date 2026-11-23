@@ -21,7 +21,7 @@
 </section>{% endif %}
 <section class="panel material-list" id="materials">
   <div class="section-title"><div><span class="eyebrow">What will be ordered</span><h2>{{ order.items|length }} material{{ 's' if order.items|length != 1 }} · <span data-order-total>${{ '{:,.2f}'.format(order.material_total) }}</span></h2><p class="muted">Change a quantity and it saves. Remove takes an item off at once. Add more below.</p></div></div>
-  {% if order.items %}<form method="POST" action="{{ url_for('update_job_materials_from_cooper', job_id=job.id) }}" id="cooper-update-form" class="material-tick-bar" data-tick-bar>
+  {% if order.items and is_admin() %}<form method="POST" action="{{ url_for('update_job_materials_from_cooper', job_id=job.id) }}" id="cooper-update-form" class="material-tick-bar" data-tick-bar>
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <label class="material-tick-all"><input type="checkbox" data-tick-all> Select all</label>
     <button class="btn btn-small btn-secondary" data-tick-go disabled {{ 'title="The office listener is busy"' if update_run and update_run.status in ('queued', 'running') }}>Update from Cooper</button>
@@ -29,7 +29,7 @@
   </form>{% endif %}
   <input type="hidden" id="material-csrf" value="{{ csrf_token() }}">
   {% for item in order.items %}<article class="material-row {{ 'material-in-cart' if item.id in cart_line_ids else 'material-not-cart' }}" id="material-{{ item.id }}">
-    <label class="material-tick"><input type="checkbox" name="order_item_id" value="{{ item.id }}" form="cooper-update-form" data-tick aria-label="Tick {{ item.name }}"{% if not (item.price_item and item.price_item.cooper_part_number) %} data-no-part{% endif %}></label>
+    {% if is_admin() %}<label class="material-tick"><input type="checkbox" name="order_item_id" value="{{ item.id }}" form="cooper-update-form" data-tick aria-label="Tick {{ item.name }}"{% if not (item.price_item and item.price_item.cooper_part_number) %} data-no-part{% endif %}></label>{% else %}<span class="material-tick" aria-hidden="true"></span>{% endif %}
     <div class="material-thumb">{% if item.price_item and item.price_item.image_path %}<img src="{{ url_for('static', filename=item.price_item.image_path) }}" alt="" loading="lazy">{% else %}<span aria-hidden="true">▢</span>{% endif %}</div>
     <div class="material-what">
       <strong>{{ item.name }}</strong>{% if item.price_item and item.price_item.category == 'Unconfirmed' %} <span class="price-source src-unconfirmed">Unconfirmed</span>{% endif %}

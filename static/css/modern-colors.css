@@ -459,3 +459,10 @@
 :where(html[data-theme="modern"]) .step-slide-picture { background: #fcfcfd; }
 :where(html[data-theme="modern"]) .step-progress-seg.is-done { background: rgba(108, 78, 255, .55); }
 :where(html[data-theme="modern"]) .jobber-sched-counts small.warn { color: #9b7700; }
+:where(html[data-theme="modern"]) .is-profit { color: #0d7834; }
+:where(html[data-theme="modern"]) .is-loss { color: #830101; }
+:where(html[data-theme="modern"]) .analytics-profit { border-color: rgba(54, 225, 117, .5) !important; }
+:where(html[data-theme="modern"]) .analytics-profit.is-loss { border-color: rgba(167, 10, 10, .5) !important; }
+:where(html[data-theme="modern"]) .analytics-profit dd { color: #0d7834; }
+:where(html[data-theme="modern"]) .analytics-profit.is-loss dd { color: #830101; }
+:where(html[data-theme="modern"]) .role-cannot { color: #830101; }

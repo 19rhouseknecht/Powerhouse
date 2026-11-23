@@ -1702,7 +1702,10 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import", "download_cooper_listener"}
+    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import",
+                       "job_analytics", "cooper_account", "test_cooper_account", "check_cooper_prices", "cancel_cooper_price_sync", "cooper_sync_preview",
+                       "apply_cooper_prices", "start_cooper_catalog", "unconfirmed_switch", "update_job_materials_from_cooper",
+                       "labor_calculator", "upload_labor_reference", "apply_labor_proposals", "ask_mike", "update_labor_rate", "download_cooper_listener"}
     if request.endpoint in admin_endpoints and not (current_user.role and current_user.role.is_admin):
         abort(403)
     permission_by_endpoint = {
@@ -4530,6 +4533,82 @@ def job_schedule_options():
                     "work_days": days, "estimated": bool(rules["work_days"] and typed_days <= 1)})
 
 
+def job_money(job):
+    """A job's money for its analytics: revenue, materials, labor, other job expenses and profit, and where each came from."""
+    option = job.material_order.quote_option if job.material_order and job.material_order.quote_option else None
+    if job.contract_amount:
+        revenue, revenue_from = job.contract_amount, "the job's final amount"
+    elif option is not None:
+        revenue, revenue_from = option.total, f"the accepted quote option ({option.tier})"
+    elif job.jobber_raw and (job.jobber.get("job") or {}).get("total"):
+        revenue, revenue_from = float((job.jobber.get("job") or {}).get("total") or 0), "Jobber's job total"
+    else:
+        revenue, revenue_from = 0.0, ""
+    receipts = sum(e.total for e in job.expenses if e.category == "Materials direct job")
+    if job.material_cost or receipts:
+        materials = (job.material_cost or 0) + receipts
+        materials_from = "material cost on the job" + (" + material receipts" if receipts else "")
+    elif job.material_order:
+        materials, materials_from = job.material_order.material_total, "the job's material order (estimated)"
+    else:
+        materials, materials_from = 0.0, ""
+    other = sum(e.total for e in job.expenses if e.category != "Materials direct job")
+    people = {}
+    for visit in job.visits:
+        if not visit.ended_at:
+            continue
+        user = visit.clock_session.user
+        rate = visit.hourly_rate or (user.hourly_rate if user else 0) or 0
+        hours = visit.total_seconds / 3600
+        row = people.setdefault(user.username if user else "Someone", {"hours": 0.0, "cost": 0.0, "rate": rate})
+        row["hours"] += hours; row["cost"] += hours * rate
+    labor = sum(row["cost"] for row in people.values())
+    profit = revenue - materials - labor - other
+    return {"revenue": revenue, "revenue_from": revenue_from, "materials": materials, "materials_from": materials_from, "labor": labor,
+            "other": other, "profit": profit, "people": sorted(people.items(), key=lambda kv: -kv[1]["hours"]),
+            "hours": sum(row["hours"] for row in people.values()), "margin": (profit / revenue * 100) if revenue else None}
+
+
+def donut_svg(slices, size=220, hole=0.58):
+    """A pie (donut) chart as SVG paths: slices = [(label, value, color)], values > 0."""
+    import math
+    total = sum(v for _, v, _ in slices if v > 0)
+    if total <= 0:
+        return ""
+    cx = cy = size / 2
+    r, r2 = size / 2 - 2, (size / 2 - 2) * hole
+    parts, angle = [], -math.pi / 2
+    for label, value, color in slices:
+        if value <= 0:
+            continue
+        sweep = 2 * math.pi * value / total
+        if sweep >= 2 * math.pi - 1e-6:
+            parts.append(f'<circle cx="{cx}" cy="{cy}" r="{(r + r2) / 2:.2f}" fill="none" stroke="{color}" stroke-width="{r - r2:.2f}"><title>{label}</title></circle>')
+            break
+        end = angle + sweep
+        large = 1 if sweep > math.pi else 0
+        x1, y1, x2, y2 = cx + r * math.cos(angle), cy + r * math.sin(angle), cx + r * math.cos(end), cy + r * math.sin(end)
+        x3, y3, x4, y4 = cx + r2 * math.cos(end), cy + r2 * math.sin(end), cx + r2 * math.cos(angle), cy + r2 * math.sin(angle)
+        parts.append(f'<path d="M{x1:.2f},{y1:.2f} A{r},{r} 0 {large} 1 {x2:.2f},{y2:.2f} L{x3:.2f},{y3:.2f} A{r2},{r2} 0 {large} 0 {x4:.2f},{y4:.2f} Z" fill="{color}"><title>{label}</title></path>')
+        angle = end
+    return f'<svg viewBox="0 0 {size} {size}" class="donut" role="img" aria-hidden="true">{"".join(parts)}</svg>'
+
+
+@app.route("/jobs/<int:job_id>/analytics")
+@login_required
+def job_analytics(job_id):
+    """View analytics (admins only): where the job's money went."""
+    job = db.get_or_404(Job, job_id)
+    money = job_money(job)
+    loss = money["profit"] < 0
+    slices = [("Materials", money["materials"], "#f59e0b"), ("Labor", money["labor"], "#3b82f6"), ("Other job expenses", money["other"], "#a855f7")]
+    if not loss:
+        slices.append(("Profit", money["profit"], "#22c55e"))
+    whole = money["revenue"] if not loss else money["materials"] + money["labor"] + money["other"]
+    rows = [(label, value, color, (value / whole * 100) if whole else 0) for label, value, color in slices if value > 0 or label in ("Materials", "Labor", "Profit")]
+    return render_template("job_analytics.html", job=job, money=money, chart=donut_svg(slices), rows=rows, loss=loss, whole=whole)
+
+
 @app.route("/schedule")
 @login_required
 def schedule():
@@ -5035,7 +5114,7 @@ def render_settings_page(new_local_cooper_token=None):
         "settings.html",
         users=users,
         agents=agents,
-        roles=Role.query.order_by(Role.name).all(),
+        roles=list(two_roles()),
         local_cooper_token_active=token_setting is not None,
         new_local_cooper_token=new_local_cooper_token,
         jobber_connected=jobber_connected(), jobber_state=jobber_pull_state(), jobber_last_import=jobber_json("last_import"),
@@ -5528,7 +5607,10 @@ def local_cooper_results():
 @app.route("/settings/roles")
 @login_required
 def roles():
-    return render_template("roles.html", roles=Role.query.order_by(Role.name).all())
+    admin, employee = two_roles()
+    return render_template("roles.html", admin_role=admin, employee_role=employee,
+                           admins=[u for u in User.query.order_by(User.username).all() if u.role_id == admin.id],
+                           employees=[u for u in User.query.order_by(User.username).all() if u.role_id == employee.id])
 
 
 @app.route("/settings/roles/<int:role_id>", methods=["POST"])
@@ -5674,7 +5756,9 @@ def add_user():
         flash(error, "error")
         return redirect(url_for("settings"))
 
-    role = db.session.get(Role, request.form.get("role_id", type=int)) or Role.query.filter_by(name="Installer").first()
+    admin_role, employee_role = two_roles()
+    role = db.session.get(Role, request.form.get("role_id", type=int))
+    role = role if role in (admin_role, employee_role) else employee_role
     user = User(username=username, role=role, hourly_rate=max(request.form.get("hourly_rate", type=float) or 0, 0))
     user.set_password(password)
     db.session.add(user)
@@ -5683,12 +5767,57 @@ def add_user():
     return redirect(url_for("settings"))
 
 
+# ---------------- Two roles: Admin and Employee ----------------
+# Everyone is an Admin (sees everything) or an Employee: the working pages, but not Settings (users, pay rates, AI agents,
+# the Cooper connection, releases), job analytics, Finance, other people's timesheets, the labor rate and the Labor
+# calculator, or Cooper's price updates. The older custom roles (Office, Foreman, Installer, ...) are kept in the database,
+# unused: two_roles_once() moved everybody onto these two once.
+EMPLOYEE_ROLE = "Employee"
+EMPLOYEE_PERMISSIONS = dict(is_admin=False, view_quoting=True, view_pricing=True, view_services=True, view_clients=True, view_jobs=True,
+                            view_schedule=True, view_all_schedules=True, view_time=True, view_all_timesheets=False, view_tasks=True,
+                            view_training=True, view_finance=False, view_expenses=True, view_sales=True, manage_users=False, manage_agents=False)
+
+
+def two_roles():
+    """(the Admin role, the Employee role), made when missing."""
+    admin = Role.query.filter_by(name="Admin").first() or Role.query.filter_by(is_admin=True).order_by(Role.id).first()
+    employee = Role.query.filter_by(name=EMPLOYEE_ROLE).first()
+    if employee is None:
+        employee = Role(name=EMPLOYEE_ROLE, **EMPLOYEE_PERMISSIONS)
+        db.session.add(employee); db.session.flush()
+    for key, value in EMPLOYEE_PERMISSIONS.items():      # the Employee role is always exactly this
+        setattr(employee, key, value)
+    return admin, employee
+
+
+def two_roles_once():
+    """Once: every user on an admin role -> Admin, everyone else -> Employee. Old roles stay, unused."""
+    admin, employee = two_roles()
+    if db.session.get(CompanySetting, "two_roles_once") is not None:
+        return
+    for user in User.query.all():
+        user.role = admin if (user.role and user.role.is_admin) else employee
+    db.session.add(CompanySetting(key="two_roles_once", value=datetime.utcnow().isoformat(timespec="seconds")))
+
+
+def is_admin_user(user=None):
+    user = user or current_user
+    return bool(getattr(user, "is_authenticated", False) and user.role and user.role.is_admin)
+
+
+app.jinja_env.globals["is_admin"] = is_admin_user
+
+
 @app.route("/settings/users/<int:user_id>", methods=["POST"])
 @login_required
 def update_user(user_id):
     check_csrf(); user = db.get_or_404(User, user_id)
     role = db.session.get(Role, request.form.get("role_id", type=int))
-    if role: user.role = role
+    if role and role.id in {r.id for r in two_roles()}:
+        others = User.query.join(Role).filter(Role.is_admin.is_(True), User.id != user.id).count()
+        if not role.is_admin and user.role and user.role.is_admin and others == 0:
+            flash("Keep at least one Admin: make someone else an Admin first.", "error"); return redirect(url_for("settings"))
+        user.role = role
     user.hourly_rate = max(request.form.get("hourly_rate", type=float) or 0, 0)
     db.session.commit(); flash(f"Updated {user.username}.", "success")
     return redirect(url_for("settings"))
@@ -9324,6 +9453,7 @@ with app.app_context():
         if role is None:
             role = Role(name=role_name, **defaults); db.session.add(role)
     db.session.flush()
+    two_roles_once()
     admin_role = Role.query.filter_by(name="Admin").first()
     for user in User.query.filter_by(role_id=None).all(): user.role = admin_role
     next_number = 700

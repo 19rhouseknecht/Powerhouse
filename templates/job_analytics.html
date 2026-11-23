@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Analytics — {{ job.title }}{% endblock %}
+{% block content %}
+<div class="breadcrumb"><a href="{{ url_for('jobs') }}">Jobs</a><span>/</span><a href="{{ url_for('job_detail', job_id=job.id) }}">Job #{{ job.job_number }}</a><span>/</span>Analytics</div>
+<div class="page-heading heading-actions"><div><span class="eyebrow">Admins only · Job #{{ job.job_number }}</span><h1>{{ job.title }}</h1><p>{{ job.client.full_name }} · where this job's money went.</p></div><div class="button-row"><a class="btn btn-secondary" href="{{ url_for('job_detail', job_id=job.id) }}">Back to job</a></div></div>
+<div class="analytics-layout">
+  <section class="panel section-panel analytics-chart">
+    {% if chart %}<div class="donut-wrap">{{ chart|safe }}<div class="donut-middle"><small>{{ 'Loss' if loss else 'Profit' }}</small><strong class="{{ 'is-loss' if loss else 'is-profit' }}">{{ '-' if loss }}${{ '{:,.0f}'.format(money.profit|abs) }}</strong>{% if money.margin is not none %}<small>{{ '%.0f'|format(money.margin) }}% of revenue</small>{% endif %}</div></div>
+    {% else %}<div class="empty-state compact"><span>◔</span><h2>Nothing to chart yet</h2><p>Add the job's final amount, its material cost, or tracked time.</p></div>{% endif %}
+    <ul class="analytics-legend">{% for label, value, color, share in rows %}<li><i style="background: {{ color }}"></i><span>{{ label }}</span><b>${{ '{:,.2f}'.format(value) }}</b><small>{{ '%.0f'|format(share) }}%</small></li>{% endfor %}</ul>
+    {% if loss %}<p class="sizing-note">This job cost more than it brought in: the chart shows its costs (${{ '{:,.2f}'.format(whole) }}) against ${{ '{:,.2f}'.format(money.revenue) }} of revenue.</p>{% endif %}
+  </section>
+  <section class="panel section-panel">
+    <span class="eyebrow">The numbers</span><h2>Revenue ${{ '{:,.2f}'.format(money.revenue) }}</h2>
+    <dl class="analytics-numbers">
+      <div><dt>Revenue</dt><dd>${{ '{:,.2f}'.format(money.revenue) }}</dd><small>{{ money.revenue_from or 'No final amount, accepted option or Jobber total yet' }}</small></div>
+      <div><dt>Materials</dt><dd>${{ '{:,.2f}'.format(money.materials) }}</dd><small>{{ money.materials_from or 'No material cost yet' }}</small></div>
+      <div><dt>Labor</dt><dd>${{ '{:,.2f}'.format(money.labor) }}</dd><small>{{ '%.1f'|format(money.hours) }} hours tracked, at each person's pay rate</small></div>
+      {% if money.other %}<div><dt>Other job expenses</dt><dd>${{ '{:,.2f}'.format(money.other) }}</dd><small>expenses filed on this job</small></div>{% endif %}
+      <div class="analytics-profit {{ 'is-loss' if loss else '' }}"><dt>{{ 'Loss' if loss else 'Profit' }}</dt><dd>{{ '-' if loss }}${{ '{:,.2f}'.format(money.profit|abs) }}</dd><small>revenue − materials − labor{{ ' − other expenses' if money.other }}</small></div>
+    </dl>
+    <h3 class="gen-sub">Who worked it</h3>
+    {% if money.people %}<div class="item-table-wrap"><table class="item-table"><thead><tr><th>Person</th><th>Hours</th><th>Rate</th><th>Labor</th></tr></thead><tbody>
+      {% for name, row in money.people %}<tr><td>{{ name }}</td><td>{{ '%.1f'|format(row.hours) }}</td><td>${{ '{:,.2f}'.format(row.rate) }}/hr</td><td>${{ '{:,.2f}'.format(row.cost) }}</td></tr>{% endfor %}
+    </tbody></table></div>{% else %}<p class="muted">No tracked time on this job yet (time clock visits, or time brought over from Jobber).</p>{% endif %}
+  </section>
+</div>
+{% endblock %}
