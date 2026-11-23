@@ -3277,7 +3277,8 @@ def find_pricing_items():
     found = [] if only_items else [{"id": f"s{s.id}", "name": s.name, "kind": "Service", "price": round(s.example_total, 2), "unit": s.example_quantity}
                                    for s in services.order_by(Service.name).limit(5).all()]
     found += [{"id": str(i.id), "name": i.name, "kind": "Pricing Sheet" + (" (Unconfirmed)" if i.category == UNCONFIRMED else ""),
-               "price": round(i.price, 2), "unit": i.unit, "part": i.cooper_part_number}
+               "price": round(i.price, 2), "unit": i.unit, "part": i.cooper_part_number,
+               "image": url_for("static", filename=i.image_path) if i.image_path else ""}
               for i in items.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(20).all()]
     return jsonify({"results": found})
 
@@ -7393,7 +7394,8 @@ def pricing_needed_rows(quote, groups=None):
                                               if SequenceMatcher(None, other, key).ratio() >= .82), {})
         quantities = sorted({line.multiplier for line in group["lines"]})
         candidates = [{"id": item.id, "name": item.name, "price": item.price, "unit": item.unit, "labor": item.labor_hours_per_unit,
-                       "unconfirmed": item.category == UNCONFIRMED, "part": item.cooper_part_number}
+                       "unconfirmed": item.category == UNCONFIRMED, "part": item.cooper_part_number,
+                       "image": url_for("static", filename=item.image_path) if item.image_path else ""}
                       for item in (group.get("suggested_items") or [])[:3]]
         rows.append({"key": group["key"], "name": group["name"], "tiers": group["tiers"], "lines": len(group["lines"]), "candidates": candidates,
                      "quantities": quantities, "quantity_text": " / ".join("%g" % q for q in quantities), "unit": suggestion.get("unit") or "ea",

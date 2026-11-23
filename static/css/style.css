@@ -1782,3 +1782,13 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 @media print { .quick-actions { display:none; } }
 .cooper-bot-window { bottom:92px; }
 .app-page { padding-bottom:110px; }
+
+/* Generate Quote: material pictures beside each likely match, search result and option line */
+.sheet-pick.has-pic { display:grid; grid-template-columns:44px minmax(0, 1fr) auto; align-items:center; gap:10px; }
+.pick-thumb { width:44px; height:44px; object-fit:contain; border-radius:8px; background:#fff; border:1px solid var(--border); display:block; }
+.pick-thumb-none, .line-thumb-none { display:grid; place-items:center; background:var(--panel-2) !important; color:var(--muted); font-size:14px; }
+.line-thumb { width:44px; height:44px; }
+.cooper-refresh { margin-left:8px; padding:3px 8px; font-size:11px; }
+.cooper-refresh-said { display:block; margin-top:4px; font-size:11px; color:var(--muted); }
+.cooper-refresh-said a { color:var(--accent-hover); }
+.sheet-pick small.muted { font-size:11px; }
