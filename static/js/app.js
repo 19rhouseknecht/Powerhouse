@@ -7,6 +7,8 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".sidebar a").forEach(link => link.addEventListener("click", closeMenu));
   const catalogNode = document.getElementById("pricing-catalog");
   const pricingCatalog = catalogNode ? JSON.parse(catalogNode.textContent) : [];
+  const findNode = document.getElementById("pricing-find");
+  const findUrl = findNode ? JSON.parse(findNode.textContent) : "";
   const toolCatalogNode = document.getElementById("tool-catalog");
   const toolCatalog = toolCatalogNode ? JSON.parse(toolCatalogNode.textContent) : [];
   const closeSuggestions = except => document.querySelectorAll(".price-suggestions.open").forEach(menu => { if (menu !== except) menu.classList.remove("open"); });
@@ -31,12 +33,28 @@ document.addEventListener("DOMContentLoaded", () => {
         if (cooperPart) cooperPart.value = "";
       }
       if (!query) { menu.classList.remove("open"); return; }
-      const matches = pricingCatalog.filter(item => item.name.toLowerCase().includes(query) || (item.cooper_part_number || "").toLowerCase().includes(query)).slice(0, 7);
+      if (findUrl) {                                   // search the Pricing Sheet on the server (it can hold Cooper's whole catalog)
+        clearTimeout(input._findTimer);
+        input._findTimer = setTimeout(() => {
+          const asked = input.value.trim();
+          if (asked.length < 2) { menu.classList.toggle("open", false); return; }
+          fetch(findUrl + "&q=" + encodeURIComponent(asked), {headers: {"Accept": "application/json"}})
+            .then(r => r.json())
+            .then(data => {
+              if (input.value.trim() !== asked) return;
+              render((data.results || []).slice(0, 8).map(row => ({id: row.id, name: row.name, unit: row.unit, price: row.price, cooper_part_number: row.part || "", unconfirmed: (row.kind || "").includes("Unconfirmed")})));
+            }).catch(() => {});
+        }, 200);
+        return;
+      }
+      render(pricingCatalog.filter(item => item.name.toLowerCase().includes(query) || (item.cooper_part_number || "").toLowerCase().includes(query)).slice(0, 7));
+    };
+    const render = matches => {
       menu.innerHTML = "";
       matches.forEach(item => {
         const option = document.createElement("button"); option.type = "button"; option.className = "price-suggestion";
         const title = document.createElement("strong"); title.textContent = item.name;
-        const meta = document.createElement("span"); meta.textContent = `${item.cooper_part_number ? `Cooper #${item.cooper_part_number} · ` : ""}$${Number(item.price).toFixed(2)} / ${item.unit}`;
+        const meta = document.createElement("span"); meta.textContent = `${item.cooper_part_number ? `Cooper #${item.cooper_part_number} · ` : ""}$${Number(item.price).toFixed(2)} / ${item.unit}${item.unconfirmed ? " · Unconfirmed" : ""}`;
         option.append(title, meta);
         option.addEventListener("mousedown", event => { event.preventDefault(); choose(item); }); menu.append(option);
       });

@@ -17,7 +17,7 @@ from urllib.parse import quote_plus
 from datetime import datetime, date, timedelta
 
 from markupsafe import Markup, escape
-from flask import Flask, render_template, request, redirect, url_for, flash, session, abort, send_from_directory, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, session, abort, send_from_directory, jsonify, g, has_request_context
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
@@ -111,8 +111,8 @@ class Service(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     has_steps = db.Column(db.Boolean, nullable=False, default=False)          # "This service has step-by-step instructions"
-    items = db.relationship("ServiceItem", backref="service", cascade="all, delete-orphan", order_by="ServiceItem.position")
-    tools = db.relationship("ServiceTool", backref="service", cascade="all, delete-orphan", order_by="ServiceTool.position")
+    items = db.relationship("ServiceItem", backref=db.backref("service", lazy="joined"), cascade="all, delete-orphan", order_by="ServiceItem.position", lazy="selectin")
+    tools = db.relationship("ServiceTool", backref="service", cascade="all, delete-orphan", order_by="ServiceTool.position", lazy="selectin")
     steps = db.relationship("ServiceStep", backref="service", cascade="all, delete-orphan", order_by="ServiceStep.position")
 
     @property
@@ -178,9 +178,9 @@ class PriceItem(db.Model):
         except ValueError:
             return {}
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    service_links = db.relationship("ServiceItemPricingLink", backref="price_item", cascade="all, delete-orphan")
+    service_links = db.relationship("ServiceItemPricingLink", backref=db.backref("price_item", lazy="joined"), cascade="all, delete-orphan", lazy="selectin")
     quote_lines = db.relationship("QuoteOptionService", back_populates="price_item")
-    supplier_parts = db.relationship("SupplierPartNumber", backref="price_item", cascade="all, delete-orphan", order_by="SupplierPartNumber.supplier")
+    supplier_parts = db.relationship("SupplierPartNumber", backref="price_item", cascade="all, delete-orphan", order_by="SupplierPartNumber.supplier", lazy="selectin")
 
     @property
     def linked_services(self):
@@ -270,7 +270,7 @@ class ServiceItem(db.Model):
     unit_price = db.Column(db.Float, nullable=False, default=0)
     notes = db.Column(db.String(255), nullable=False, default="")
     position = db.Column(db.Integer, nullable=False, default=0)
-    pricing_link = db.relationship("ServiceItemPricingLink", backref="service_item", uselist=False, cascade="all, delete-orphan")
+    pricing_link = db.relationship("ServiceItemPricingLink", backref=db.backref("service_item", lazy="joined"), uselist=False, cascade="all, delete-orphan", lazy="selectin")
 
     @property
     def catalog_item(self):
@@ -551,7 +551,7 @@ class JobVisit(db.Model):
     ended_at = db.Column(db.DateTime, nullable=True)
     notes = db.Column(db.String(255), nullable=False, default="")
     hourly_rate = db.Column(db.Float, nullable=False, default=0)
-    job = db.relationship("Job", backref=db.backref("visits", order_by="JobVisit.started_at.desc()"))
+    job = db.relationship("Job", backref=db.backref("visits", order_by="JobVisit.started_at.desc()", lazy="selectin"))
 
     @property
     def total_seconds(self):
@@ -682,7 +682,7 @@ class Client(db.Model):
     jobber_url = db.Column(db.String(255), nullable=False, default="")
     jobber_raw = db.Column(db.Text, nullable=False, default="")           # the whole Jobber record, as it was pulled
     jobber_synced_at = db.Column(db.DateTime, nullable=True)
-    jobs = db.relationship("Job", backref="client", cascade="all, delete-orphan", order_by="Job.created_at.desc()")
+    jobs = db.relationship("Job", backref=db.backref("client", lazy="joined"), cascade="all, delete-orphan", order_by="Job.created_at.desc()", lazy="selectin")
     properties = db.relationship("ClientProperty", backref="client", cascade="all, delete-orphan", order_by="ClientProperty.id")
 
     @property
@@ -890,7 +890,7 @@ class Expense(db.Model):
     expense_date = db.Column(db.Date, nullable=False, default=date.today, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     submitted_by = db.relationship("User", backref="expenses")
-    job = db.relationship("Job", backref="expenses")
+    job = db.relationship("Job", backref=db.backref("expenses", lazy="selectin"))
 
 
 class QuickQuote(db.Model):
@@ -2214,7 +2214,7 @@ def create_service():
         error = populate_service_from_form(service)
         if error:
             flash(error, "error")
-            return render_template("service_form.html", service=None, form=request.form, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(), tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(), return_quote_id=request.form.get("return_quote_id", type=int), return_missing_key=request.form.get("return_missing_key", "")), 400
+            return render_template("service_form.html", service=None, form=request.form, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(), return_quote_id=request.form.get("return_quote_id", type=int), return_missing_key=request.form.get("return_missing_key", "")), 400
         db.session.add(service)
         db.session.commit()
         flash(f'Created service "{service.name}".', "success")
@@ -2227,7 +2227,7 @@ def create_service():
             return redirect(url_for("quote_assistant", job_id=quote.job_id, repair=request.form.get("return_missing_key", "")))
         return redirect(url_for("service_detail", service_id=service.id))
     form = {"name": request.args.get("name", ""), "category": "Quote repair", "example_quantity": "1 unit"}
-    return render_template("service_form.html", service=None, form=form, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(), tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(), return_quote_id=request.args.get("quote_id", type=int), return_missing_key=request.args.get("missing_key", ""))
+    return render_template("service_form.html", service=None, form=form, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(), return_quote_id=request.args.get("quote_id", type=int), return_missing_key=request.args.get("missing_key", ""))
 
 
 @app.route("/quoting/services/<int:service_id>")
@@ -2278,11 +2278,11 @@ def edit_service(service_id):
         error = populate_service_from_form(service)
         if error:
             flash(error, "error")
-            return render_template("service_form.html", service=service, form=request.form, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(), tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all()), 400
+            return render_template("service_form.html", service=service, form=request.form, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all()), 400
         db.session.commit()
         flash(f'Updated service "{service.name}".', "success")
         return redirect(url_for("service_detail", service_id=service.id))
-    return render_template("service_form.html", service=service, form={}, pricing_items=PriceItem.query.filter_by(active=True).order_by(PriceItem.name).all(), tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all())
+    return render_template("service_form.html", service=service, form={}, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all())
 
 
 @app.route("/quoting/services/<int:service_id>/delete", methods=["POST"])
@@ -3001,10 +3001,12 @@ def use_service_for_missing(quote, key, service):
 def find_pricing_items():
     """Pricing Sheet items (Unconfirmed included) and Services matching what was typed, for matching an item on a quote."""
     words = [w for w in re.split(r"\s+", request.args.get("q", "").strip()) if w][:6]
-    if not words or not (current_user.can("view_quoting") or current_user.can("view_jobs")):
+    if not words or not any(current_user.can(p) for p in ("view_quoting", "view_jobs", "view_services", "view_pricing")):
         return jsonify({"results": []})
     only_items = request.args.get("items") == "1" or not current_user.can("view_quoting")      # a job's materials: Pricing Sheet items only
-    items = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0)
+    items = PriceItem.query.filter(PriceItem.active.is_(True))
+    if request.args.get("unpriced") != "1":                  # the service form also offers items still without a price
+        items = items.filter(PriceItem.price > 0)
     services = Service.query
     for word in words:
         like = f"%{word}%"
@@ -5811,6 +5813,16 @@ class CooperPricingClient:
 
 
 def get_labor_rate():
+    """The company labor rate, read once per page (a list of services or quote lines asks for it on every row)."""
+    if has_request_context() and "labor_rate" in g:
+        return g.labor_rate
+    rate = _read_labor_rate()
+    if has_request_context():
+        g.labor_rate = rate
+    return rate
+
+
+def _read_labor_rate():
     setting = db.session.get(CompanySetting, "labor_rate")
     try:
         return float(setting.value) if setting else 361.90
@@ -5899,6 +5911,8 @@ def refresh_quote_travel(quote, force=False):
 
 
 def set_company_setting(key, value):
+    if key == "labor_rate" and has_request_context():
+        g.pop("labor_rate", None)                  # the page's remembered rate starts over
     setting = db.session.get(CompanySetting, key) or CompanySetting(key=key)
     setting.value = str(value)
     db.session.add(setting)

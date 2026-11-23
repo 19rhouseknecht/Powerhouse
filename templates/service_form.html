@@ -33,7 +33,7 @@
 </form>
 <template id="step-row-template">{% with key='KEY', number='N', step=none, title='', body='' %}{% include '_step_row.html' %}{% endwith %}</template>
 <template id="item-row-template">{% include '_item_row.html' %}</template><template id="tool-row-template">{% include '_tool_row.html' %}</template>
-<script id="pricing-catalog" type="application/json">{{ pricing_items|map_price_items|tojson }}</script>
+<script id="pricing-find" type="application/json">{{ url_for('find_pricing_items', items=1, unpriced=1)|tojson }}</script>{# the item box searches the Pricing Sheet as you type: the whole sheet is too big to send with the page #}
 <script id="tool-catalog" type="application/json">{{ tool_catalog|map_tools|tojson }}</script>
 <script>
 (function () {           /* step-by-step instructions: the switch, add / remove / move steps, and step pictures made smaller before sending */

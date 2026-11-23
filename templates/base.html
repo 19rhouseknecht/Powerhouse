@@ -11,7 +11,9 @@
   <meta name="theme-color" content="{{ '#171412' if look == 'dark' else '#f6f5fb' }}">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap">
+  {# the fonts load alongside the page instead of holding it up (Modern's fonts; Dark uses the system's) #}
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+  <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap"></noscript>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
   {# Modern (the default) is style.css plus these two; Dark is style.css alone (your name -> Dark) #}
   <link rel="stylesheet" href="{{ url_for('static', filename='css/modern-colors.css', v=asset_version) }}">
