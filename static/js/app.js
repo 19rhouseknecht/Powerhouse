@@ -181,3 +181,24 @@ document.addEventListener("DOMContentLoaded", () => {
   bindAllItemRows();
   bindAllToolRows();
 });
+
+(function () {           /* your name, top right: the menu, and Modern / Dark switched at once (kept on your account) */
+  var menu = document.querySelector('[data-user-menu]');
+  if (!menu) return;
+  var button = menu.querySelector('[data-user-menu-button]'), panel = menu.querySelector('[data-user-menu-panel]'), form = menu.querySelector('[data-theme-form]');
+  function open(yes) { panel.hidden = !yes; button.setAttribute('aria-expanded', yes ? 'true' : 'false'); }
+  button.addEventListener('click', function () { open(panel.hidden); });
+  document.addEventListener('click', function (e) { if (!panel.hidden && !menu.contains(e.target)) open(false); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !panel.hidden) { open(false); button.focus(); } });
+  form.addEventListener('submit', function (e) {
+    var choice = e.submitter && e.submitter.value;
+    if (!choice || !window.fetch) return;                         // no script help: the form posts and the page comes back in the new look
+    e.preventDefault();
+    var look = choice === 'dark' ? 'dark' : 'modern';
+    document.documentElement.setAttribute('data-theme', look);
+    form.querySelectorAll('[role="radio"]').forEach(function (b) { b.setAttribute('aria-checked', b.value === look ? 'true' : 'false'); });
+    var meta = document.querySelector('meta[name="theme-color"]'); if (meta) meta.setAttribute('content', look === 'dark' ? '#171412' : '#f6f5fb');
+    var body = new FormData(form); body.append('theme', look);
+    fetch(form.action, {method: 'POST', body: body, headers: {'X-Requested-With': 'fetch'}}).catch(function () {});
+  });
+})();

@@ -1,0 +1,151 @@
+/* Modern look (the default). Dark is style.css alone; Modern is style.css + modern-colors.css (generated: every color
+   mapped to this palette) + this file (written by hand: fonts, shapes, shadows, the sidebar and the hero).
+   Every rule is scoped to html[data-theme="modern"], so Dark never changes. */
+
+html[data-theme="modern"] {
+  --bg: #f6f5fb;
+  --panel: #ffffff;
+  --panel-2: #f3f1fb;
+  --border: #e6e3f1;
+  --text: #17142b;
+  --muted: #6b6787;
+  --accent: #6a4cf5;
+  --accent-hover: #5436e3;
+  --accent-soft: #ece7ff;
+  --accent-ink: #4a2fd0;
+  --danger: #dc2626;
+  --success: #16a34a;
+  --navy: #1b1740;
+  --radius: 20px;
+  --shadow: 0 1px 2px rgba(23, 16, 60, .04), 0 10px 30px -12px rgba(23, 16, 60, .10);
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-head: "Outfit", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color-scheme: light;
+}
+html[data-theme="modern"] body {
+  font-family: var(--font-body);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(139, 112, 255, .10), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgba(139, 112, 255, .06), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -.005em;
+}
+html[data-theme="modern"] :is(h1, h2, h3, .brand-name, .metric-card strong, .gz-stats dd, .sizing-numbers dd) { font-family: var(--font-head); letter-spacing: -.02em; }
+
+/* the top bar and the sidebar: light, quiet, the current page in a violet pill */
+html[data-theme="modern"] .topbar { background: rgba(255, 255, 255, .82); backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px); border-bottom: 1px solid var(--border); }
+html[data-theme="modern"] .brand-badge { background: #fff; box-shadow: 0 0 0 1px var(--border); border-radius: 10px; }
+html[data-theme="modern"] .brand-name { font-weight: 600; font-size: 17px; letter-spacing: .01em; color: var(--text); }
+html[data-theme="modern"] .brand-sub { color: var(--muted); font-family: var(--font-body); letter-spacing: .04em; }
+html[data-theme="modern"] .sidebar { background: rgba(251, 250, 255, .92); border-right: 1px solid var(--border); padding: 18px 14px; }
+html[data-theme="modern"] .side-section { color: #9a96b2; font-size: 10.5px; letter-spacing: .12em; padding: 20px 14px 8px; }
+html[data-theme="modern"] .side-link { color: #2b2645; font-weight: 600; font-size: 14.5px; border-radius: 12px; padding: 10px 14px; transition: background .15s, color .15s; }
+html[data-theme="modern"] .side-link span { color: #8a85a6; }
+html[data-theme="modern"] .side-link:hover { background: #f1eefb; color: var(--text); }
+html[data-theme="modern"] .side-link.active { background: var(--accent-soft); color: var(--accent-ink); }
+html[data-theme="modern"] .side-link.active span { color: var(--accent); }
+
+/* your name: the menu that switches Modern / Dark */
+html[data-theme="modern"] .user-menu-button { color: var(--text); border-left-color: var(--border); }
+html[data-theme="modern"] .user-avatar { background: var(--navy); color: #fff; }
+html[data-theme="modern"] .user-menu-panel { background: #fff; border-color: var(--border); box-shadow: 0 18px 50px -12px rgba(23, 16, 60, .25); }
+html[data-theme="modern"] .logout-link { color: var(--accent) !important; }
+html[data-theme="modern"] .tour-launch { background: #fff; color: var(--accent-ink); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow); }
+
+/* page headings: big, clean, the eyebrow in violet */
+html[data-theme="modern"] .page-heading h1 { font-size: clamp(30px, 4vw, 46px); font-weight: 600; letter-spacing: -.035em; line-height: 1.05; margin: 6px 0 10px; }
+html[data-theme="modern"] .page-heading p { color: var(--muted); font-size: 15px; }
+html[data-theme="modern"] .eyebrow { color: var(--accent); letter-spacing: .1em; font-weight: 700; font-size: 11px; }
+html[data-theme="modern"] .breadcrumb a { color: var(--accent); }
+
+/* cards: white, round, a soft shadow */
+html[data-theme="modern"] :is(.panel, .metric-card, .service-card, .tool-card, .auth-card, .missing-service-card, .gz-group, .sizing-history li, .material-row) { box-shadow: var(--shadow); }
+html[data-theme="modern"] .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
+html[data-theme="modern"] .panel h2 { font-weight: 600; font-size: 20px; }
+html[data-theme="modern"] .auth-card { border-radius: 24px; background: #fff; }
+html[data-theme="modern"] .metric-card { background: #fff; border-radius: var(--radius); }
+html[data-theme="modern"] .metric-card:hover { border-color: #cfc5ff; }
+html[data-theme="modern"] .metric-card strong { font-weight: 600; font-size: 38px; }
+html[data-theme="modern"] .metric-icon { background: var(--accent-soft); color: var(--accent); border-radius: 12px; }
+html[data-theme="modern"] .empty-state { border-radius: var(--radius); background: rgba(255, 255, 255, .6); }
+
+/* the hero: deep navy with a violet glow (the dashboard's call-out and the Results answer) */
+html[data-theme="modern"] :is(.callout-panel, .gz-results .gz-slide-head) {
+  background: radial-gradient(700px 300px at 85% 0%, rgba(124, 92, 255, .45), transparent 65%), linear-gradient(135deg, #191639, #2a1f5c);
+  color: #fff; border: 0;
+}
+html[data-theme="modern"] .callout-panel { border-radius: 24px; padding: 34px 36px; }
+html[data-theme="modern"] .callout-panel h2 { color: #fff; font-size: clamp(24px, 3vw, 36px); }
+html[data-theme="modern"] .callout-panel :is(p, .muted) { color: #c9c3ee !important; }
+html[data-theme="modern"] .callout-panel .eyebrow { color: #c4b5fd; }
+html[data-theme="modern"] .callout-panel .btn-primary { background: #c4b5fd; color: #1b1740; border-radius: 16px; }
+html[data-theme="modern"] .callout-panel .btn-primary:hover { background: #d8ccff; }
+html[data-theme="modern"] .gz-results .gz-slide-head { margin: -20px -22px 18px; padding: 24px 22px; border-radius: var(--radius) var(--radius) 0 0; }
+html[data-theme="modern"] .gz-results .gz-slide-head :is(h2, .gz-big) { color: #fff !important; }
+html[data-theme="modern"] .gz-results .gz-slide-head .eyebrow { color: #c4b5fd; }
+html[data-theme="modern"] .gz-results .gz-icon { background: rgba(196, 181, 253, .18); color: #c4b5fd; }
+
+/* buttons: rounded, the main one violet */
+html[data-theme="modern"] .btn { border-radius: 12px; font-weight: 600; transition: background .15s, border-color .15s, box-shadow .15s, transform .1s; }
+html[data-theme="modern"] .btn:active:not(:disabled) { transform: translateY(1px); }
+html[data-theme="modern"] .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 6px 16px -8px rgba(106, 76, 245, .7); }
+html[data-theme="modern"] .btn-primary:hover { background: var(--accent-hover); }
+html[data-theme="modern"] :is(.btn-secondary, .btn:not(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost)) { background: #fff; color: var(--text); border: 1px solid var(--border); }
+html[data-theme="modern"] :is(.btn-secondary, .btn:not(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost)):hover { border-color: #cfc5ff; background: #faf9ff; }
+html[data-theme="modern"] .btn-ghost { color: var(--muted); }
+html[data-theme="modern"] .btn-ghost:hover { background: #f3f1fb; color: var(--text); }
+html[data-theme="modern"] .btn-danger { background: #fff; color: #b91c1c; border-color: #f3caca; }
+html[data-theme="modern"] .btn-danger:hover { background: #fef2f2; }
+html[data-theme="modern"] .start-over-panel .btn-danger { background: #dc2626; color: #fff; border-color: #dc2626; box-shadow: 0 6px 16px -8px rgba(220, 38, 38, .7); }
+html[data-theme="modern"] .start-over-panel .btn-danger:hover { background: #b91c1c; border-color: #b91c1c; }
+html[data-theme="modern"] .start-over-panel strong { color: #b91c1c; }
+
+/* form controls */
+html[data-theme="modern"] :where(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="color"], [type="hidden"], [type="submit"], [type="button"], [type="reset"], [type="image"]), select, textarea) {
+  background: #fcfbff; border-color: #e3e0ef; border-radius: 10px;      /* a breath of violet: a control the site forgot to style stays plain white and stands out */
+}
+html[data-theme="modern"] :where(input, select, textarea):focus { border-color: var(--accent); box-shadow: 0 0 0 4px rgba(106, 76, 245, .14); }
+html[data-theme="modern"] select option, html[data-theme="modern"] select optgroup { background: #fff; color: var(--text); }
+html[data-theme="modern"] input[type="file"]::file-selector-button { background: #fff; border-radius: 10px; }
+
+/* tables, pills, messages */
+html[data-theme="modern"] .item-table th { color: #8a85a6; font-weight: 600; }
+html[data-theme="modern"] .item-table tbody tr:hover td { background: #faf9ff; }
+html[data-theme="modern"] .status-pill { border-radius: 999px; font-weight: 600; letter-spacing: .04em; color: var(--text); }
+html[data-theme="modern"] .flash { border-radius: 14px; box-shadow: var(--shadow); }
+html[data-theme="modern"] .flash-success { background: #ecfdf3; color: #166534; border-color: #bbf7d0; }
+html[data-theme="modern"] .flash-error { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+
+/* pages with their own dark pieces keep them readable in Modern */
+html[data-theme="modern"] .sheet-tile { background: #fff; box-shadow: var(--shadow); border-radius: 14px; }
+html[data-theme="modern"] :is(.sheet-tile-mark, .gz-icon) { background: var(--accent-soft); color: var(--accent); }
+html[data-theme="modern"] .gz-step[aria-current="step"] b { color: #fff; box-shadow: 0 0 0 5px rgba(106, 76, 245, .16); }
+html[data-theme="modern"] .gz-seg-row input:checked + span { color: #fff; }
+html[data-theme="modern"] .gz-house svg { background: linear-gradient(#eef0ff, #f8f7ff); }
+html[data-theme="modern"] .gz-roof { fill: #c9c3e6; }
+html[data-theme="modern"] .gz-wall { fill: #fff; stroke: #cfc9e6; }
+html[data-theme="modern"] :is(.gz-floor, .gz-wire) { stroke: #d6d1ea; }
+html[data-theme="modern"] :is(.gz-part, .gz-gen) { fill: #ece9f7; stroke: #cfc9e6; }
+html[data-theme="modern"] .gz-dot { fill: #cfc9e6; }
+html[data-theme="modern"] .gz-house rect[fill="#1f2a1c"] { fill: #dcefd8; }
+html[data-theme="modern"] .gz-stats .gz-stat-key { background: var(--accent-soft); border-color: #d8ceff; }
+html[data-theme="modern"] .caden-dots b { background: var(--accent); }
+html[data-theme="modern"] .chat-message.user { background: var(--accent-soft); }
+html[data-theme="modern"] .sheet-dialog, html[data-theme="modern"] dialog { background: #fff; border-radius: 22px; box-shadow: 0 30px 80px -20px rgba(23, 16, 60, .35); }
+
+/* notices: amber means "look at this" in Modern (violet is only the brand) */
+html[data-theme="modern"] .api-notice { background: #fff8eb; color: #92400e; border-color: #fcd9a5; border-radius: 14px; }
+html[data-theme="modern"] .api-notice span { color: #a16207; }
+html[data-theme="modern"] .api-notice strong { color: #7c2d12; }
+
+/* the wordmark is white artwork: it sits on a navy chip in Modern (sign-in, the client proposal, reviews) */
+html[data-theme="modern"] :is(.auth-logo, .review-wordmark, .proposal-header > img) { background: var(--navy); padding: 12px 16px; border-radius: 14px; box-sizing: content-box; }
+
+/* the menu's two previews show the looks themselves, whatever look is on */
+html[data-theme="modern"] .theme-choice { background: #fff; }
+html[data-theme="modern"] .theme-choice-modern i { background: linear-gradient(135deg, #f6f5fb 0 55%, #6a4cf5 55% 70%, #1b1740 70%); box-shadow: inset 0 0 0 1px #d6d3e6; }
+html[data-theme="modern"] .theme-choice-dark i { background: linear-gradient(135deg, #0c0a09 0 55%, #d97706 55% 70%, #292524 70%); box-shadow: inset 0 0 0 1px #44403c; }
+html[data-theme="modern"] .theme-choice[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(106, 76, 245, .18); color: var(--accent-ink); }
+html[data-theme="modern"] .user-menu-label { color: #9a96b2; }

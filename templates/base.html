@@ -1,5 +1,6 @@
 <!DOCTYPE html>
-<html lang="en">
+{% set look = current_user.look if current_user.is_authenticated else "modern" %}
+<html lang="en" data-theme="{{ look }}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,8 +8,14 @@
   <link rel="icon" href="{{ url_for('static', filename='img/favicon.png') }}">
   <link rel="apple-touch-icon" href="{{ url_for('static', filename='img/app-icon-192.png') }}">
   <link rel="manifest" href="{{ url_for('static', filename='manifest.webmanifest') }}">
-  <meta name="theme-color" content="#171412">
+  <meta name="theme-color" content="{{ '#171412' if look == 'dark' else '#f6f5fb' }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=asset_version) }}">
+  {# Modern (the default) is style.css plus these two; Dark is style.css alone (your name -> Dark) #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern-colors.css', v=asset_version) }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/modern.css', v=asset_version) }}">
 </head>
 <body>
   {% if current_user.is_authenticated %}
@@ -20,8 +27,20 @@
     </a>
     <nav class="topnav">
       <button type="button" class="tour-launch" data-tour-launch><span>?</span> Give a Tour</button>
-      <span class="topnav-user">{{ current_user.username }}</span>
-      <a href="{{ url_for('logout') }}" class="logout-link">Log out</a>
+      <div class="user-menu" data-user-menu>
+        <button type="button" class="topnav-user user-menu-button" aria-haspopup="true" aria-expanded="false" data-user-menu-button><span class="user-avatar" aria-hidden="true">{{ current_user.username[:2]|upper }}</span><span class="user-name">{{ current_user.username }}</span><span class="user-caret" aria-hidden="true">▾</span></button>
+        <div class="user-menu-panel" data-user-menu-panel hidden>
+          <form method="POST" action="{{ url_for('set_theme') }}" class="theme-form" data-theme-form>
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path if request.method == 'GET' else request.path }}">
+            <span class="user-menu-label">Appearance</span>
+            <div class="theme-choices" role="radiogroup" aria-label="Appearance">
+              <button type="submit" name="theme" value="modern" class="theme-choice theme-choice-modern" role="radio" aria-checked="{{ 'true' if look == 'modern' else 'false' }}"><i aria-hidden="true"></i><span>Modern</span></button>
+              <button type="submit" name="theme" value="dark" class="theme-choice theme-choice-dark" role="radio" aria-checked="{{ 'true' if look == 'dark' else 'false' }}"><i aria-hidden="true"></i><span>Dark</span></button>
+            </div>
+          </form>
+          <a href="{{ url_for('logout') }}" class="logout-link user-menu-logout">Log out</a>
+        </div>
+      </div>
     </nav>
   </header>
   <button class="sidebar-scrim" data-menu-close aria-label="Close menu"></button>
