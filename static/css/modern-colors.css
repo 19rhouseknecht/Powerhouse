@@ -434,3 +434,6 @@
 :where(html[data-theme="modern"]) .theme-choice-dark i { background: linear-gradient(135deg, #fcfcfd 0 55%, #7238fa 55% 70%, #f0eef6 70%); box-shadow: inset 0 0 0 1px #e6e4f0; }
 :where(html[data-theme="modern"]) .theme-choice:hover { border-color: #8b85a7; }
 :where(html[data-theme="modern"]) .theme-choice[aria-checked="true"] { box-shadow: 0 0 0 2px rgba(108, 78, 255, .35); }
+:where(html[data-theme="modern"]) .step-number { color: #f5f4f9; }
+:where(html[data-theme="modern"]) .step-remove { color: #830101; }
+:where(html[data-theme="modern"]) .service-step-number { color: #f5f4f9; }

@@ -149,3 +149,8 @@ html[data-theme="modern"] .theme-choice-modern i { background: linear-gradient(1
 html[data-theme="modern"] .theme-choice-dark i { background: linear-gradient(135deg, #0c0a09 0 55%, #d97706 55% 70%, #292524 70%); box-shadow: inset 0 0 0 1px #44403c; }
 html[data-theme="modern"] .theme-choice[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(106, 76, 245, .18); color: var(--accent-ink); }
 html[data-theme="modern"] .user-menu-label { color: #9a96b2; }
+
+/* service steps: white rows, violet numbers with white figures */
+html[data-theme="modern"] .step-row { background: #fff; box-shadow: var(--shadow); border-radius: 16px; }
+html[data-theme="modern"] :is(.step-number, .service-step-number) { color: #fff; }
+html[data-theme="modern"] .step-picture-box { background: #faf9ff; }

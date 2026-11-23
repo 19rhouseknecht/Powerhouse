@@ -1,0 +1,17 @@
+{# One step in the service builder. key names this row's picture box; step is a ServiceStep or none (a new or re-sent row). #}
+<article class="step-row" data-step-row>
+  <input type="hidden" name="step_key[]" value="{{ key }}"><input type="hidden" name="step_id[]" value="{{ step.id if step and step.id else '' }}">
+  <div class="step-row-head"><span class="step-number" data-step-number>{{ number }}</span><input name="step_title[]" value="{{ title }}" maxlength="200" placeholder="What this step is, e.g. Mount the meter base" aria-label="Step title">
+    <div class="step-row-tools"><button type="button" class="btn btn-ghost btn-small" data-step-up aria-label="Move this step up">↑</button><button type="button" class="btn btn-ghost btn-small" data-step-down aria-label="Move this step down">↓</button><button type="button" class="btn btn-ghost btn-small step-remove" data-step-remove aria-label="Remove this step">Remove</button></div></div>
+  <div class="step-row-body">
+    <label class="step-text"><span class="sr-only">Instructions</span><textarea name="step_body[]" rows="4" maxlength="8000" placeholder="How to do it: what to check, measurements, what to watch out for…">{{ body }}</textarea></label>
+    <div class="step-picture">
+      <label class="step-picture-box" data-step-picture>
+        <input type="file" name="step_image_{{ key }}" accept="image/png,image/jpeg,image/webp,image/gif" data-step-file>
+        {% if step and step.image_filename %}<img src="{{ url_for('static', filename='uploads/services/' + step.image_filename) }}" alt="Step picture" data-step-preview>{% else %}<img alt="" data-step-preview hidden><span data-step-empty>＋ Picture</span>{% endif %}
+      </label>
+      {% if step and step.image_filename %}<label class="step-picture-remove"><input type="checkbox" name="step_image_remove_{{ key }}" value="on"> Remove picture</label>{% endif %}
+      <small class="muted" data-step-file-note></small>
+    </div>
+  </div>
+</article>
