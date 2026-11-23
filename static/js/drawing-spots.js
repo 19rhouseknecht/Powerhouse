@@ -31,7 +31,7 @@
   }
   document.querySelectorAll(".spot-row").forEach(function (row) {
     var key = row.getAttribute("data-spot-key");
-    row.addEventListener("click", function (e) { if (!e.target.closest("a, button")) show(key); });
+    row.addEventListener("click", function (e) { if (!e.target.closest("a, button, input, label")) show(key); });
     row.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); show(key); } });
   });
 

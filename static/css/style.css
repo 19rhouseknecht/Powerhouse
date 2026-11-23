@@ -1792,3 +1792,17 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .cooper-refresh-said { display:block; margin-top:4px; font-size:11px; color:var(--muted); }
 .cooper-refresh-said a { color:var(--accent-hover); }
 .sheet-pick small.muted { font-size:11px; }
+
+/* Saving in place: a small "Saved", and a field with a problem in red with what's wrong */
+.inline-said { margin-left:6px; font-size:12px; color:var(--muted); white-space:nowrap; }
+.inline-said.is-ok { color:#86efac; }
+.inline-said.is-bad { color:#fca5a5; }
+.field-error, :where(input, select, textarea).field-error { border-color:#ef4444 !important; box-shadow:0 0 0 3px rgba(239,68,68,.2) !important; }
+.field-error-note { display:block; color:#fca5a5; font-size:12px; font-weight:600; margin-top:4px; }
+
+/* A service's materials: picture, and (admins) a tick for Update from Cooper */
+.svc-items .svc-tick-col { width:28px; padding-right:0; }
+.svc-items .svc-pic-col { width:56px; }
+.svc-items td.svc-pic-col .line-thumb { display:grid; }
+.svc-tick-bar { margin:10px 0 8px; }
+.svc-tick-bar small a { color:var(--accent-hover); }

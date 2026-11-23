@@ -3230,10 +3230,11 @@ def use_sheet_item(quote_id):
     for line in lines:
         price_line_from_item(line, item)
     if lines:
+        confirmed = confirm_sheet_item(item, "when used on a quote")      # picking it is saying it's the right item
         quote.messages.append(QuoteMessage(role="assistant", content=f"Priced from the Pricing Sheet: {asked} → {item.name} at ${item.price:,.2f}/{item.unit}"
                                            + (f" + {item.labor_hours_per_unit:g} hr" if item.labor_hours_per_unit else "")
-                                           + (" (Unconfirmed: confirm it on the line when it looks right)." if item.category == UNCONFIRMED else ".")))
-        flash(f"{asked} is priced from the Pricing Sheet ({item.name}).", "success")
+                                           + (f" It was Unconfirmed, so it's now a normal Pricing Sheet item in {item.category}." if confirmed else ".")))
+        flash(f"{asked} is priced from the Pricing Sheet ({item.name})" + (f"; {item.name} is confirmed, in {item.category}." if confirmed else "."), "success")
     db.session.commit()
     return redirect(url_for("quote_assistant", job_id=quote.job_id) + ("#needs-price" if quote.has_missing_pricing else ""))
 
@@ -4211,6 +4212,17 @@ def update_job_materials_from_cooper(job_id):
     db.session.commit()
     flash(f"Sent to the office listener: {len(sheet)} material(s) to update from Cooper." + (f" {skipped} ticked without a Cooper part number were left out." if skipped else ""), "success")
     return redirect(back + "#cooper-update")
+
+
+def confirm_sheet_item(sheet, why):
+    """An Unconfirmed item becomes a normal Pricing Sheet item, in the sheet category matching Cooper's own (else General)."""
+    if not sheet or sheet.category != UNCONFIRMED:
+        return False
+    categories = {c.lower(): c for (c,) in db.session.query(PriceItem.category).filter(PriceItem.category != UNCONFIRMED).distinct()}
+    cooper = re.search(r"Cooper: ([^·]+)", sheet.notes or "")
+    sheet.category = categories.get(cooper.group(1).strip().lower(), "General") if cooper else "General"
+    sheet.notes = ((sheet.notes or "") + f" · Confirmed {why} by {current_user.username} {datetime.utcnow():%b %-d, %Y}")[:255]
+    return True
 
 
 def confirm_cart_items(order):
@@ -5879,8 +5891,11 @@ def add_user():
 
     error = validate_new_account(username, password, confirm)
     if error:
+        field = "confirm" if "match" in error else "password" if "Password" in error else "username"
+        if wants_json():
+            return jsonify({"ok": False, "error": error, "field": field}), 400
         flash(error, "error")
-        return redirect(url_for("settings"))
+        return redirect(url_for("settings") + "#add-user")
 
     admin_role, employee_role = two_roles()
     role = db.session.get(Role, request.form.get("role_id", type=int))
@@ -5890,7 +5905,9 @@ def add_user():
     db.session.add(user)
     db.session.commit()
     flash(f'Added user "{username}".', "success")
-    return redirect(url_for("settings"))
+    if wants_json():
+        return jsonify({"ok": True, "message": f'Added "{username}".', "reload": True})
+    return redirect(url_for("settings") + "#users")
 
 
 # ---------------- Two roles: Admin and Employee ----------------
@@ -5943,11 +5960,24 @@ def update_user(user_id):
     if role and role.id in {r.id for r in two_roles()}:
         others = User.query.join(Role).filter(Role.is_admin.is_(True), User.id != user.id).count()
         if not role.is_admin and user.role and user.role.is_admin and others == 0:
-            flash("Keep at least one Admin: make someone else an Admin first.", "error"); return redirect(url_for("settings"))
+            if wants_json():
+                return jsonify({"ok": False, "error": "Keep at least one Admin: make someone else an Admin first.", "field": "role_id"}), 400
+            flash("Keep at least one Admin: make someone else an Admin first.", "error"); return redirect(url_for("settings") + "#user-row-%d" % user.id)
         user.role = role
-    user.hourly_rate = max(request.form.get("hourly_rate", type=float) or 0, 0)
-    db.session.commit(); flash(f"Updated {user.username}.", "success")
-    return redirect(url_for("settings"))
+    try:
+        rate = float(request.form.get("hourly_rate", "0") or 0)
+    except ValueError:
+        rate = -1
+    if rate < 0:
+        if wants_json():
+            return jsonify({"ok": False, "error": "The hourly rate must be a number, 0 or more.", "field": "hourly_rate"}), 400
+        flash("The hourly rate must be a number, 0 or more.", "error"); return redirect(url_for("settings") + "#user-row-%d" % user.id)
+    user.hourly_rate = rate
+    db.session.commit()
+    if wants_json():
+        return jsonify({"ok": True, "message": "Saved"})
+    flash(f"Updated {user.username}.", "success")
+    return redirect(url_for("settings") + "#user-row-%d" % user.id)
 
 
 @app.route("/settings/reset-password/<int:user_id>", methods=["POST"])
@@ -5961,17 +5991,20 @@ def reset_password(user_id):
     password = request.form.get("password", "")
     confirm = request.form.get("confirm", "")
 
-    if len(password) < 8:
-        flash("New password must be at least 8 characters.", "error")
-        return redirect(url_for("settings"))
-    if password != confirm:
-        flash("Passwords didn't match.", "error")
-        return redirect(url_for("settings"))
+    problem = ("New password must be at least 8 characters.", "password") if len(password) < 8 else \
+        ("Passwords didn't match.", "confirm") if password != confirm else None
+    if problem:
+        if wants_json():
+            return jsonify({"ok": False, "error": problem[0], "field": problem[1]}), 400
+        flash(problem[0], "error")
+        return redirect(url_for("settings") + "#user-row-%d" % user.id)
 
     user.set_password(password)
     db.session.commit()
+    if wants_json():
+        return jsonify({"ok": True, "message": "Password set", "clear": True})
     flash(f'Password updated for "{user.username}".', "success")
-    return redirect(url_for("settings"))
+    return redirect(url_for("settings") + "#user-row-%d" % user.id)
 
 
 @app.route("/settings/delete-user/<int:user_id>", methods=["POST"])
