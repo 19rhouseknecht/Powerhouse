@@ -30,3 +30,10 @@ a message. If the key is connected, the amber setup notice disappears.
 
 If a request fails, check the PythonAnywhere error log. The chat conversation
 is preserved, so you can correct the configuration and try again.
+
+## The quote model (Generate quote)
+Quotes are built by a reasoning model in several steps (scope, pricing, wording, labor). It uses `OPENAI_QUOTE_MODEL`
+(default `gpt-5`, reasoning effort `OPENAI_QUOTE_EFFORT`, default `medium`). If the account cannot use that model, every step
+falls back to `OPENAI_MODEL` by itself. To pick another quote model, set for example:
+
+    os.environ["OPENAI_QUOTE_MODEL"] = "gpt-5"

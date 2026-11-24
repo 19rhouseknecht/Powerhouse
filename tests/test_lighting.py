@@ -105,7 +105,7 @@ class FakeOpenAI:
 m.OpenAI = FakeOpenAI
 os.environ["OPENAI_API_KEY"] = "test-key-not-used"
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Recessed lights for the kitchen, three choices.", lighting="1"))
-words = SEEN[-1]["instructions"]
+words = [k for k in SEEN if k.get("text", {}).get("format", {}).get("name") == "powerhouse_quote_plan"][-1]["instructions"]
 check("LIGHTING_PLAN for Kitchen (14 x 12 ft, 9 ft ceiling" in words and '"price_item_id": %d' % ids["mid"] in words and "exactly its quantity" in words,
       "Caden gets the room, every light's layout, and the rule to use its quantity")
 with app.app_context():
@@ -176,11 +176,11 @@ with app.app_context():
     check(len({layout["fixture"] for layout in layouts}) == 3 and layouts[0]["fixture"] == "4in LED wafer 650 lm",
           "the tiers get different lights, the most economical one that meets the target first")
     check(all(layout["footcandles"] >= layout["target"] * 0.95 for layout in layouts), "each one meets the room's target")
-    middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],) and line.service_name != m.LIGHTING_WIRE_NAME]
+    middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],) and line.service_name != m.LIGHTING_WIRE_NAME and "connector" not in line.service_name.lower()]
     check(len(middle) == 1 and middle[0].price_item_id != NOLUMEN and middle[0].multiplier == layouts[1]["count"],
           "a light with no lumens is swapped for one that can be laid out (not a second set of lights)")
     check(any("has no lumens" in msg.content for msg in q.messages if msg.role == "assistant"), "and Caden's message says so")
-check("never ask about the number of lights" in SEEN[-1]["instructions"], "Caden is told to build the options rather than ask about the lights")
+check("never ask about the number of lights" in [k for k in SEEN if k.get("text", {}).get("format", {}).get("name") == "powerhouse_quote_plan"][-1]["instructions"], "Caden is told to build the options rather than ask about the lights")
 m.OpenAI = FakeOpenAI
 owner.post("/quoting/generate/%d" % job_id, data=dict(CSRF, message="Back to the Pricing Sheet lights.", lighting="1"))
 

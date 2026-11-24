@@ -21,6 +21,8 @@ class FakeOpenAI:
         self.responses = self
 
     def create(self, **kwargs):
+        if kwargs.get("text", {}).get("format", {}).get("name") != "powerhouse_quote_plan":
+            return type("Reply", (), {"output_text": "{}"})()          # the scope, wording and labor steps: nothing to add
         SEEN.append(kwargs)
         reply = SCRIPT.pop(0)
         if isinstance(reply, Exception):
