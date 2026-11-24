@@ -152,6 +152,11 @@
       <button class="btn btn-small btn-primary" data-labor-go>{{ 'Accept' if row.suggestion else 'Save time' }}</button>
     </form>{% endfor %}
   </section>{% endif %}
+  {% set out_of_order = tiers_out_of_order(quote) if quote.options and quote.status == 'draft' else [] %}
+  {% if out_of_order %}<section class="panel tier-order-warn" id="tier-order"><strong>Tiers out of price order</strong>
+    <p>{% for a, b in out_of_order %}{{ b.tier }} (${{ '{:,.2f}'.format(b.total) }}) doesn't cost more than {{ a.tier }} (${{ '{:,.2f}'.format(a.total) }}). {% endfor %}Every tier must cost more than the one below it.</p>
+    <form method="POST" action="{{ url_for('quote_price_order', quote_id=quote.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn btn-small btn-primary" data-busy="Putting the tiers in price order…">Put the tiers in price order</button></form>
+  </section>{% endif %}
   {% if quote.options and quote.review %}{% set review = quote.review %}<section class="panel peer-review {{ 'is-approved' if review.approved else 'has-notes' }}" id="peer-review">
     <div class="peer-review-head"><strong>{{ '✓ Caleb reviewed it' if review.approved else 'Caleb reviewed it: check these' }}</strong><small class="muted">Peer review before you saw it{% if review.rounds == 2 %} · Caden revised it once{% endif %}</small></div>
     {% if review.summary %}<p>{{ review.summary }}</p>{% endif %}

@@ -173,8 +173,10 @@ with app.app_context():
     q = db.session.get(m.Quote, quote_id)
     layouts = [option.lighting for option in q.options]
     check(len(q.options) == 3 and all(layouts), "an option Caden built without a light still gets a light from the layout and its own 3D view")
-    check(len({layout["fixture"] for layout in layouts}) == 3 and layouts[0]["fixture"] == "4in LED wafer 650 lm",
-          "the tiers get different lights, the most economical one that meets the target first")
+    cheapest = m.lighting_picks(m.lighting_plans_for(q)[1], 3)[0]
+    check(len({layout["fixture"] for layout in layouts}) == 3 and layouts[0]["fixture"] == cheapest["name"]
+          and cheapest["installed"] == min(p["installed"] for p in m.lighting_plans_for(q)[1] if p["footcandles"] >= p["target"] * 0.95),
+          "the tiers get different lights, the one that costs least installed (lights, labor, cable) first: %s" % cheapest["name"])
     check(all(layout["footcandles"] >= layout["target"] * 0.95 for layout in layouts), "each one meets the room's target")
     middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],) and line.service_name != m.LIGHTING_WIRE_NAME and "connector" not in line.service_name.lower()]
     check(len(middle) == 1 and middle[0].price_item_id != NOLUMEN and middle[0].multiplier == layouts[1]["count"],

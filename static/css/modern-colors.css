@@ -481,3 +481,4 @@
 :where(html[data-theme="modern"]) .peer-review { border-left: 3px solid #36e175; }
 :where(html[data-theme="modern"]) .peer-review.has-notes { border-left-color: #7238fa; }
 :where(html[data-theme="modern"]) .peer-findings .sev-fix b { color: #7238fa; }
+:where(html[data-theme="modern"]) .tier-order-warn { border-left: 3px solid #a70a0a; }

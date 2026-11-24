@@ -1043,7 +1043,8 @@ TOP_SELLER_OPPORTUNITIES = [
 
 DEFAULT_CADEN_PROMPT = """Build homeowner proposals from the supplied Power House Service Library and Pricing Sheet Library.
 
-Create exactly the option count and tier order supplied by the application. A six-option quote uses Economy, Basic, Bronze, Silver, Gold, Platinum. A three-option quote uses Economy, Gold, Platinum.
+Create exactly the option count and tier order supplied by the application. Every tier costs more than the tier below it
+(Economy the least, Platinum the most); judge it by the total installed cost (materials plus labor), never by the price of one part. A six-option quote uses Economy, Basic, Bronze, Silver, Gold, Platinum. A three-option quote uses Economy, Gold, Platinum.
 
 Every tier must be meaningfully different from the tier immediately below it. As tiers increase, add at least one useful scope item, upgrade product or workmanship quality, improve protection, add convenience, improve appearance, or add longer-term value. Never repeat the same option with only a different title or price. Every option must remain safe and coherent; do not make Basic artificially unsafe or incomplete.
 
@@ -1760,7 +1761,7 @@ def require_setup_if_no_users():
 def enforce_role_permissions():
     if not current_user.is_authenticated or request.endpoint in {"static", "logout", "dashboard"}:
         return
-    admin_endpoints = {"settings", "update_routing_settings", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import", "jobber_update", "jobber_expenses_import",
+    admin_endpoints = {"settings", "update_routing_settings", "update_quote_model", "settings_bug_reports", "create_bug_report", "update_bug_report", "tools_library", "create_tool", "edit_tool", "delete_tool", "generate_local_cooper_token", "revoke_local_cooper_token", "roles", "update_role", "create_agent", "edit_agent", "add_agent_knowledge", "edit_agent_knowledge", "delete_agent_knowledge", "upload_agent_file", "delete_agent_file", "add_user", "update_user", "reset_password", "delete_user", "releases_page", "releases_status", "releases_connect", "releases_disconnect", "releases_check", "releases_deploy", "releases_restore", "releases_auto", "flow_page", "flow_save", "jobber_page", "jobber_keys", "jobber_connect", "jobber_callback", "jobber_disconnect", "jobber_pull", "jobber_status", "jobber_import", "jobber_people_save", "jobber_schedule_import", "jobber_update", "jobber_expenses_import",
                        "job_analytics", "cooper_account", "test_cooper_account", "check_cooper_prices", "cancel_cooper_price_sync", "cooper_sync_preview",
                        "apply_cooper_prices", "start_cooper_catalog", "unconfirmed_switch", "update_job_materials_from_cooper",
                        "labor_calculator", "upload_labor_reference", "apply_labor_proposals", "ask_mike", "update_labor_rate", "download_cooper_listener"}
@@ -1769,7 +1770,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "price_item_pictures":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "quote_price_order":"view_quoting", "price_item_pictures":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -3297,6 +3298,9 @@ def use_sheet_item(quote_id):
     for line in lines:
         price_line_from_item(line, item)
     if lines:
+        db.session.flush()
+        for said in put_options_in_price_order(quote):
+            quote.messages.append(QuoteMessage(role="assistant", content=said))
         confirmed = confirm_sheet_item(item, "when used on a quote")      # picking it is saying it's the right item
         quote.messages.append(QuoteMessage(role="assistant", content=f"Priced from the Pricing Sheet: {asked} → {item.name} at ${item.price:,.2f}/{item.unit}"
                                            + (f" + {item.labor_hours_per_unit:g} hr" if item.labor_hours_per_unit else "")
@@ -5202,6 +5206,17 @@ def settings():
     return render_settings_page()
 
 
+@app.route("/settings/ai-model", methods=["POST"])
+@login_required
+def update_quote_model():
+    """Settings -> AI models: which model builds quotes ('' = the server's or the default)."""
+    check_csrf()
+    model = re.sub(r"[^A-Za-z0-9._:-]", "", request.form.get("quote_model", ""))[:80]
+    set_company_setting("quote_model", model)
+    flash(f"Quotes are now built with {model}." if model else f"Quotes use {quote_model_choice()[0]} ({quote_model_choice()[1]}).", "success")
+    return redirect(url_for("settings") + "#ai-models")
+
+
 @app.route("/settings/routing", methods=["POST"])
 @login_required
 def update_routing_settings():
@@ -5373,6 +5388,9 @@ def render_settings_page(new_local_cooper_token=None):
         dispatch_address=get_dispatch_address(),
         travel_road_factor=get_numeric_setting("travel_road_factor", 1.25),
         travel_average_speed=get_numeric_setting("travel_average_speed", 45),
+        quote_model=quote_model_choice(), quote_model_used=json.loads((db.session.get(CompanySetting, "quote_model_used") or CompanySetting(value="{}")).value or "{}"),
+        fallback_model=os.environ.get("OPENAI_MODEL", "gpt-5-mini"), ai_connected=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")),
+        account_models=account_models() if request.args.get("models") or request.args.get("ai") else [],
     )
 
 
@@ -6953,22 +6971,61 @@ breaker/circuit when a new circuit is needed.
 NEVER invent a price or a labor time; quantities are real counts (each connector, each foot of cable)."""
 
 
+DEFAULT_QUOTE_MODEL = "gpt-5"
+
+
+def quote_model_choice():
+    """(model, where it is set): picked on Settings -> AI models, else the server's OPENAI_QUOTE_MODEL, else the default."""
+    row = db.session.get(CompanySetting, "quote_model")
+    if row and row.value.strip():
+        return row.value.strip(), "Settings"
+    if os.environ.get("OPENAI_QUOTE_MODEL"):
+        return os.environ["OPENAI_QUOTE_MODEL"], "the server (OPENAI_QUOTE_MODEL)"
+    return DEFAULT_QUOTE_MODEL, "the default"
+
+
 def quote_model():
-    """The model that builds quotes: OPENAI_QUOTE_MODEL, else a full reasoning model (quotes are worth thinking about),
-    falling back to OPENAI_MODEL when the account does not have it."""
-    return os.environ.get("OPENAI_QUOTE_MODEL") or "gpt-5"
+    """The model that builds quotes (a full reasoning model: quotes are worth thinking about); when the account does not
+    have it, every call falls back to OPENAI_MODEL by itself (ask_quote_model)."""
+    return quote_model_choice()[0]
+
+
+def note_model_used(model, wanted, response=None):
+    """Remember which model actually answered the last quote step (Settings -> AI models shows it). Never commits."""
+    try:
+        used = getattr(response, "model", None) or model
+        row = db.session.get(CompanySetting, "quote_model_used") or CompanySetting(key="quote_model_used")
+        row.value = json.dumps({"model": str(used), "wanted": wanted, "fell_back": model != wanted, "at": datetime.utcnow().isoformat(timespec="minutes")})
+        db.session.add(row)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def account_models():
+    """The models this OpenAI account can use, newest-looking first ([] when it cannot be asked)."""
+    if OpenAI is None or not os.environ.get("OPENAI_API_KEY"):
+        return []
+    try:
+        names = [m.id for m in OpenAI().models.list()]
+    except Exception:  # noqa: BLE001
+        return []
+    keep = [n for n in names if re.match(r"^(gpt-|o\d)", n) and not re.search(r"audio|realtime|tts|transcribe|image|search|embedding|instruct|vision|codex", n)]
+    return sorted(set(keep), reverse=True)
 
 
 def ask_quote_model(client, **args):
     """One call to the quote model with reasoning; when the account or model refuses the model or the reasoning setting,
     the same call again on OPENAI_MODEL without it. Raises what the last try raised."""
-    tries = [dict(args, model=quote_model(), reasoning={"effort": os.environ.get("OPENAI_QUOTE_EFFORT", "medium")})]
+    wanted = quote_model()
+    tries = [dict(args, model=wanted, reasoning={"effort": os.environ.get("OPENAI_QUOTE_EFFORT", "medium")})]
     fallback = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
     tries.append(dict(args, model=fallback))
     last = None
     for attempt in tries:
         try:
-            return client.responses.create(**attempt)
+            response = client.responses.create(**attempt)
+            note_model_used(attempt["model"], wanted, response)
+            return response
         except Exception as error:  # noqa: BLE001
             words = str(error).lower()
             if any(w in words for w in ("context", "too long", "tokens")) or \
@@ -7111,6 +7168,8 @@ REVIEW_QUESTIONS = """Ask yourself what the owner would ask on reading it:
 - Are the quantities real counts? Parts for every light or device follow the count (2 bulbs each on 12 lights is 24), cable in feet.
 - Is anything priced twice, or a line that is really a summary of the scope?
 - Does each higher tier really add something, and is every tier complete and safe on its own?
+- Does each tier cost more than the one below it (estimated_total, materials plus labor)? Basic/Economy is always the least and
+  Platinum the most. If not, say which tier is out of order and what to change (a cheaper part below, an upgrade above).
 - Does every client-facing line read naturally to a homeowner (no "installation of and install", no jargon, no doubled words)?
 - Is any labor missing (a part with 0 hr that obviously takes time)? Name it so Mike can time it."""
 
@@ -7136,8 +7195,36 @@ def describe_draft(options):
             name, quantity, unit = _missing_entry(value)
             lines.append(f"{quantity:g} {unit} {name} (not priced yet)")
         rows.append({"tier": option.get("tier"), "title": option.get("title"), "description": option.get("description"),
-                     "bullets": option.get("bullets", []), "lines": lines})
+                     "bullets": option.get("bullets", []), "lines": lines, "estimated_total": draft_estimate(option, items, services)})
     return rows
+
+
+def draft_estimate(option, items=None, services=None):
+    """What an option of Caden's comes to from what is priced (materials plus labor at the company rate; unpriced lines left out)."""
+    rate = get_labor_rate()
+    total = 0.0
+    for row in option.get("services", []):
+        service = (services or {}).get(row.get("service_id")) if services is not None else db.session.get(Service, row.get("service_id") or 0)
+        if service:
+            total += float(row.get("multiplier") or 0) * service.example_total
+    for row in option.get("items", []):
+        item = (items or {}).get(row.get("price_item_id")) if items is not None else db.session.get(PriceItem, row.get("price_item_id") or 0)
+        if item:
+            total += float(row.get("quantity") or 0) * (item.price + item.labor_hours_per_unit * rate)
+    return round(total, 2)
+
+
+def tier_order_findings(options):
+    """A 'fix' finding for every tier that does not cost more than the one below it (from what is priced)."""
+    found, below = [], None
+    for option in options:
+        total = draft_estimate(option)
+        if below is not None and total and below[1] and total <= below[1]:
+            found.append({"tier": option.get("tier"), "severity": "fix",
+                          "problem": f"{option.get('tier')} comes to about ${total:,.2f}, not more than {below[0]} (${below[1]:,.2f}).",
+                          "fix": f"Every tier must cost more than the one below: make {below[0]} more economical or give {option.get('tier')} a real upgrade."})
+        below = (option.get("tier"), total)
+    return found
 
 
 def caleb_peer_review(client, context_text, scope, options):
@@ -7396,6 +7483,11 @@ An item that is not in either library goes in missing_services, and the office m
     if result.get("ready") and isinstance(result.get("options"), list):
         # peer review: Caleb reads the draft first; Caden fixes what he finds (once), and Caleb reads it again
         review = caleb_peer_review(client, context_text, scope, result["options"])
+        order = tier_order_findings(result["options"])
+        if order:                                   # the app's own check: never left to the review alone
+            review = review or {"approved": False, "summary": "", "findings": []}
+            review["approved"] = False
+            review["findings"] = order + [f for f in review["findings"] if "cost" not in str(f.get("problem", "")).lower()]
         if review is not None:
             fixes = [f for f in review["findings"] if f.get("severity") == "fix"]
             first = review
@@ -7412,7 +7504,11 @@ An item that is not in either library goes in missing_services, and the office m
                 if isinstance(revised, dict) and revised.get("ready") and isinstance(revised.get("options"), list) \
                         and [o.get("tier") for o in revised["options"]] == tiers:
                     result = dict(revised, message=revised.get("message") or result.get("message"))
-                    review = caleb_peer_review(client, context_text, scope, result["options"]) or review
+                    review = caleb_peer_review(client, context_text, scope, result["options"]) or dict(review, findings=[])
+                    still = tier_order_findings(result["options"])
+                    if still:
+                        review["approved"] = False
+                        review["findings"] = [dict(f, severity="note") for f in still] + review["findings"]
                     review["fixed"] = [f"{f.get('tier')}: {f.get('problem')}" for f in fixes]
                 else:
                     review["fixed"] = []
@@ -7652,7 +7748,37 @@ def apply_ai_quote_options(quote, option_data):
     if found:
         notes.append(found)
     notes.extend(apply_lighting_plan(quote))
+    notes.extend(put_options_in_price_order(quote))
     return list(dict.fromkeys(notes)), suggestions
+
+
+def tiers_out_of_order(quote):
+    """The tiers that do not cost more than the one below them: [(lower option, higher option)]. Only once every option is
+    priced (an option with a line to price has no real total yet)."""
+    options = sorted(quote.options, key=lambda o: o.position)
+    if len(options) < 2 or any(o.has_missing_price for o in options):
+        return []
+    return [(a, b) for a, b in zip(options, options[1:]) if b.total <= a.total]
+
+
+app.jinja_env.globals["tiers_out_of_order"] = tiers_out_of_order
+
+
+def put_options_in_price_order(quote):
+    """Economy always costs the least and Platinum the most: when every option is priced and they are out of order, the
+    options are re-ordered by total so the cheaper scope carries the lower tier name. Returns a sentence when it moved them."""
+    if not tiers_out_of_order(quote):
+        return []
+    options = sorted(quote.options, key=lambda o: o.position)
+    names = [o.tier for o in options]
+    ordered = sorted(options, key=lambda o: o.total)
+    before = {o.id or id(o): o.tier for o in options}
+    for position, (option, tier) in enumerate(zip(ordered, names)):
+        option.tier = tier; option.position = position
+    moved = [f"{o.title} is now {o.tier}" for o in ordered if before[o.id or id(o)] != o.tier]
+    same = [(a.tier, b.tier) for a, b in zip(ordered, ordered[1:]) if abs(a.total - b.total) < 0.005]
+    return ([f"Tiers put in price order (every tier costs more than the one below): {'; '.join(moved)}."] if moved else []) + \
+        [f"{a} and {b} cost the same: give {b} a real upgrade." for a, b in same]
 
 
 # ---------------- Lighting layouts on a quote ----------------
@@ -7689,7 +7815,27 @@ def lights_without_lumens(limit=30):
 
 def lighting_plans_for(quote):
     room = quote.lighting_room
-    return (room, lighting.plans(room, lighting_fixtures())) if room else (None, [])
+    if not room:
+        return (None, [])
+    plans = lighting.plans(room, lighting_fixtures())
+    add_installed_costs(plans, room)
+    return (room, plans)
+
+
+def add_installed_costs(plans, room):
+    """Each layout's installed cost (plan["installed"]): the lights, their labor at the company rate, and the cable and a
+    connector for every light. A cheap light that needs 100 fixtures can cost more than a better one that needs 12."""
+    rate = get_labor_rate()
+    wiring = lighting_wiring(room)
+    cable = lighting_wire_item() if wiring["method"] == "NM" else _sheet_item_with(wiring["words"], also=("14/2",), unit_ft=True)
+    connector = _sheet_item_with(wiring["connector_words"], also=("connector",))
+    per_ft = (cable.price + cable.labor_hours_per_unit * rate) if cable else 0
+    per_conn = (connector.price + connector.labor_hours_per_unit * rate) if connector else 0
+    for plan in plans:
+        feet = lighting.wire_run(plan, room)["feet"]
+        plan["installed"] = round(plan["material"] + plan["labor_hours"] * rate + feet * per_ft + (plan["count"] + 1) * per_conn, 2)
+    plans.sort(key=lambda plan: (plan["installed"], plan["count"]))
+    return plans
 
 
 def lighting_picks(plans, count):
@@ -7697,7 +7843,7 @@ def lighting_picks(plans, count):
     when there are any), from the most economical up, spread so the tiers differ. Without one that reaches it: the brightest."""
     good = [plan for plan in plans if plan["footcandles"] >= plan["target"] * 0.95] or sorted(plans, key=lambda p: -p["footcandles"])[:3]
     good = [plan for plan in good if "rab" in plan["name"].lower()] or good
-    good = sorted(good, key=lambda plan: (plan["material"], plan["count"]))
+    good = sorted(good, key=lambda plan: (plan.get("installed", plan["material"]), plan["count"]))     # by what it costs installed
     if not good or count <= 0:
         return []
     if count == 1 or len(good) == 1:
@@ -7860,7 +8006,7 @@ def lighting_scope_note(quote):
     room, plans = lighting_plans_for(quote)
     wiring = lighting_wiring(room)
     rows = [{"light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"], "footcandles": plan["footcandles"],
-             "cable_feet": lighting.wire_run(plan, room)["feet"]} for plan in lighting_shortlist(plans)]
+             "cable_feet": lighting.wire_run(plan, room)["feet"], "installed_cost": plan.get("installed")} for plan in lighting_shortlist(plans)]
     size = f"{room['length']:g} ft round" if room.get("shape") == "circle" else f"{room['length']:g} x {room['width']:g} ft"
     return f"""LIGHTING_LAYOUT for {room['name']} ({size}, {room['height']:g} ft ceiling, {room['type_label']}, target {room['target']:g} fc):
 {json.dumps(rows) if rows else "No light on the Pricing Sheet has known lumens yet."}
@@ -7903,7 +8049,7 @@ def lighting_shortlist(plans):
     good = [plan for plan in plans if plan["footcandles"] >= plan["target"] * 0.95]
     if not good:
         return sorted(plans, key=lambda plan: -plan["footcandles"])[:5]
-    good.sort(key=lambda plan: ("rab" not in plan["name"].lower(), plan["material"], plan["count"]))
+    good.sort(key=lambda plan: ("rab" not in plan["name"].lower(), plan.get("installed", plan["material"]), plan["count"]))
     return good[:LIGHTING_SHORTLIST]
 
 
@@ -7914,6 +8060,7 @@ def lighting_prompt(quote):
         return ""
     rows = [{"price_item_id": plan["id"], "light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"],
              "layout": "rings" if plan["shape"] == "circle" else f"{plan['rows']} x {plan['cols']} grid", "footcandles": plan["footcandles"], "material_cost": plan["material"],
+             "installed_cost": plan.get("installed", plan["material"]),
              "unconfirmed": plan["unconfirmed"]} for plan in lighting_shortlist(plans)]
     size = f"{room['length']:g} ft round" if room.get("shape") == "circle" else f"{room['length']:g} x {room['width']:g} ft"
     return f"""LIGHTING_PLAN for {room['name']} ({size}, {room['height']:g} ft ceiling, {room['type_label']},
@@ -7922,7 +8069,9 @@ target {room['target']:g} foot-candles average, worked out with the lumen method
 Lighting rule: for this room's general lighting, every option uses exactly ONE light from LIGHTING_PLAN, in items, with its
 price_item_id and exactly its quantity (the quantity is the layout's, not yours). Make the options differ the way a client would
 choose: lower tiers the most economical light that meets the target, higher tiers better lights (higher output for fewer
-fixtures, slimmer or premium trims, dimmable, better color) or more light. Never pick a light whose footcandles fall short of
+fixtures, slimmer or premium trims, dimmable, better color) or more light; pick by installed_cost (lights, labor, cable): a cheap
+light that needs many fixtures can cost more installed than a better one that needs few, and each tier must cost more than the one
+below it. Never pick a light whose footcandles fall short of
 the target. Add the switching and dimmers as usual. The app adds the cable for these lights itself (its footage worked out
 from the layout), so put at most one wire line for them; its quantity is set to the layout's footage. Say in the option description how many lights and how bright.
 We use RAB lighting for almost everything (sold through Cooper): prefer RAB lights on LIGHTING_PLAN. When the right light for a
@@ -8178,6 +8327,20 @@ def suggest_quote_labor(quote_id):
     return jsonify({"suggestions": saved})
 
 
+@app.route("/quotes/<int:quote_id>/price-order", methods=["POST"])
+@login_required
+def quote_price_order(quote_id):
+    """Put in price order: the draft's options re-ordered so every tier costs more than the one below."""
+    check_csrf()
+    quote = db.get_or_404(Quote, quote_id)
+    said = put_options_in_price_order(quote) if quote.status == "draft" else []
+    for line in said:
+        quote.messages.append(QuoteMessage(role="assistant", content=line))
+    db.session.commit()
+    flash(said[0] if said else "The options are already in price order.", "success")
+    return redirect(url_for("quote_assistant", job_id=quote.job_id))
+
+
 @app.route("/quotes/<int:quote_id>/labor-time", methods=["POST"])
 @login_required
 def save_item_labor(quote_id):
@@ -8198,6 +8361,9 @@ def save_item_labor(quote_id):
                 line.labor_rate_snapshot = line.labor_rate_snapshot or get_labor_rate()
                 line.unit_price = (line.material_unit_price or 0) + line.labor_hours_per_unit * line.labor_rate_snapshot
                 changed += 1
+    db.session.flush()
+    for said in put_options_in_price_order(quote):
+        quote.messages.append(QuoteMessage(role="assistant", content=said))
     db.session.commit()
     flash(f"{item.name}: {hours:g} hr per {item.unit} saved on the Pricing Sheet" + (f" and on {changed} line(s) of this quote." if changed else "."), "success")
     return redirect(url_for("quote_assistant", job_id=quote.job_id) + "#labor-check")
