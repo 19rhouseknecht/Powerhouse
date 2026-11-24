@@ -104,4 +104,5 @@
   renumber();
 })();
 </script>
+{% if picture_watch %}<script>document.addEventListener('DOMContentLoaded', function () { window.PHWatchPictures({{ picture_watch|tojson }}); });</script>{% endif %}
 {% endblock %}

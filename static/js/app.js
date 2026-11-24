@@ -21,9 +21,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const unit = row.querySelector(".item-unit-input");
     const price = row.querySelector(".item-price-input");
     const cooperPart = row.querySelector(".item-cooper-input");
+    const pictureBox = row.querySelector("[data-item-pic]");
+    const thumb = (item, cls) => {                       // an item's picture, or a placeholder that fills in when Cooper brings it
+      const pic = document.createElement(item && item.image ? "img" : "span");
+      pic.className = cls + (item && item.image ? "" : " " + cls + "-none");
+      if (item && item.image) { pic.src = item.image; pic.alt = ""; pic.loading = "lazy"; }
+      else { pic.textContent = "▢"; pic.title = item ? "No picture yet" : "Pick an item to see its picture"; if (item && item.id) pic.setAttribute("data-pic-for", item.id); }
+      return pic;
+    };
     const choose = item => {
       input.value = item.name; hidden.value = item.id; unit.value = item.unit; price.value = Number(item.price).toFixed(2);
       if (cooperPart) cooperPart.value = item.cooper_part_number || "";
+      if (pictureBox) pictureBox.replaceChildren(thumb(item, "line-thumb"));
       menu.classList.remove("open");
     };
     const show = (clearSelection = false) => {
@@ -31,6 +40,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (clearSelection) {
         hidden.value = "";
         if (cooperPart) cooperPart.value = "";
+        if (pictureBox) pictureBox.replaceChildren(thumb(null, "line-thumb"));
       }
       if (!query) { menu.classList.remove("open"); return; }
       if (findUrl) {                                   // search the Pricing Sheet on the server (it can hold Cooper's whole catalog)
@@ -42,7 +52,8 @@ document.addEventListener("DOMContentLoaded", () => {
             .then(r => r.json())
             .then(data => {
               if (input.value.trim() !== asked) return;
-              render((data.results || []).slice(0, 8).map(row => ({id: row.id, name: row.name, unit: row.unit, price: row.price, cooper_part_number: row.part || "", unconfirmed: (row.kind || "").includes("Unconfirmed")})));
+              render((data.results || []).slice(0, 8).map(row => ({id: row.id, name: row.name, unit: row.unit, price: row.price, cooper_part_number: row.part || "", image: row.image || "", unconfirmed: (row.kind || "").includes("Unconfirmed")})));
+              if (data.picture_watch && window.PHWatchPictures) window.PHWatchPictures(data.picture_watch);
             }).catch(() => {});
         }, 200);
         return;
@@ -52,10 +63,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const render = matches => {
       menu.innerHTML = "";
       matches.forEach(item => {
-        const option = document.createElement("button"); option.type = "button"; option.className = "price-suggestion";
+        const option = document.createElement("button"); option.type = "button"; option.className = "price-suggestion has-pic";
         const title = document.createElement("strong"); title.textContent = item.name;
         const meta = document.createElement("span"); meta.textContent = `${item.cooper_part_number ? `Cooper #${item.cooper_part_number} · ` : ""}$${Number(item.price).toFixed(2)} / ${item.unit}${item.unconfirmed ? " · Unconfirmed" : ""}`;
-        option.append(title, meta);
+        const words = document.createElement("span"); words.className = "price-suggestion-words"; words.append(title, meta);
+        option.append(thumb(item, "pick-thumb"), words);
         option.addEventListener("mousedown", event => { event.preventDefault(); choose(item); }); menu.append(option);
       });
       menu.classList.toggle("open", matches.length > 0); closeSuggestions(menu);

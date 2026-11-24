@@ -482,3 +482,5 @@
 :where(html[data-theme="modern"]) .peer-review.has-notes { border-left-color: #7238fa; }
 :where(html[data-theme="modern"]) .peer-findings .sev-fix b { color: #7238fa; }
 :where(html[data-theme="modern"]) .tier-order-warn { border-left: 3px solid #a70a0a; }
+:where(html[data-theme="modern"]) .price-suggestion .pick-thumb { background: #16141f; }
+:where(html[data-theme="modern"]) .price-suggestion .pick-thumb-none { background: var(--panel-soft, rgba(30, 22, 70, 0.036)); }
