@@ -1859,3 +1859,13 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .peer-findings .sev-fix b { color:#f59e0b; }
 .scope-plan li { font-size:13px; line-height:1.4; }
 .scope-plan li small, .scope-plan summary small { font-size:12px; font-weight:400; }
+
+.tier-order-warn { margin:12px 0; padding:12px 14px; border-left:3px solid #ef4444; font-size:13px; }
+.tier-order-warn p { margin:6px 0 8px; }
+
+/* Settings: AI models */
+.ai-model-facts { display:grid; gap:8px; margin:10px 0 12px; }
+.ai-model-facts dt { font-size:11px; color:var(--muted); font-weight:600; }
+.ai-model-facts dd { margin:2px 0 0; }
+.ai-model-form { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
+.ai-model-form label { display:grid; gap:4px; min-width:240px; }
