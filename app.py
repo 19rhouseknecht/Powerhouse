@@ -1772,7 +1772,7 @@ def enforce_role_permissions():
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
         "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
-        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "quote_price_order":"view_quoting", "price_item_pictures":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
+        "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "quote_price_order":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
         "time_tracking":"view_time", "clock_in":"view_time", "clock_out":"view_time", "start_job_visit":"view_time", "stop_job_visit":"view_time", "timesheet":"view_time", "tasks":"view_tasks", "create_task":"view_tasks", "update_task_status":"view_tasks", "ask_brendon":"view_tasks", "trainings":"view_training", "create_training":"view_training", "edit_training":"view_training", "training_detail":"view_training",
@@ -2391,7 +2391,8 @@ def service_detail(service_id):
     wanted = request.args.get("render", type=int)
     render = next((r for r in service.renders if r.id == wanted), None) or (service.renders[0] if service.renders else None)
     return render_template("service_detail.html", service=service, render=render, render_data=render_view(render) if render else None,
-                           ai_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")))
+                           ai_ready=bool(OpenAI is not None and os.environ.get("OPENAI_API_KEY")),
+                           picture_watch=ask_cooper_for_pictures([item.catalog_item for item in service.items if item.catalog_item]))
 
 
 SERVICE_CHECKLIST_CATEGORIES = [
@@ -2609,7 +2610,8 @@ def edit_service(service_id):
         db.session.commit()
         flash(f'Updated service "{service.name}".', "success")
         return redirect(url_for("service_detail", service_id=service.id))
-    return render_template("service_form.html", service=service, form={}, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all())
+    return render_template("service_form.html", service=service, form={}, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(),
+                           picture_watch=ask_cooper_for_pictures([item.catalog_item for item in service.items if item.catalog_item]))
 
 
 @app.route("/quoting/services/<int:service_id>/delete", methods=["POST"])
@@ -3373,11 +3375,12 @@ def find_pricing_items():
         services = services.filter(db.or_(Service.name.ilike(like), Service.category.ilike(like)))
     found = [] if only_items else [{"id": f"s{s.id}", "name": s.name, "kind": "Service", "price": round(s.example_total, 2), "unit": s.example_quantity}
                                    for s in services.order_by(Service.name).limit(5).all()]
+    rows = items.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(20).all()
     found += [{"id": str(i.id), "name": i.name, "kind": "Pricing Sheet" + (" (Unconfirmed)" if i.category == UNCONFIRMED else ""),
                "price": round(i.price, 2), "unit": i.unit, "part": i.cooper_part_number,
-               "image": url_for("static", filename=i.image_path) if i.image_path else ""}
-              for i in items.order_by(PriceItem.category == UNCONFIRMED, PriceItem.name).limit(20).all()]
-    return jsonify({"results": found})
+               "image": url_for("static", filename=i.image_path) if i.image_path else ""} for i in rows]
+    watch = ask_cooper_for_pictures(rows[:8]) if only_items else ""      # what the dropdown shows without a picture: Cooper brings it
+    return jsonify({"results": found, "picture_watch": watch})
 
 
 MORE_MATCHES_PAGE = 8
@@ -3387,6 +3390,8 @@ MORE_MATCHES_PAGE = 8
 @login_required
 def price_item_pictures():
     """The pictures of some Pricing Sheet items (for a page waiting on the office listener): {id: address or ''}."""
+    if not any(current_user.can(p) for p in ("view_quoting", "view_services", "view_jobs", "view_pricing")):
+        return jsonify({"pictures": {}})
     ids = [int(v) for v in request.args.get("ids", "").split(",") if v.strip().isdigit()][:200]
     rows = PriceItem.query.filter(PriceItem.id.in_(ids or [0])).all()
     return jsonify({"pictures": {str(item.id): url_for("static", filename=item.image_path) if item.image_path else "" for item in rows}})

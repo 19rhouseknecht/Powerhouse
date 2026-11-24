@@ -1869,3 +1869,11 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .ai-model-facts dd { margin:2px 0 0; }
 .ai-model-form { display:flex; gap:10px; align-items:end; flex-wrap:wrap; }
 .ai-model-form label { display:grid; gap:4px; min-width:240px; }
+
+/* Service builder: a picture on every option in the item list, and beside each chosen item */
+.price-suggestion.has-pic { display:grid; grid-template-columns:38px minmax(0,1fr); column-gap:9px; align-items:center; }
+.price-suggestion .pick-thumb { width:38px; height:38px; border-radius:7px; object-fit:contain; background:#fff; display:grid; place-items:center; font-size:14px; color:var(--muted); }
+.price-suggestion .pick-thumb-none { background:var(--panel-soft, rgba(255,255,255,.06)); border:1px dashed var(--border); }
+.price-suggestion-words { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.item-row .item-row-pic { align-self:end; display:grid; padding-bottom:2px; }
+.item-row .item-row-pic .line-thumb { width:42px; height:42px; }
