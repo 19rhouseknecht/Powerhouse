@@ -42,6 +42,8 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "change-this-in-production")
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///" + os.path.join(basedir, "instance", "app.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# a page that has to write while another one (or Caden in the background) is mid-save waits up to 30 s instead of failing at 5 s
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"connect_args": {"timeout": 30}}
 app.config["MAX_CONTENT_LENGTH"] = 32 * 1024 * 1024        # a service with step pictures (the page shrinks phone photos first)
 
 os.makedirs(os.path.join(basedir, "instance"), exist_ok=True)
@@ -2650,20 +2652,42 @@ def create_quick_quote():
     option_count = request.form.get("option_count", type=int)
     option_count = option_count if option_count in {3, 6} else 6
     lead = QuickQuote(client_name=request.form.get("client_name", "").strip(), phone=request.form.get("phone", "").strip(), email=request.form.get("email", "").strip(), address=request.form.get("address", "").strip(), description=description, created_by=current_user, option_count=option_count)
-    db.session.add(lead); db.session.flush()
+    db.session.add(lead)
     if os.environ.get("OPENAI_API_KEY"):
-        try:
-            shim_job = type("QuickJob", (), {"id": None, "title": f"Quick quote — {lead.client_name or 'unassigned'}", "description": lead.description, "job_address": lead.address})()
-            shim_message = type("QuickMessage", (), {"role":"user", "content":lead.description})()
-            shim_quote = type("QuickConversation", (), {"messages":[shim_message], "option_count": lead.option_count})()
-            result = build_ai_quote_response(shim_job, shim_quote)
-            lead.ai_result_json = json.dumps(result); lead.ai_message = result.get("message", "")
-        except Exception:
-            app.logger.exception("Quick quote generation failed"); lead.ai_message = "Saved successfully. Caden will generate the options after job assignment."
+        lead.ai_message = "Caden is building the options in the background; they're ready when you assign a job."
+        db.session.commit()
+        if app.config.get("QUOTE_SYNC"):
+            _quick_quote_worker(lead.id)
+        else:
+            threading.Thread(target=_quick_quote_worker, args=(lead.id,), daemon=True).start()
     else:
         lead.ai_message = "Saved successfully. Options will generate when the AI connection is available."
-    db.session.commit(); flash("Quick quote saved and staged for job assignment.", "success")
+        db.session.commit()
+    flash("Quick quote saved and staged for job assignment.", "success")
     return redirect(url_for("generate_quote"))
+
+
+def _quick_quote_worker(lead_id):
+    """A quick quote's options, built in the background (never inside the page's request, which would time out)."""
+    with app.app_context():
+        try:
+            lead = db.session.get(QuickQuote, lead_id)
+            shim_job = type("QuickJob", (), {"id": None, "title": f"Quick quote — {lead.client_name or 'unassigned'}", "description": lead.description, "job_address": lead.address})()
+            shim_message = type("QuickMessage", (), {"role": "user", "content": lead.description})()
+            shim_quote = type("QuickConversation", (), {"messages": [shim_message], "option_count": lead.option_count})()
+            result = build_ai_quote_response(shim_job, shim_quote)
+            lead = db.session.get(QuickQuote, lead_id)
+            lead.ai_result_json = json.dumps(result); lead.ai_message = result.get("message", "")
+            db.session.commit()
+        except Exception:  # noqa: BLE001
+            app.logger.exception("Quick quote generation failed")
+            db.session.rollback()
+            lead = db.session.get(QuickQuote, lead_id)
+            if lead is not None:
+                lead.ai_message = "Saved successfully. Caden will generate the options after job assignment."
+                db.session.commit()
+        finally:
+            db.session.remove()
 
 
 @app.route("/quoting/quick/<int:quick_id>/assign", methods=["POST"])
@@ -2745,6 +2769,7 @@ def _caden_worker(quote_id, work):
         try:
             quote = db.session.get(Quote, quote_id)
             work(quote.job, quote)
+            fill_labor_suggestions(quote)
         except Exception as exc:  # noqa: BLE001 — Caden never takes the web worker down
             app.logger.exception("Caden's background work failed")
             db.session.rollback()
@@ -6990,15 +7015,24 @@ def quote_model():
     return quote_model_choice()[0]
 
 
+MODEL_USED = {}
+
+
 def note_model_used(model, wanted, response=None):
-    """Remember which model actually answered the last quote step (Settings -> AI models shows it). Never commits."""
-    try:
-        used = getattr(response, "model", None) or model
+    """Remember which model actually answered the last quote step (Settings -> AI models shows it). Only in memory: nothing
+    may write to the database while Caden waits on the AI, or every page that saves waits for him (SQLite has one writer)."""
+    used = getattr(response, "model", None)
+    MODEL_USED.clear()
+    MODEL_USED.update({"model": str(used if isinstance(used, str) and used else model), "wanted": wanted, "fell_back": model != wanted,
+                       "at": datetime.utcnow().isoformat(timespec="minutes")})
+
+
+def save_model_used():
+    """Write the last model that answered (after a build, with its results). Never commits."""
+    if MODEL_USED:
         row = db.session.get(CompanySetting, "quote_model_used") or CompanySetting(key="quote_model_used")
-        row.value = json.dumps({"model": str(used), "wanted": wanted, "fell_back": model != wanted, "at": datetime.utcnow().isoformat(timespec="minutes")})
+        row.value = json.dumps(MODEL_USED)
         db.session.add(row)
-    except Exception:  # noqa: BLE001
-        pass
 
 
 def account_models():
@@ -7261,6 +7295,8 @@ CADEN'S SCOPE: {json.dumps(scope) if scope else 'none'}"""
 
 
 def build_ai_quote_response(job, quote):
+    if db.session.new or db.session.dirty or db.session.deleted:
+        db.session.commit()             # nothing may stay half-written while the AI thinks: SQLite lets one connection write at a time
     if OpenAI is None:
         raise RuntimeError("The OpenAI Python package is not installed.")
     catalog = []
@@ -7814,7 +7850,7 @@ def lights_without_lumens(limit=30):
 
 
 def lighting_plans_for(quote):
-    room = quote.lighting_room
+    room = getattr(quote, "lighting_room", None)
     if not room:
         return (None, [])
     plans = lighting.plans(room, lighting_fixtures())
@@ -8242,21 +8278,34 @@ def pricing_needed_rows(quote, groups=None):
 
 
 def after_caden_build(quote, result):
-    """After Caden's options are saved: keep how he worked the job out, and have Mike suggest a time for every item with
-    0 hr of labor so the draft opens with them filled in (accept or edit). Never raises."""
+    """After Caden's options are saved: keep how he worked the job out, his peer review and which model answered.
+    (Mike's labor times are asked for after this is committed: fill_labor_suggestions.) Never raises."""
     try:
         if isinstance(result.get("scope"), dict):
             quote.scope_json = json.dumps(result["scope"])
         quote.review_json = json.dumps(result["review"]) if isinstance(result.get("review"), dict) else ""
-        db.session.flush()
-        ask = [row["item"] for row in zero_labor_items(quote) if str(row["item"].id) not in quote.labor_suggestions]
-        if ask and os.environ.get("OPENAI_API_KEY"):
-            saved = quote.labor_suggestions
-            for item_id, row in mike_labor_suggestions(ask).items():
-                saved[str(item_id)] = row
-            quote.labor_suggest_json = json.dumps(saved)
+        save_model_used()
     except Exception:  # noqa: BLE001
-        app.logger.exception("After-build labor suggestions failed")
+        app.logger.exception("Saving Caden's scope and review failed")
+
+
+def fill_labor_suggestions(quote):
+    """Mike suggests a time for every item on the draft with 0 hr, so it opens with them filled in (accept or edit).
+    Everything is committed BEFORE Mike is asked, so no page waits on the database while he thinks. Never raises."""
+    try:
+        db.session.commit()
+        ask = [row["item"] for row in zero_labor_items(quote) if str(row["item"].id) not in quote.labor_suggestions]
+        if not ask or not os.environ.get("OPENAI_API_KEY"):
+            return
+        found = mike_labor_suggestions(ask)
+        saved = quote.labor_suggestions
+        for item_id, row in found.items():
+            saved[str(item_id)] = row
+        quote.labor_suggest_json = json.dumps(saved)
+        db.session.commit()
+    except Exception:  # noqa: BLE001
+        db.session.rollback()
+        app.logger.exception("Mike's labor suggestions after a build failed")
 
 
 def zero_labor_items(quote):
