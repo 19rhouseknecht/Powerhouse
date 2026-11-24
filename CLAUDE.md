@@ -56,3 +56,15 @@ Each person picks Modern or Dark from the menu on their name (`User.theme`: '' =
 mapped to the light violet palette) + `modern.css` (hand-written: fonts, shapes, the sidebar, the navy hero), every rule
 scoped to `html[data-theme="modern"]`. **After any change to style.css run `python tools/build_modern_css.py`**
 (`tests/test_theme.py` fails while it is stale), then check the page in both looks; fix a Modern-only problem in modern.css.
+
+## Caden, the quote builder (`build_ai_quote_response`, 1.43.0)
+A quote is built in steps, each degrading to the next when it fails: (1) `plan_job_scope`: the estimating electrician lists every
+part each tier needs with its spec and why (`ELECTRICAL_KNOWLEDGE`: wiring method from the location, wire size from the breaker,
+the connector/box/plate every device needs); (2) `scope_candidates`: each part looked up on the Pricing Sheet (`sheet_matches`)
+and in Services; (3) the quote plan, priced only from those matches (the whole sheet only when step 1 failed); (3b) `caleb_peer_review`:
+Caleb reads every priced line (`describe_draft`) before anyone sees it; his "fix" findings go back to Caden once, then Caleb
+reads it again (`Quote.review_json`, drawn on the draft); (4)
+`review_client_wording`: lines `wording_problem` flags are rewritten by the model; never add a regex that rewrites what Caden
+wrote; (5) `after_caden_build`: the scope is kept on the quote (`Quote.scope_json`) and Mike suggests labor for 0-hr items. Every
+call goes through `ask_quote_model` (OPENAI_QUOTE_MODEL, default gpt-5 with reasoning, falling back to OPENAI_MODEL). Test fakes
+answer by `text.format.name`. Lighting: `lighting_wiring(room)` picks NM / MC / UF; `wire_for_lighting` + `connectors_for_lighting`.

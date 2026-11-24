@@ -478,3 +478,6 @@
 :where(html[data-theme="modern"]) .busy-overlay { background: rgba(252, 252, 253, .55); }
 :where(html[data-theme="modern"]) .busy-card { box-shadow: 0 20px 60px rgba(30, 22, 70, 0.158); }
 :where(html[data-theme="modern"]) .labor-check { border-left: 3px solid #7238fa; }
+:where(html[data-theme="modern"]) .peer-review { border-left: 3px solid #36e175; }
+:where(html[data-theme="modern"]) .peer-review.has-notes { border-left-color: #7238fa; }
+:where(html[data-theme="modern"]) .peer-findings .sev-fix b { color: #7238fa; }

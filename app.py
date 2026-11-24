@@ -1198,6 +1198,8 @@ class Quote(db.Model):
     confirmed_at = db.Column(db.DateTime, nullable=True)
     pricing_needed_json = db.Column(db.Text, nullable=False, default="")    # Caden's suggested prices for unpriced items
     labor_suggest_json = db.Column(db.Text, nullable=False, default="")     # Mike's suggested labor times: {price_item_id: {hours, reason}}
+    scope_json = db.Column(db.Text, nullable=False, default="")             # how Caden worked the job out: {site, assumptions, tiers: [{tier, intent, components}]}
+    review_json = db.Column(db.Text, nullable=False, default="")            # Caleb's peer review of the draft: {approved, summary, findings, rounds, fixed}
     lighting_json = db.Column(db.Text, nullable=False, default="")          # the room for a lighting layout (lighting.read_room)
     ai_working_since = db.Column(db.DateTime, nullable=True)                # Caden is building in the background since then
 
@@ -1216,6 +1218,22 @@ class Quote(db.Model):
     @property
     def has_missing_pricing(self):
         return any(option.has_missing_price for option in self.options)
+
+    @property
+    def review(self):
+        try:
+            value = json.loads(self.review_json or "{}")
+            return value if isinstance(value, dict) and "summary" in value else None
+        except ValueError:
+            return None
+
+    @property
+    def scope(self):
+        try:
+            value = json.loads(self.scope_json or "{}")
+            return value if isinstance(value, dict) and value.get("tiers") else None
+        except ValueError:
+            return None
 
     @property
     def labor_suggestions(self):
@@ -1662,6 +1680,23 @@ SCOPE_VERBS = (
 )
 
 
+LEAD_VERB_PAIR = re.compile(r"^(?:supply|provide|furnish|add|run|wire|install|mount|hang)(?:\s*(?:,|and|&|\+)\s*(?:supply|provide|furnish|add|run|wire|"
+                            r"install|mount|hang|connect))+\s+(?=\S)", re.IGNORECASE)
+NOT_A_NOUN_START = re.compile(r"^(?:and|or|to|with|for|in|on|at|by|install|installing|replace|replacing|wire|wiring|run|add|mount|hang|"
+                              r"connect|upgrade|inspect|test|check|provide|supply)\b", re.IGNORECASE)
+BROKEN_WORDING = re.compile(r"\b(?:of|for|and|the|a|an|to|with)\s+(?:and|or|of|to|with)\b|\b(\w{3,})\s+\1\b|"
+                            r"\b(?:installation|replacement|upgrade|inspection) of [^,]*\b(?:install|replace|upgrade|inspect)\b", re.IGNORECASE)
+
+
+def wording_problem(text):
+    """Why a client-facing line reads wrong ("Turnkey installation of and install lights"), or ''."""
+    text = str(text or "")
+    found = BROKEN_WORDING.search(text)
+    if found:
+        return f'"{found.group(0)}" does not read right'
+    return ""
+
+
 def professionalize_scope_bullet(value):
     """A short, plain, homeowner-facing scope line. A bullet that starts with an action ("Install …", "Replace …")
     becomes a scope phrase ("Turnkey installation of …", "Replacement of …"); Caden chooses "Premium …" himself for
@@ -1672,11 +1707,20 @@ def professionalize_scope_bullet(value):
         return ""
     scope = re.sub(r"^(?:we\s+will|we'll|our\s+team\s+will|power\s*house\s+will)\s+", "", scope, flags=re.IGNORECASE)
     scope = re.split(r"[;]|(?<=[.!?])\s+", scope, maxsplit=1)[0].strip(" .")
+    scope = LEAD_VERB_PAIR.sub("Install ", scope)               # "Add and install new lights" -> "Install new lights"
+    original = scope
     if not re.match(r"^(?:premium|turnkey|professional|safety|replacement\s+of|upgrade\s+of)\b", scope, flags=re.IGNORECASE):
         for pattern, prefix in SCOPE_VERBS:
             if re.match(pattern, scope, flags=re.IGNORECASE):
-                scope = prefix + re.sub(pattern, "", scope, count=1, flags=re.IGNORECASE).strip()
+                rest = re.sub(pattern, "", scope, count=1, flags=re.IGNORECASE).strip()
+                if rest and not NOT_A_NOUN_START.match(rest):       # only where it reads: never "installation of and …"
+                    scope = prefix + rest
                 break
+    if wording_problem(scope) and not wording_problem(original):
+        scope = original
+    scope = re.sub(r"\b(installation|replacement|upgrade|inspection) of (?:and|or|&) (?:install|wire|add|replace|run|mount|hang|upgrade|inspect)(?:ing)?\s+",
+                   r"\1 of ", scope, flags=re.IGNORECASE)                # an older saved line: "installation of and install lights"
+    scope = re.sub(r"\b(\w{3,})\s+\1\b", r"\1", scope, flags=re.IGNORECASE)   # "kitchen kitchen"
     result = plain_terms(scope)
     result = re.sub(r"\b(installation|replacement|upgrade|inspection) of (?:the |a |an )?new\b", r"\1 of new", result, flags=re.IGNORECASE)
     result = result[:1].upper() + result[1:]
@@ -2637,7 +2681,7 @@ def assign_quick_quote(quick_id):
     draft.messages.append(QuoteMessage(role="user", content=lead.description))
     result = lead.ai_result
     if result.get("ready") and len(result.get("options", [])) == draft.option_count:
-        notes, line_suggestions = apply_ai_quote_options(draft, result["options"]); remember_pricing_suggestions(draft, result.get("pricing_needed"), line_suggestions); draft.title = plain_terms(result.get("quote_title")) or draft.title; draft.introduction = plain_terms(result.get("introduction", ""))
+        notes, line_suggestions = apply_ai_quote_options(draft, result["options"]); remember_pricing_suggestions(draft, result.get("pricing_needed"), line_suggestions); after_caden_build(draft, result); draft.title = plain_terms(result.get("quote_title")) or draft.title; draft.introduction = plain_terms(result.get("introduction", ""))
         if not draft.ai_snapshot_json: draft.ai_snapshot_json = serialize_quote_snapshot(draft)
         draft.messages.append(QuoteMessage(role="assistant", content=lead.ai_message or f"I prepared {draft.option_count} options from the quick quote."))
     db.session.commit(); flash("Quick quote assigned to the job with its draft preserved.", "success")
@@ -2733,6 +2777,7 @@ def answer_quote_message(job, quote):
             if result.get("ready"):
                 notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
                 remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
+                after_caden_build(quote, result)
                 db.session.flush()
                 if not quote.ai_snapshot_json:
                     quote.ai_snapshot_json = serialize_quote_snapshot(quote)
@@ -3499,6 +3544,7 @@ def rework_quote(quote_id):
             if result.get("ready"):
                 notes, line_suggestions = apply_ai_quote_options(quote, result.get("options", []))
                 remember_pricing_suggestions(quote, result.get("pricing_needed"), line_suggestions)
+                after_caden_build(quote, result)
                 if not quote.ai_snapshot_json:
                     quote.ai_snapshot_json = serialize_quote_snapshot(quote)
                 restore_manual_quote_edits(quote, manual_snapshots)
@@ -6853,6 +6899,280 @@ def validate_ai_option_progression(options, expected_tiers=None):
         previous_copy = copy_signature
 
 
+# ---------------- Caden, rebuilt (1.43.0) ----------------
+# A quote is worked out the way an estimator works one out, in steps, each with the right tool:
+#   1. SCOPE: a master-electrician pass reads the request, the site visit, the lighting layout and generator work and lists every
+#      part each tier needs, with its spec (wiring method for the location, wire size for the breaker, the connector at every
+#      box, boxes, covers, breakers, permit), using ELECTRICAL_KNOWLEDGE. No prices, no catalog: what the job needs.
+#   2. MATCH: the app looks every part up on the Pricing Sheet (sheet_matches) and in the Services, so Caden picks from the
+#      few items that could be it instead of searching a dump of the whole sheet.
+#   3. PRICE: Caden builds the options from the scope and those matches (the quote plan, as before: every price from the sheet).
+#   4. WORDING: every client line is checked; anything that reads wrong is rewritten by the model, never by a regex.
+#   5. LABOR: Mike suggests a time for every item with 0 hr (shown on the draft to accept or edit; saved on the Pricing Sheet).
+# Every step degrades: a step that fails or answers in an unexpected shape is skipped and the quote is still built.
+ELECTRICAL_KNOWLEDGE = """ELECTRICAL ESTIMATING KNOWLEDGE (Pennsylvania residential and light commercial, NEC 2017/2020 as adopted; the
+inspector and the site always win, and you state what you assumed):
+WIRING METHOD — pick it from where the cable runs, and say why:
+- NM-B (Romex): dwellings, dry interior locations, concealed in walls/ceilings/attics, or protected where exposed. Never in wet
+  or damp locations, never outdoors, never buried, never in conduit outdoors; not in commercial buildings where the building type
+  or the job calls for MC/EMT. Garages and unfinished basements: NM-B is allowed where protected from damage; where it runs exposed
+  below 8 ft or along a wall subject to damage use MC or conduit.
+- MC cable: commercial and multifamily, exposed runs, where the customer or building requires it, inside steel studs. Uses MC
+  connectors (anti-short bushings) at every box.
+- UF-B: outdoor and direct burial (24 in deep; 12 in for a residential 120 V circuit of 20 A or less with GFCI protection),
+  feeding post lights, landscape and outdoor receptacles; sunlight-resistant where exposed. Watertight connectors and
+  weatherproof boxes.
+- THHN/THWN-2 in conduit (EMT inside/dry, PVC Schedule 40/80 outdoors and underground, liquid-tight at equipment): exposed
+  commercial, outdoor surface runs, service and feeder work. Count the wire (each conductor) AND the conduit, couplings, connectors,
+  straps, LB/fittings.
+- Landscape low-voltage lighting: transformer on a GFCI receptacle, 12/2 or 10/2 low-voltage landscape cable.
+WIRE SIZE (copper) by breaker: 15 A = 14 AWG, 20 A = 12 AWG, 30 A = 10, 40 A = 8, 50 A = 6, 60 A = 6 (THHN at 75 C) or 4.
+  2-wire (/2) for a simple circuit; /3 for 3-way travellers, 240 V with a neutral (ranges, dryers, some EV/generator), and
+  multi-wire circuits. Long runs (over ~100 ft) go up a size for voltage drop.
+WHAT EVERY DEVICE NEEDS (always list them, they are real parts with real labor):
+- Every light: the fixture, a box (an integrated junction box on wafer/canless lights; otherwise a fan/fixture-rated or
+  old-work ceiling box), a cable connector at each cable entry into a metal box or wafer junction box ("Romex connector",
+  3/8 in NM connector; MC connector for MC; watertight for UF), wire connectors (wire nuts or lever nuts), and the cable between it,
+  the next light and the switch.
+- Every switch or dimmer: a switch box (old-work in finished walls), the device (LED-compatible dimmer for dimmable LED),
+  a cover plate, and the switch leg. Two entrances = 3-way pair (two 3-way switches, /3 cable between them). Smart switches need
+  a neutral in the box.
+- Every receptacle: box, device (tamper-resistant in dwellings; GFCI where required: bathrooms, kitchen counters, within 6 ft of
+  a sink, garages, outdoors, unfinished basements, laundry, crawl spaces; weather-resistant plus an in-use cover outdoors), plate.
+- A new circuit: a breaker that matches the panel's brand and type, AFCI (or dual-function) protection for new or extended
+  circuits in kitchens, living areas, bedrooms, hallways, laundry and similar rooms, GFCI where listed above; the home run to the panel.
+- Ceiling fans: fan-rated box (brace for old work), fan, separate fan/light control when asked.
+- Outdoor work: weatherproof boxes and covers, in-use covers on receptacles, UF or conduit, burial depth, photocell/motion where
+  it fits; trenching when underground.
+- Anything in a finished wall or ceiling: old-work boxes, fishing time; say if attic or basement access is assumed and whether
+  drywall patching is or is not included.
+- Permit and inspection when the work requires one (new circuits, service, generators, EV chargers, panel work).
+LIGHTING LAYOUTS: the app works out the light count and the cable footage from the room; use them. A lighting job is a rewiring
+job: the lights, a cable connector per light, the cable (method from the location), the switch(es)/dimmer(s), boxes, and the
+breaker/circuit when a new circuit is needed.
+NEVER invent a price or a labor time; quantities are real counts (each connector, each foot of cable)."""
+
+
+def quote_model():
+    """The model that builds quotes: OPENAI_QUOTE_MODEL, else a full reasoning model (quotes are worth thinking about),
+    falling back to OPENAI_MODEL when the account does not have it."""
+    return os.environ.get("OPENAI_QUOTE_MODEL") or "gpt-5"
+
+
+def ask_quote_model(client, **args):
+    """One call to the quote model with reasoning; when the account or model refuses the model or the reasoning setting,
+    the same call again on OPENAI_MODEL without it. Raises what the last try raised."""
+    tries = [dict(args, model=quote_model(), reasoning={"effort": os.environ.get("OPENAI_QUOTE_EFFORT", "medium")})]
+    fallback = os.environ.get("OPENAI_MODEL", "gpt-5-mini")
+    tries.append(dict(args, model=fallback))
+    last = None
+    for attempt in tries:
+        try:
+            return client.responses.create(**attempt)
+        except Exception as error:  # noqa: BLE001
+            words = str(error).lower()
+            if any(w in words for w in ("context", "too long", "tokens")) or \
+                    not any(w in words for w in ("model", "reasoning", "not supported", "unsupported", "does not exist", "not found", "access")):
+                raise
+            last = error
+    raise last
+
+
+def _json_or_none(response):
+    try:
+        value = json.loads(getattr(response, "output_text", "") or "")
+        return value if isinstance(value, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+SCOPE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["site", "assumptions", "tiers"], "properties": {
+    "site": {"type": "string"},
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "tiers": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["tier", "intent", "components"], "properties": {
+        "tier": {"type": "string"}, "intent": {"type": "string"},
+        "components": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                  "required": ["name", "spec", "quantity", "unit", "why", "search"], "properties": {
+            "name": {"type": "string"}, "spec": {"type": "string"}, "quantity": {"type": "number"},
+            "unit": {"type": "string", "enum": ["ea", "ft", "roll", "box", "lb", "job"]}, "why": {"type": "string"}, "search": {"type": "string"}}}}}}}}}
+
+
+def plan_job_scope(client, context_text, conversation, tiers):
+    """Step 1: every part each tier needs, as a master electrician lists it. None when the step fails or answers oddly."""
+    instructions = f"""You are the estimating electrician on Power House Electrical Solutions' quoting team. Before anything is priced,
+work out the COMPLETE scope of this job for each tier: every part an electrician would load on the truck, with its spec and
+quantity, and why it is needed. Think about where every cable runs (dry/damp/wet, interior/exterior/underground, finished or open
+walls, residential or commercial) and choose the wiring method and size from that. Include the small parts (connectors, boxes,
+wire nuts, plates, covers, breakers) as their own components. Do not price anything and do not name catalog IDs.
+Tiers in order: {json.dumps(tiers)}. Lower tiers are complete and safe; higher tiers add value (better fixtures, more
+protection, more convenience). Write each tier's intent in one sentence.
+For each component: name (what it is), spec (size, type, rating, the way a supply house would sell it), quantity and unit (real
+counts: every connector, every foot of cable), why (one short reason, with the location or code reason), search (2 to 5 words to
+find it on a price sheet, for example "14/2 NM-B", "3/8 NM connector", "6in LED wafer", "single pole LED dimmer").
+site: one sentence describing the location and wiring conditions you assumed. assumptions: anything you assumed.
+
+{ELECTRICAL_KNOWLEDGE}
+
+{context_text}"""
+    try:
+        response = ask_quote_model(client, instructions=instructions, input=conversation,
+                                   text={"format": {"type": "json_schema", "name": "powerhouse_job_scope", "schema": SCOPE_SCHEMA, "strict": True}})
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Caden's scope step failed; building without it")
+        return None
+    scope = _json_or_none(response)
+    if not scope or not isinstance(scope.get("tiers"), list) or not scope["tiers"] or not all(isinstance(t, dict) and isinstance(t.get("components"), list) for t in scope["tiers"]):
+        return None
+    return scope
+
+
+def scope_candidates(scope, limit=5):
+    """Step 2: each component of the scope looked up on the Pricing Sheet and in the Services: {search: [rows]} and the
+    Pricing Sheet items found (so Caden is shown only what could be it)."""
+    found, items, services = {}, {}, Service.query.all()
+    for tier in scope.get("tiers", []):
+        for part in tier.get("components", []):
+            key = " ".join(str(part.get("search") or part.get("name") or "").split())[:80]
+            if not key or key in found:
+                continue
+            rows = []
+            for phrase in dict.fromkeys([key, str(part.get("spec") or "")[:120], str(part.get("name") or "")[:120]]):
+                for score, item in sheet_matches(phrase, limit=limit) if phrase else []:
+                    if item.id not in {r["price_item_id"] for r in rows if "price_item_id" in r}:
+                        rows.append({"price_item_id": item.id, "name": item.name, "unit": item.unit, "material_unit_price": round(item.price, 2),
+                                     "labor_hours_per_unit": round(item.labor_hours_per_unit, 4), "match": round(score, 2),
+                                     **({"unconfirmed": True} if item.category == UNCONFIRMED else {})})
+                        items[item.id] = item
+            words = {w for w in _match_tokens(key + " " + str(part.get("name") or "")) if len(w) > 2 and w not in MATCH_WORD_FILLER}
+            for service in services:
+                have = {w for w in _match_tokens(service.name) if len(w) > 2}
+                if words and len(words & have) >= max(1, min(2, len(words))):
+                    rows.append({"service_id": service.id, "name": service.name, "example_quantity": service.example_quantity})
+            found[key] = rows[: limit * 2]
+    return found, items
+
+
+WORDING_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["options"], "properties": {"options": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["tier", "title", "description", "bullets"], "properties": {
+        "tier": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "bullets": {"type": "array", "items": {"type": "string"}}}}}}}
+
+
+def client_wording_problems(options):
+    """Every client-facing line of Caden's options that reads wrong: [(tier, field, text, why)]."""
+    problems = []
+    for option in options or []:
+        lines = [("title", option.get("title", "")), ("description", option.get("description", ""))] + [("bullet", b) for b in option.get("bullets", [])]
+        for field, text in lines:
+            cleaned = professionalize_scope_bullet(text) if field == "bullet" else plain_terms(text)
+            why = wording_problem(cleaned) or wording_problem(text)
+            if why:
+                problems.append((option.get("tier"), field, text, why))
+    return problems
+
+
+def review_client_wording(client, options):
+    """Step 4: the client lines that read wrong are rewritten by the model (whole options, same meaning, same scope).
+    Returns the options with their wording fixed, or as they were when the review fails."""
+    problems = client_wording_problems(options)
+    if not problems:
+        return options
+    instructions = """You are the proofreader for Power House Electrical Solutions' homeowner proposals. Rewrite only the wording of
+these options so every title, description and bullet reads naturally to a homeowner: no doubled words, no dangling "of and",
+no two verbs for one action, plain words instead of trade terms, one thing per bullet, 3 to 10 words, no period. Keep every
+option's meaning, scope and order exactly; do not add or remove bullets. Lines that read wrong now: """ + json.dumps(
+        [{"tier": t, "field": f, "text": x, "problem": w} for t, f, x, w in problems])
+    try:
+        response = ask_quote_model(client, instructions=instructions,
+                                   input=json.dumps([{k: o.get(k) for k in ("tier", "title", "description", "bullets")} for o in options]),
+                                   text={"format": {"type": "json_schema", "name": "powerhouse_client_wording", "schema": WORDING_SCHEMA, "strict": True}})
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Caden's wording review failed")
+        return options
+    fixed = _json_or_none(response)
+    rows = {row.get("tier"): row for row in (fixed or {}).get("options", []) if isinstance(row, dict)} if fixed else {}
+    result = []
+    for option in options:
+        row = rows.get(option.get("tier"))
+        if row and isinstance(row.get("bullets"), list) and len(row["bullets"]) == len(option.get("bullets", [])) and all(isinstance(b, str) and b.strip() for b in row["bullets"]):
+            option = dict(option, title=row.get("title") or option.get("title"), description=row.get("description") or option.get("description"), bullets=row["bullets"])
+        result.append(option)
+    return result
+
+
+REVIEW_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["approved", "summary", "findings"], "properties": {
+    "approved": {"type": "boolean"}, "summary": {"type": "string"},
+    "findings": {"type": "array", "items": {"type": "object", "additionalProperties": False, "required": ["tier", "severity", "problem", "fix"], "properties": {
+        "tier": {"type": "string"}, "severity": {"type": "string", "enum": ["fix", "note"]}, "problem": {"type": "string"}, "fix": {"type": "string"}}}}}}
+REVIEW_QUESTIONS = """Ask yourself what the owner would ask on reading it:
+- Is everything the job needs there in every tier? A lighting job is a rewiring job: the cable (enough feet), a cable connector
+  at every light and the switch box, boxes, wire connectors, switches/dimmers and plates, the breaker when it is a new circuit.
+- Is the wiring method right for where it runs? NM-B (Romex) only in a home's dry interior; UF-B or wire in conduit outdoors,
+  underground or in damp/wet places; MC or conduit in commercial work or exposed where it can be damaged. Wire size matches the breaker.
+- Are the quantities real counts? Parts for every light or device follow the count (2 bulbs each on 12 lights is 24), cable in feet.
+- Is anything priced twice, or a line that is really a summary of the scope?
+- Does each higher tier really add something, and is every tier complete and safe on its own?
+- Does every client-facing line read naturally to a homeowner (no "installation of and install", no jargon, no doubled words)?
+- Is any labor missing (a part with 0 hr that obviously takes time)? Name it so Mike can time it."""
+
+
+def describe_draft(options):
+    """Caden's options as the reviewer reads them: each tier's title, bullets and every priced line by name, quantity and unit."""
+    items = {item.id: item for item in PriceItem.query.filter(PriceItem.id.in_(
+        {row.get("price_item_id") for o in options for row in o.get("items", []) if isinstance(row, dict)} or {0})).all()}
+    services = {s.id: s for s in Service.query.filter(Service.id.in_(
+        {row.get("service_id") for o in options for row in o.get("services", []) if isinstance(row, dict)} or {0})).all()}
+    rows = []
+    for option in options:
+        lines = []
+        for row in option.get("services", []):
+            service = services.get(row.get("service_id"))
+            lines.append(f"{row.get('multiplier')} x service: {service.name if service else 'unknown service'}"
+                         + (f" (covers {service.example_quantity}; includes {', '.join(i.current_name for i in service.items)[:300]})" if service else ""))
+        for row in option.get("items", []):
+            item = items.get(row.get("price_item_id"))
+            lines.append(f"{row.get('quantity')} {item.unit if item else ''} {item.name if item else 'unknown item'}"
+                         + (f" ({item.labor_hours_per_unit:g} hr each)" if item else ""))
+        for value in option.get("missing_services", []):
+            name, quantity, unit = _missing_entry(value)
+            lines.append(f"{quantity:g} {unit} {name} (not priced yet)")
+        rows.append({"tier": option.get("tier"), "title": option.get("title"), "description": option.get("description"),
+                     "bullets": option.get("bullets", []), "lines": lines})
+    return rows
+
+
+def caleb_peer_review(client, context_text, scope, options):
+    """Caleb reads Caden's draft before anyone sees it, the way a senior electrician checks an estimator's quote.
+    {approved, summary, findings: [{tier, severity fix|note, problem, fix}]}, or None when the review cannot be done."""
+    caleb = caleb_agent()
+    instructions = f"""{CALEB_IDENTITY}
+{build_agent_context(caleb) if caleb else ''}
+
+You are peer-reviewing a quote Caden (the quoting agent) drafted, BEFORE the office sees it. Read it like the owner would and find
+what is wrong or missing. Be specific: name the tier, the problem and the exact fix (the part, its spec and quantity, or the
+better wording). severity "fix" for anything that makes the quote wrong, incomplete, unsafe, not to code or embarrassing to a
+client; "note" for a judgment call or something the office should confirm. approved is true only when nothing needs fixing.
+summary: one or two plain sentences for the office. Never invent prices.
+
+{REVIEW_QUESTIONS}
+
+{ELECTRICAL_KNOWLEDGE}
+
+{context_text}
+
+CADEN'S SCOPE: {json.dumps(scope) if scope else 'none'}"""
+    try:
+        response = ask_quote_model(client, instructions=instructions, input=json.dumps(describe_draft(options)),
+                                   text={"format": {"type": "json_schema", "name": "powerhouse_peer_review", "schema": REVIEW_SCHEMA, "strict": True}})
+    except Exception:  # noqa: BLE001
+        app.logger.exception("Caleb's peer review failed")
+        return None
+    review = _json_or_none(response)
+    if not review or not isinstance(review.get("findings"), list) or "approved" not in review:
+        return None
+    review["findings"] = [f for f in review["findings"] if isinstance(f, dict) and str(f.get("problem") or "").strip()][:30]
+    return review
+
+
 def build_ai_quote_response(job, quote):
     if OpenAI is None:
         raise RuntimeError("The OpenAI Python package is not installed.")
@@ -6876,7 +7196,6 @@ def build_ai_quote_response(job, quote):
     if caden_uses_unconfirmed():
         texts = [job.title or "", job.description or ""] + [message.content for message in quote.messages[-8:] if message.role == "user"]
         unconfirmed_rows = [dict(_price_row(item), unconfirmed=True) for item in relevant_unconfirmed(texts)]
-    conversation = [{"role": message.role, "content": message.content} for message in quote.messages[-14:]]
     agent = AiAgent.query.filter(db.func.lower(AiAgent.name) == "caden", AiAgent.active.is_(True)).first()
     agent_context = build_agent_context(agent)
     mike = AiAgent.query.filter(db.func.lower(AiAgent.name) == "mike", AiAgent.active.is_(True)).first()
@@ -6891,9 +7210,31 @@ def build_ai_quote_response(job, quote):
         "client_priorities_observed_onsite": latest_inspection.client_priorities,
         "inspection_photos": [photo.original_name for photo in latest_inspection.photos],
     } if latest_inspection else {"status": "No onsite checklist has been saved for this job."}
+    client = OpenAI()
+    conversation = [{"role": message.role, "content": message.content} for message in quote.messages[-14:]]
+    context_text = f"""JOB:
+{json.dumps({'title': job.title, 'client_request': job.description, 'address': job.job_address})}
+
+ONSITE_INSPECTION:
+{json.dumps(inspection_context)}
+
+{lighting_scope_note(quote)}
+GENERATOR_WORK (saved on this job from Generators -> Sizing / Upgrading):
+{generator_context(job) or "Nothing saved for this job."}"""
+    scope = plan_job_scope(client, context_text, conversation, tiers)
+    matches, matched_items = scope_candidates(scope) if scope else ({}, {})
+    if scope:
+        picked_ids = set(matched_items)
+        price_catalog = [row for row in price_catalog if row["price_item_id"] in picked_ids] + [
+            _price_row(item) for item in matched_items.values() if item.category == UNCONFIRMED and item.id not in {r["price_item_id"] for r in price_catalog}]
+        unconfirmed_rows = []
     instructions = f"""You are Caden, the active quoting agent configured in Power House Flow.
 {agent_context}
 
+{('JOB_SCOPE (worked out by the estimating electrician before pricing: build every option from it; every component in it belongs in '
+  'that tier, priced from the matches below, or in missing_services named by its spec when nothing matches):' + chr(10) + json.dumps(scope) + chr(10) + chr(10) +
+  'CATALOG_MATCHES (for each component search, the Pricing Sheet items and Services that could be it; pick the one that IS it, '
+  'by spec and unit, or none):' + chr(10) + json.dumps(matches) + chr(10) + chr(10) + ELECTRICAL_KNOWLEDGE + chr(10)) if scope else ELECTRICAL_KNOWLEDGE + chr(10)}
 JOB:
 {json.dumps({'title': job.title, 'client_request': job.description, 'address': job.job_address})}
 
@@ -6911,7 +7252,7 @@ to do with a generator, ignore GENERATOR_WORK.
 SERVICE_LIBRARY:
 {json.dumps(catalog)}
 
-PRICE_LIBRARY:
+PRICE_LIBRARY{' (the Pricing Sheet items that matched the scope)' if scope else ''}:
 {json.dumps(price_catalog + unconfirmed_rows)}
 Items marked "unconfirmed" come from Cooper's catalog: real Cooper prices that nobody here has reviewed yet. Prefer a confirmed item when one fits; use an unconfirmed one when it is the right part, and with no labor hours stored, give it a labor suggestion in pricing_needed.
 
@@ -7013,11 +7354,11 @@ An item that is not in either library goes in missing_services, and the office m
         "required": ["ready", "message", "questions", "quote_title", "introduction", "mike_question", "options", "pricing_needed"],
         "additionalProperties": False,
     }
-    client = OpenAI()
-    response_args = {"model": os.environ.get("OPENAI_MODEL", "gpt-5-mini"), "instructions": instructions, "text": {"format": {"type": "json_schema", "name": "powerhouse_quote_plan", "schema": schema, "strict": True}}}
+    response_args = {"instructions": instructions, "text": {"format": {"type": "json_schema", "name": "powerhouse_quote_plan", "schema": schema, "strict": True}}}
     stopped_unconfirmed = False
+    create = lambda **args: ask_quote_model(client, **args)  # noqa: E731  (the quote model, with its fallback)
     try:
-        response = client.responses.create(input=conversation, **response_args)
+        response = create(input=conversation, **response_args)
     except Exception as error:  # noqa: BLE001
         too_big = any(word in str(error).lower() for word in ("context", "too long", "maximum", "tokens"))
         if not (unconfirmed_rows and too_big):
@@ -7027,7 +7368,7 @@ An item that is not in either library goes in missing_services, and the office m
         row.value = "0"; db.session.add(row); db.session.commit()
         instructions = instructions.replace(json.dumps(price_catalog + unconfirmed_rows), json.dumps(price_catalog))
         response_args["instructions"] = instructions
-        response = client.responses.create(input=conversation, **response_args)
+        response = create(input=conversation, **response_args)
         stopped_unconfirmed = True
     result = json.loads(response.output_text)
     if stopped_unconfirmed:
@@ -7035,23 +7376,57 @@ An item that is not in either library goes in missing_services, and the office m
     if not result.get("ready") and not [q for q in result.get("questions", []) if str(q).strip()]:
         # "not ready" with nothing to ask is a dead end: build it with stated assumptions instead
         proceed = conversation + [{"role": "user", "content": "Build all the options now using clearly stated assumptions. Put anything unpriced in missing_services and pricing_needed with a suggested price."}]
-        response = client.responses.create(input=proceed, **response_args)
+        response = create(input=proceed, **response_args)
         result = json.loads(response.output_text)
     mike_question = str(result.get("mike_question", "")).strip()
     if mike_question and mike:
         mike_answer = ask_mike_labor_question(mike, mike_question)
         consultation = conversation + [{"role":"user","content":f"MIKE LABOR CONSULTATION\nQuestion: {mike_question}\nMike's advisory answer: {mike_answer}\n\nNow finish the selected quote options. Keep stored Service and Pricing Sheet labor authoritative. If Mike identified labor that is not approved centrally, disclose the gap rather than silently changing deterministic quote math. Set mike_question to an empty string."}]
-        response = client.responses.create(input=consultation, **response_args)
+        response = create(input=consultation, **response_args)
         result = json.loads(response.output_text)
     if result.get("ready"):
         try:
             validate_ai_option_progression(result.get("options", []), tiers)
         except ValueError as error:
             correction = conversation + [{"role": "user", "content": f"Your draft failed this required progression rule: {error} Rebuild all {len(tiers)} options. Every higher tier must add scope or substitute a clearly better-quality Service or Pricing Sheet item."}]
-            response = client.responses.create(input=correction, **response_args)
+            response = create(input=correction, **response_args)
             retry = json.loads(response.output_text)
             if retry.get("ready"):
                 result = retry                 # still imperfect? the draft is built anyway and the problem is noted on it
+    if result.get("ready") and isinstance(result.get("options"), list):
+        # peer review: Caleb reads the draft first; Caden fixes what he finds (once), and Caleb reads it again
+        review = caleb_peer_review(client, context_text, scope, result["options"])
+        if review is not None:
+            fixes = [f for f in review["findings"] if f.get("severity") == "fix"]
+            first = review
+            if fixes:
+                notes_for_caden = "\n".join(f"- {f.get('tier')}: {f.get('problem')} Fix: {f.get('fix')}" for f in fixes)
+                revise = conversation + [{"role": "assistant", "content": json.dumps(result)}, {"role": "user", "content":
+                    "PEER REVIEW FROM CALEB (the senior electrician) before the office sees this quote. Fix every point, keep everything "
+                    f"else, and rebuild all {len(tiers)} options:\n{notes_for_caden}"}]
+                try:
+                    revised = json.loads(create(input=revise, **response_args).output_text)
+                except Exception:  # noqa: BLE001
+                    app.logger.exception("Caden's revision after the peer review failed")
+                    revised = None
+                if isinstance(revised, dict) and revised.get("ready") and isinstance(revised.get("options"), list) \
+                        and [o.get("tier") for o in revised["options"]] == tiers:
+                    result = dict(revised, message=revised.get("message") or result.get("message"))
+                    review = caleb_peer_review(client, context_text, scope, result["options"]) or review
+                    review["fixed"] = [f"{f.get('tier')}: {f.get('problem')}" for f in fixes]
+                else:
+                    review["fixed"] = []
+            review["rounds"] = 2 if fixes else 1
+            review["first_summary"] = first.get("summary", "")
+            result["review"] = review
+            said = review.get("summary") or ""
+            if fixes and review.get("fixed"):
+                said = f"Caleb reviewed the draft and Caden fixed {len(review['fixed'])} point(s) before you saw it. " + said
+            if said:
+                result["message"] = (str(result.get("message") or "") + "\n\nPeer review (Caleb): " + said).strip()
+        result["options"] = review_client_wording(client, result["options"])
+    if scope and result.get("ready"):
+        result["scope"] = scope
     return result
 
 
@@ -7378,10 +7753,13 @@ def apply_lighting_plan(quote):
             line.multiplier = plan["count"]
         notes.extend(per_light_parts(option, line, plan["count"]))
         wire = lighting.wire_run(plan, room)
-        notes.extend(wire_for_lighting(option, wire["feet"], rate))
+        wiring = lighting_wiring(room)
+        notes.extend(wire_for_lighting(option, wire["feet"], rate, wiring))
+        notes.extend(connectors_for_lighting(option, plan["count"], wiring, rate))
         option.lighting_json = json.dumps({"room": room, "fixture": plan["name"], "shape": room.get("shape", "rect"), "lumens": plan["lumens"], "count": plan["count"],
                                            "rows": plan["rows"], "cols": plan["cols"], "positions": plan["positions"], "spacing": plan["spacing"],
-                                           "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"], "wire_feet": wire["feet"]})
+                                           "footcandles": plan["footcandles"], "target": plan["target"], "image": plan["image"], "wire_feet": wire["feet"],
+                                           "wiring": wiring["method"]})
     return notes
 
 
@@ -7422,27 +7800,98 @@ def lighting_wire_item():
     return rows[0] if rows else None
 
 
-def wire_for_lighting(option, feet, rate):
+COMMERCIAL_ROOMS = {"commercial_office", "retail", "classroom", "warehouse"}
+WIRING = {
+    "NM": {"cable": "14/2 NM-B wire (Romex)", "words": ("nm", "romex"), "connector": "3/8in NM cable connector (Romex connector)", "connector_words": ("nm", "romex"),
+           "why": "dry interior of a home: NM-B (Romex)"},
+    "MC": {"cable": "14/2 MC cable", "words": ("mc",), "connector": "3/8in MC cable connector", "connector_words": ("mc",),
+           "why": "commercial space: MC cable"},
+    "UF": {"cable": "14/2 UF-B cable", "words": ("uf",), "connector": "1/2in watertight UF cable connector", "connector_words": ("uf", "watertight", "liquid"),
+           "why": "outdoors / damp location: UF-B, never NM"},
+}
+
+
+def lighting_wiring(room):
+    """How a room's lights are wired: UF-B outdoors, MC in commercial spaces, NM-B (Romex) in a home's dry interior."""
+    kind = room.get("type") if room else ""
+    return dict(WIRING["UF" if kind == "exterior" else "MC" if kind in COMMERCIAL_ROOMS else "NM"], method="UF" if kind == "exterior" else "MC" if kind in COMMERCIAL_ROOMS else "NM")
+
+
+def _sheet_item_with(words, also=(), unit_ft=False):
+    """The Pricing Sheet item whose name holds one of `words` (and every one of `also`): confirmed, then cheapest."""
+    query = PriceItem.query.filter(PriceItem.active.is_(True), PriceItem.price > 0, db.or_(*[PriceItem.name.ilike(f"%{w}%") for w in words]))
+    for word in also:
+        query = query.filter(PriceItem.name.ilike(f"%{word}%"))
+    rows = [item for item in query.limit(200).all()
+            if any(re.search(r"\b" + re.escape(w) + r"\b", item.name, re.IGNORECASE) for w in words)]
+    rows.sort(key=lambda item: (unit_ft and item.unit.lower() not in ("ft", "foot", "feet"), item.category == UNCONFIRMED, item.price))
+    return rows[0] if rows else None
+
+
+def connectors_for_lighting(option, count, wiring, rate):
+    """A cable connector where the cable enters every light's junction box and the switch box (count + 1), as a material
+    with its labor. A connector line already there takes at least that many."""
+    wanted = int(count) + 1
+    line = next((line for line in option.lines if re.search(r"\bconnectors?\b", line.service_name or "", re.IGNORECASE)
+                 and re.search(r"cable|romex|nm|mc|uf|watertight", line.service_name or "", re.IGNORECASE)), None)
+    if line is not None:
+        if (line.multiplier or 0) < wanted:
+            before = line.multiplier or 0
+            line.multiplier = wanted
+            return [f"{option.tier}: {line.service_name} set to {wanted} (one at each light and the switch; was {before:g})."]
+        return []
+    item = _sheet_item_with(wiring["connector_words"], also=("connector",))
+    if item is not None:
+        option.lines.append(QuoteOptionService(service=None, price_item=item, service_name=item.name, example_quantity=f"1 {item.unit}", multiplier=wanted,
+                                               unit_price=item.price + item.labor_hours_per_unit * rate, material_unit_price=item.price,
+                                               labor_hours_per_unit=item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines)))
+        return [f"{option.tier}: added {wanted} × {item.name} (one at each light and the switch)."]
+    option.lines.append(QuoteOptionService(service=None, service_name=wiring["connector"], example_quantity="Pricing pending",
+                                           multiplier=wanted, unit_price=0, position=len(option.lines)))
+    return [f"{option.tier}: added {wanted} × {wiring['connector']} (one at each light and the switch); it needs a price."]
+
+
+def lighting_scope_note(quote):
+    """The LIGHTING_LAYOUT block for the scope step: the room, the lights that can be laid out, how many of each and the
+    cable each layout takes, and the wiring method for the room. '' when the quote has no room."""
+    room = getattr(quote, "lighting_room", None)
+    if not room:
+        return ""
+    room, plans = lighting_plans_for(quote)
+    wiring = lighting_wiring(room)
+    rows = [{"light": plan["name"], "lumens_each": plan["lumens"], "quantity": plan["count"], "footcandles": plan["footcandles"],
+             "cable_feet": lighting.wire_run(plan, room)["feet"]} for plan in lighting_shortlist(plans)]
+    size = f"{room['length']:g} ft round" if room.get("shape") == "circle" else f"{room['length']:g} x {room['width']:g} ft"
+    return f"""LIGHTING_LAYOUT for {room['name']} ({size}, {room['height']:g} ft ceiling, {room['type_label']}, target {room['target']:g} fc):
+{json.dumps(rows) if rows else "No light on the Pricing Sheet has known lumens yet."}
+Wiring method for this room: {wiring['why']} ({wiring['cable']}), with a {wiring['connector']} at every light and the switch box.
+Each option uses one light from the layout at exactly its quantity, with its cable_feet of cable."""
+
+
+def wire_for_lighting(option, feet, rate, wiring=None):
     """A lighting layout means rewiring: the option carries the cable for its lights, as many feet as the layout needs
     (lighting.wire_run), as a material with its labor. A wire line Caden already put in takes the layout's footage."""
     if feet <= 0:
         return []
     line = next((line for line in option.lines if WIRE_LINE.search(line.service_name or "") and not NOT_WIRE.search(line.service_name or "")), None)
+    if line is not None and wiring and wiring.get("method") in ("UF", "MC") and re.search(r"\b(nm-?b?|romex)\b", line.service_name or "", re.IGNORECASE):
+        return [f"{option.tier}: {line.service_name} is NM (Romex), but this room calls for {wiring['why']}: change it to {wiring['cable']}."]
     if line is not None:
         if abs(line.multiplier - feet) < 0.5:
             return []
         before = line.multiplier
         line.multiplier = feet
         return [f"{option.tier}: {line.service_name} set to {feet} ft for the lighting layout's wiring (was {before:g})."]
-    item = lighting_wire_item()
+    wiring = wiring or WIRING["NM"]
+    item = lighting_wire_item() if wiring is WIRING["NM"] or wiring.get("method") == "NM" else _sheet_item_with(wiring["words"], also=("14/2",), unit_ft=True)
     if item is not None:
         option.lines.append(QuoteOptionService(service=None, price_item=item, service_name=item.name, example_quantity=f"1 {item.unit}", multiplier=feet,
                                                unit_price=item.price + item.labor_hours_per_unit * rate, material_unit_price=item.price,
                                                labor_hours_per_unit=item.labor_hours_per_unit, labor_rate_snapshot=rate, position=len(option.lines)))
         return [f"{option.tier}: added {feet} ft of {item.name} to wire the lights."]
-    option.lines.append(QuoteOptionService(service=None, service_name=LIGHTING_WIRE_NAME, example_quantity="Pricing pending",
+    option.lines.append(QuoteOptionService(service=None, service_name=wiring["cable"], example_quantity="Pricing pending",
                                            multiplier=feet, unit_price=0, position=len(option.lines)))
-    return [f"{option.tier}: added {feet} ft of {LIGHTING_WIRE_NAME} to wire the lights; it is not on the Pricing Sheet yet, so it needs a price."]
+    return [f"{option.tier}: added {feet} ft of {wiring['cable']} to wire the lights ({wiring['why']}); it is not on the Pricing Sheet yet, so it needs a price."]
 
 
 LIGHTING_SHORTLIST = 15
@@ -7641,6 +8090,24 @@ def pricing_needed_rows(quote, groups=None):
                      "reason": suggestion.get("reason") or ""})
     rows.sort(key=lambda row: not row["candidates"])            # the ones the Pricing Sheet can price first
     return rows
+
+
+def after_caden_build(quote, result):
+    """After Caden's options are saved: keep how he worked the job out, and have Mike suggest a time for every item with
+    0 hr of labor so the draft opens with them filled in (accept or edit). Never raises."""
+    try:
+        if isinstance(result.get("scope"), dict):
+            quote.scope_json = json.dumps(result["scope"])
+        quote.review_json = json.dumps(result["review"]) if isinstance(result.get("review"), dict) else ""
+        db.session.flush()
+        ask = [row["item"] for row in zero_labor_items(quote) if str(row["item"].id) not in quote.labor_suggestions]
+        if ask and os.environ.get("OPENAI_API_KEY"):
+            saved = quote.labor_suggestions
+            for item_id, row in mike_labor_suggestions(ask).items():
+                saved[str(item_id)] = row
+            quote.labor_suggest_json = json.dumps(saved)
+    except Exception:  # noqa: BLE001
+        app.logger.exception("After-build labor suggestions failed")
 
 
 def zero_labor_items(quote):
@@ -9958,7 +10425,7 @@ with app.app_context():
         ("job", "jobber_quote_status", "VARCHAR(40) NOT NULL DEFAULT ''"), ("job", "jobber_quote_total", "FLOAT"),
         ("job", "jobber_request_id", "VARCHAR(80) NOT NULL DEFAULT ''"), ("job", "jobber_raw", "TEXT NOT NULL DEFAULT ''"),
         ("job", "jobber_synced_at", "DATETIME"),
-        ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "labor_suggest_json", "TEXT NOT NULL DEFAULT ''"),
+        ("quote", "pricing_needed_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "labor_suggest_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "scope_json", "TEXT NOT NULL DEFAULT ''"), ("quote", "review_json", "TEXT NOT NULL DEFAULT ''"),
         ("price_item", "picture_asked_at", "DATETIME"),
         ("price_item", "lumens", "FLOAT"), ("price_item", "lumens_source", "VARCHAR(20) NOT NULL DEFAULT ''"),
         ("price_item", "specs_json", "TEXT NOT NULL DEFAULT ''"), ("price_item", "product_url", "VARCHAR(400) NOT NULL DEFAULT ''"),

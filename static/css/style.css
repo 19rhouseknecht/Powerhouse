@@ -1839,3 +1839,23 @@ td.price-actions > form { margin-top: 0; margin-bottom: 0; }
 .labor-row-hours input { width:110px; }
 @media (max-width:640px) { .labor-row { grid-template-columns:auto minmax(0,1fr); } .labor-row-hours, .labor-row > button { grid-column:2; } }
 .line-math { font-variant-numeric:tabular-nums; }
+
+/* Generate quote: how Caden worked the job out */
+.scope-plan { margin:8px 0; font-size:13px; }
+.scope-plan summary { cursor:pointer; font-weight:600; }
+.scope-plan ul { margin:6px 0 0; padding-left:18px; display:grid; gap:4px; }
+.scope-plan p { margin:6px 0; }
+.scope-site { margin:12px 0; padding:10px 14px; font-size:13px; }
+.scope-site summary { cursor:pointer; font-weight:600; }
+.scope-site ul { margin:6px 0 0; padding-left:18px; }
+
+/* Generate quote: Caleb's peer review */
+.peer-review { margin:12px 0; padding:12px 14px; border-left:3px solid #22c55e; font-size:13px; }
+.peer-review.has-notes { border-left-color:#f59e0b; }
+.peer-review-head { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+.peer-review p { margin:6px 0; }
+.peer-review ul { margin:6px 0 0; padding-left:18px; display:grid; gap:4px; }
+.peer-review details summary { cursor:pointer; }
+.peer-findings .sev-fix b { color:#f59e0b; }
+.scope-plan li { font-size:13px; line-height:1.4; }
+.scope-plan li small, .scope-plan summary small { font-size:12px; font-weight:400; }
