@@ -332,3 +332,43 @@ window.PHWatchCooper = function (statusUrl, said, reviewUrl) {
   window.addEventListener("pageshow", hide);               /* coming back with the Back button */
   window.PHBusy = {show: show, hide: hide};
 })();
+
+
+/* Pictures asked for by themselves (Generate quote): while the office listener looks for them, every placeholder
+   [data-pic-for="<item id>"] on the page becomes its picture as soon as it is saved. Watches until the run ends. */
+window.PHWatchPictures = (function () {
+  var watching = {};
+  function placeholders() { return Array.prototype.slice.call(document.querySelectorAll("[data-pic-for]")); }
+  function fill(pictures) {
+    placeholders().forEach(function (el) {
+      var src = pictures[el.getAttribute("data-pic-for")];
+      if (!src) return;
+      var img = document.createElement("img");
+      img.src = src; img.alt = ""; img.loading = "lazy";
+      img.className = el.className.replace(/\b(pick|line)-thumb-none\b/g, "").trim();
+      el.replaceWith(img);
+    });
+  }
+  return function (statusUrl) {
+    if (!statusUrl || watching[statusUrl]) return;
+    watching[statusUrl] = true;
+    var picturesUrl = (document.querySelector("meta[name=ph-pictures]") || {}).content || "/quoting/pricing/pictures.json";
+    function tick() {
+      var ids = placeholders().map(function (el) { return el.getAttribute("data-pic-for"); });
+      var looked = ids.length ? fetch(picturesUrl + "?ids=" + ids.join(","), {headers: {"Accept": "application/json"}})
+        .then(function (r) { return r.json(); }).then(function (d) { fill(d.pictures || {}); }) : Promise.resolve();
+      looked.then(function () { return fetch(statusUrl, {headers: {"Accept": "application/json"}}); })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          if (s.status === "queued" || s.status === "running") { setTimeout(tick, 6000); return; }
+          delete watching[statusUrl];
+          if (placeholders().length) setTimeout(function () {       /* the last pictures saved as it finished */
+            var left = placeholders().map(function (el) { return el.getAttribute("data-pic-for"); });
+            fetch(picturesUrl + "?ids=" + left.join(","), {headers: {"Accept": "application/json"}}).then(function (r) { return r.json(); }).then(function (d) { fill(d.pictures || {}); });
+          }, 1500);
+        })
+        .catch(function () { setTimeout(tick, 15000); });
+    }
+    setTimeout(tick, 4000);
+  };
+})();

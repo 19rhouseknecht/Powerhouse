@@ -19,7 +19,7 @@
         <input type="hidden" name="key_{{ loop.index0 }}" value="{{ row.key }}"><input type="hidden" name="name_{{ loop.index0 }}" value="{{ row.name }}">
         <div class="needs-price-top"><div><strong>{{ row.name }}</strong><small>{{ row.tiers|join(', ') }}{% if row.quantity_text %} · qty {{ row.quantity_text }}{% endif %}</small></div>
           <label class="needs-price-save" title="Already covered: remove it from the quote"><input type="checkbox" name="skip_{{ loop.index0 }}" value="1" data-not-needed><span>Not needed</span></label></div>
-        {% if row.candidates %}<div class="sheet-picks"><small class="sheet-picks-label">Likely matches on the Pricing Sheet:{% if is_admin() and row.candidates|selectattr('part')|list %} <button type="button" class="btn btn-ghost btn-small cooper-refresh" data-cooper-update="{{ row.candidates|selectattr('part')|map(attribute='id')|join(',') }}" title="Get these items' pictures and prices from Cooper">⟳ Update from Cooper</button><span class="cooper-refresh-said" data-cooper-said aria-live="polite"></span>{% endif %}</small>{% for c in row.candidates %}<span class="sheet-pick has-pic">{% if c.image %}<img class="pick-thumb" src="{{ c.image }}" alt="" loading="lazy">{% else %}<span class="pick-thumb pick-thumb-none" title="No picture yet{{ ': Update from Cooper brings it' if c.part }}">▢</span>{% endif %}<span><b>{{ c.name }}</b> · ${{ '{:,.2f}'.format(c.price) }}/{{ c.unit }}{% if c.labor %} + {{ '%g'|format(c.labor) }} hr{% endif %}{% if c.unconfirmed %} <em class="unconfirmed-tag">Unconfirmed</em>{% endif %}{% if c.part %} <small class="muted">Cooper #{{ c.part }}</small>{% endif %}</span><button class="btn btn-small btn-secondary" formaction="{{ url_for('use_sheet_item', quote_id=quote.id) }}" formnovalidate data-busy="Pricing it from the Pricing Sheet…" name="pick" value="{{ row_index }}:{{ c.id }}">Use this</button></span>{% endfor %}</div>{% endif %}
+        {% if row.candidates %}<div class="sheet-picks"><small class="sheet-picks-label">Likely matches on the Pricing Sheet:{% if is_admin() and row.candidates|selectattr('part')|list %} <button type="button" class="btn btn-ghost btn-small cooper-refresh" data-cooper-update="{{ row.candidates|selectattr('part')|map(attribute='id')|join(',') }}" title="Get these items' pictures and prices from Cooper">⟳ Update from Cooper</button><span class="cooper-refresh-said" data-cooper-said aria-live="polite"></span>{% endif %}</small>{% for c in row.candidates %}<span class="sheet-pick has-pic">{% if c.image %}<img class="pick-thumb" src="{{ c.image }}" alt="" loading="lazy">{% else %}<span class="pick-thumb pick-thumb-none" data-pic-for="{{ c.id }}" title="No picture yet{{ ': asked for from Cooper' if c.part }}">▢</span>{% endif %}<span><b>{{ c.name }}</b> · ${{ '{:,.2f}'.format(c.price) }}/{{ c.unit }}{% if c.labor %} + {{ '%g'|format(c.labor) }} hr{% endif %}{% if c.unconfirmed %} <em class="unconfirmed-tag">Unconfirmed</em>{% endif %}{% if c.part %} <small class="muted">Cooper #{{ c.part }}</small>{% endif %}</span><button class="btn btn-small btn-secondary" formaction="{{ url_for('use_sheet_item', quote_id=quote.id) }}" formnovalidate data-busy="Pricing it from the Pricing Sheet…" name="pick" value="{{ row_index }}:{{ c.id }}">Use this</button></span>{% endfor %}</div>{% endif %}
         {% if row.candidates %}<div class="more-like" data-more-like data-index="{{ row_index }}" data-name="{{ row.name }}" data-shown="{{ row.candidates|map(attribute='id')|join(',') }}" data-can-cooper="{{ '1' if is_admin() else '' }}">
           <button type="button" class="btn btn-ghost btn-small" data-more-go>▾ Show more like these</button><div class="sheet-picks more-like-results" data-more-results></div>
           <div class="more-like-cooper" data-more-cooper hidden><button type="button" class="btn btn-ghost btn-small more-cooper-go" data-more-cooper-go>⟳ Update these from Cooper</button><span class="cooper-refresh-said" data-more-said aria-live="polite"></span></div></div>{% endif %}
@@ -71,7 +71,7 @@
         (data.results || []).forEach(function (r) {
           var row = document.createElement('span'); row.className = 'sheet-pick has-pic';
           var pic = document.createElement(r.image ? 'img' : 'span'); pic.className = 'pick-thumb' + (r.image ? '' : ' pick-thumb-none');
-          if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.textContent = '▢'; pic.title = 'No picture yet'; }
+          if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.setAttribute('data-pic-for', r.id); pic.textContent = '▢'; pic.title = 'No picture yet'; }
           var words = document.createElement('span'); var name = document.createElement('b'); name.textContent = r.name;
           words.append(name, document.createTextNode(' · $' + Number(r.price).toFixed(2) + '/' + r.unit + (r.unconfirmed ? ' · Unconfirmed' : '')));
           if (r.part) { var part = document.createElement('small'); part.className = 'muted'; part.textContent = ' Cooper #' + r.part; words.append(part); withParts.push(r.id); }
@@ -81,6 +81,7 @@
           box.setAttribute('data-shown', box.getAttribute('data-shown') + ',' + r.id);
         });
         pages += 1;
+        if (data.picture_watch && window.PHWatchPictures) window.PHWatchPictures(data.picture_watch);
         if (box.getAttribute('data-can-cooper') && withParts.length) {
           cooper.hidden = false; cooperGo.textContent = '⟳ Update these ' + withParts.length + ' from Cooper';
         }
@@ -125,7 +126,7 @@
             data.results.forEach(function (r) {
               var row = document.createElement('span'); row.className = 'sheet-pick has-pic';
               var pic = document.createElement(r.image ? 'img' : 'span'); pic.className = 'pick-thumb' + (r.image ? '' : ' pick-thumb-none');
-              if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.textContent = '▢'; }
+              if (r.image) { pic.src = r.image; pic.alt = ''; pic.loading = 'lazy'; } else { pic.setAttribute('data-pic-for', r.id); pic.textContent = '▢'; }
               row.append(pic);
               var words = document.createElement('span');
               var name = document.createElement('b'); name.textContent = r.name;
@@ -140,13 +141,24 @@
   });
 })();
 </script>{% endif %}
+  {% if zero_labor %}<section class="panel labor-check" id="labor-check" data-labor-check data-suggest="{{ url_for('suggest_quote_labor', quote_id=quote.id) }}" data-ai="{{ '1' if api_ready else '' }}">
+    <div class="labor-check-head"><h3>No labor time yet</h3><small class="muted" data-labor-said aria-live="polite">{{ 'Mike is suggesting times from his time sheet…' if api_ready else 'Type a time for each: it is saved on the Pricing Sheet.' }}</small></div>
+    <p class="muted">These items have 0 hr of labor, so installing them costs nothing on this quote. Accept Mike's time or type your own: it's saved on the Pricing Sheet item, so the next quote has it too.</p>
+    {% for row in zero_labor %}{% set item = row.item %}<form method="POST" action="{{ url_for('save_item_labor', quote_id=quote.id) }}" class="labor-row" data-labor-row="{{ item.id }}" data-keep-scroll data-busy="Saving the labor time…">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="price_item_id" value="{{ item.id }}">
+      {% if item.image_path %}<img class="line-thumb" src="{{ url_for('static', filename=item.image_path) }}" alt="" loading="lazy">{% else %}<span class="line-thumb line-thumb-none" data-pic-for="{{ item.id }}">▢</span>{% endif %}
+      <span class="labor-row-name"><b>{{ item.name }}</b><small class="muted" data-labor-why>{{ row.suggestion.reason if row.suggestion else '' }}</small></span>
+      <label class="labor-row-hours">Hours per {{ item.unit }}<input type="number" name="hours" min="0" max="100" step="0.01" required value="{{ '%g'|format(row.suggestion.hours) if row.suggestion else '' }}" data-labor-hours></label>
+      <button class="btn btn-small btn-primary" data-labor-go>{{ 'Accept' if row.suggestion else 'Save time' }}</button>
+    </form>{% endfor %}
+  </section>{% endif %}
   {% if quote.options %}<div class="draft-option-list">{% for option in quote.options %}
   <article class="draft-option tier-{{ option.tier|lower }}">
     <header><span>{{ option.tier }}</span><strong>{{ option.title }}</strong><b>{{ 'Pricing pending' if option.has_missing_price else '$' + '{:,.2f}'.format(option.total) }}</b></header>
     <div class="option-cost-strip"><span><small>Materials</small><strong>{{ 'Pending' if option.has_missing_price else '$' + '{:,.2f}'.format(option.material_total) }}</strong></span><span><small>Labor time</small><strong>{{ '%g'|format(option.labor_hours) }} hr</strong></span><span><small>Labor cost</small><strong>${{ '{:,.2f}'.format(option.labor_total) }}</strong></span></div>
-    {% if option.lighting %}<figure class="light-3d"><canvas data-light-layout="{{ option.lighting|tojson|forceescape }}" role="img" aria-label="3D lighting layout: {{ option.lighting.count }} lights"></canvas><figcaption>{{ option.lighting.count }} × {{ option.lighting.fixture }} ({{ '{:,.0f}'.format(option.lighting.lumens) }} lm) · {{ option.lighting.footcandles }} fc for a {{ option.lighting.target|round|int }} fc target · drag to turn</figcaption></figure>{% endif %}
+    {% if option.lighting %}<figure class="light-3d"><canvas data-light-layout="{{ option.lighting|tojson|forceescape }}" role="img" aria-label="3D lighting layout: {{ option.lighting.count }} lights"></canvas><figcaption>{{ option.lighting.count }} × {{ option.lighting.fixture }} ({{ '{:,.0f}'.format(option.lighting.lumens) }} lm) · {{ option.lighting.footcandles }} fc for a {{ option.lighting.target|round|int }} fc target{% if option.lighting.wire_feet %} · {{ option.lighting.wire_feet }} ft of wire{% endif %} · drag to turn</figcaption></figure>{% endif %}
     <p>{{ option.description }}</p><ul>{% for bullet in option.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
-    <details open><summary>Parts, services &amp; labor</summary>{% for line in option.lines %}<div class="{{ 'pending-line' if line.is_missing else '' }} {{ 'has-thumb' if line.pictures or line.price_item_id }}">{% if line.pictures %}<img src="{{ url_for('static', filename=line.pictures[0][1]) }}" alt="{{ line.pictures[0][0] }}" class="line-thumb" loading="lazy" title="{{ line.pictures[0][0] }}">{% elif line.price_item_id %}<span class="line-thumb line-thumb-none" title="No picture on the Pricing Sheet yet">▢</span>{% endif %}<span>{{ '%g'|format(line.multiplier) }} × {{ line.service_name }}</span><strong>{{ 'Pending' if line.is_missing else '$' + '{:,.2f}'.format(line.total) }}</strong><small><span class="price-source {{ 'src-unconfirmed' if line.unconfirmed_item else 'src-missing' if line.is_missing else '' }}">{{ line.source_label }}</span> · {{ line.example_quantity }}{% if not line.is_missing %} · materials ${{ '{:,.2f}'.format(line.material_total) }} · {{ '%g'|format(line.labor_hours) }} labor hr (${{ '{:,.2f}'.format(line.labor_total) }}){% endif %}</small>{% if line.unconfirmed_item and can('view_pricing') %}<form method="POST" action="{{ url_for('confirm_unconfirmed_item', item_id=line.price_item_id) }}" class="confirm-item-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.path }}"><select name="category" aria-label="Category for {{ line.service_name }}">{% for category in sheet_categories %}<option {{ 'selected' if category == 'General' }}>{{ category }}</option>{% else %}<option>General</option>{% endfor %}</select><button class="btn btn-small btn-secondary">Confirm it</button></form>{% endif %}</div>{% endfor %}{% if quote.travel_cost_snapshot %}<div class="travel-quote-line"><span>Extended one-way travel · {{ '%.0f'|format(quote.travel_minutes_snapshot) }} minutes</span><strong>${{ '{:,.2f}'.format(quote.travel_cost_snapshot) }}</strong><small>{{ 'Manual job time' if quote.travel_method_snapshot == 'manual' else 'Free distance-based estimate' }} × locked company labor rate · included once in this option</small></div>{% endif %}</details>
+    <details open><summary>Parts, services &amp; labor</summary>{% for line in option.lines %}<div class="{{ 'pending-line' if line.is_missing else '' }} {{ 'has-thumb' if line.pictures or line.price_item_id }}">{% if line.pictures %}<img src="{{ url_for('static', filename=line.pictures[0][1]) }}" alt="{{ line.pictures[0][0] }}" class="line-thumb" loading="lazy" title="{{ line.pictures[0][0] }}">{% elif line.price_item_id %}<span class="line-thumb line-thumb-none" data-pic-for="{{ line.price_item_id }}" title="No picture on the Pricing Sheet yet">▢</span>{% endif %}<span>{{ '%g'|format(line.multiplier) }} × {{ line.service_name }}</span><strong>{{ 'Pending' if line.is_missing else '$' + '{:,.2f}'.format(line.total) }}</strong><small><span class="price-source {{ 'src-unconfirmed' if line.unconfirmed_item else 'src-missing' if line.is_missing else '' }}">{{ line.source_label }}</span> · {% if line.is_missing %}{{ line.example_quantity }}{% else %}<span class="line-math">{{ '%g'|format(line.multiplier) }} × ${{ '{:,.2f}'.format(line.unit_price) }}{{ ' / ' + line.price_item.unit if line.price_item_id and line.price_item else (' (' + line.example_quantity + ')' if line.service_id else '') }}</span>{% endif %}{% if not line.is_missing %} · materials ${{ '{:,.2f}'.format(line.material_total) }} · {{ '%g'|format(line.labor_hours) }} labor hr (${{ '{:,.2f}'.format(line.labor_total) }}){% endif %}</small>{% if line.unconfirmed_item and can('view_pricing') %}<form method="POST" action="{{ url_for('confirm_unconfirmed_item', item_id=line.price_item_id) }}" class="confirm-item-form"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.path }}"><select name="category" aria-label="Category for {{ line.service_name }}">{% for category in sheet_categories %}<option {{ 'selected' if category == 'General' }}>{{ category }}</option>{% else %}<option>General</option>{% endfor %}</select><button class="btn btn-small btn-secondary">Confirm it</button></form>{% endif %}</div>{% endfor %}{% if quote.travel_cost_snapshot %}<div class="travel-quote-line"><span>Extended one-way travel · {{ '%.0f'|format(quote.travel_minutes_snapshot) }} minutes</span><strong>${{ '{:,.2f}'.format(quote.travel_cost_snapshot) }}</strong><small>{{ 'Manual job time' if quote.travel_method_snapshot == 'manual' else 'Free distance-based estimate' }} × locked company labor rate · included once in this option</small></div>{% endif %}</details>
     <details class="manual-option-editor"><summary>✎ Edit this option manually</summary>
       <form method="POST" action="{{ url_for('edit_quote_option', option_id=option.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <label>Option title<input name="title" value="{{ option.title }}" required></label>
@@ -222,6 +234,28 @@
     });
     box.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
   });
+})();
+</script>
+<script>
+(function () {
+  {% if picture_watch %}document.addEventListener('DOMContentLoaded', function () { window.PHWatchPictures({{ picture_watch|tojson }}); });{% endif %}  /* app.js loads after this */
+  var box = document.querySelector('[data-labor-check]');            /* No labor time yet: Mike's suggestions fill in */
+  if (!box || !box.getAttribute('data-ai')) return;
+  var rows = Array.prototype.slice.call(box.querySelectorAll('[data-labor-row]')), said = box.querySelector('[data-labor-said]');
+  if (!rows.some(function (r) { return !r.querySelector('[data-labor-hours]').value; })) { said.textContent = "Mike's suggestions are filled in: accept or change them."; return; }
+  var body = new FormData(); body.append('csrf_token', {{ csrf_token()|tojson }});
+  fetch(box.getAttribute('data-suggest'), {method: 'POST', body: body, headers: {'Accept': 'application/json', 'X-Requested-With': 'fetch'}})
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var got = 0;
+      rows.forEach(function (row) {
+        var s = (d.suggestions || {})[row.getAttribute('data-labor-row')], hours = row.querySelector('[data-labor-hours]');
+        if (!s || hours.value) return;
+        hours.value = s.hours; row.querySelector('[data-labor-why]').textContent = 'Mike: ' + (s.reason || ''); row.querySelector('[data-labor-go]').textContent = 'Accept'; got += 1;
+      });
+      said.textContent = d.error ? d.error : got ? "Mike's suggestions are filled in: accept or change them." : 'Mike had no suggestion for these: type a time.';
+    })
+    .catch(function () { said.textContent = 'Mike could not be reached: type a time.'; });
 })();
 </script>
 {% endblock %}

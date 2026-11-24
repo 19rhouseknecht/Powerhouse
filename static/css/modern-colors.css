@@ -477,3 +477,4 @@
 :where(html[data-theme="modern"]) .field-error-note { color: #830101; }
 :where(html[data-theme="modern"]) .busy-overlay { background: rgba(252, 252, 253, .55); }
 :where(html[data-theme="modern"]) .busy-card { box-shadow: 0 20px 60px rgba(30, 22, 70, 0.158); }
+:where(html[data-theme="modern"]) .labor-check { border-left: 3px solid #7238fa; }

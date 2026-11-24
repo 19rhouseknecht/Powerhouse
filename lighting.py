@@ -243,3 +243,34 @@ def parse_room(text):
     named = re.search(r"\b(" + "|".join(pattern for _, pattern in ROOM_WORDS) + r")", words)
     values["name"] = named.group(1).title() if named else ROOM_TYPES[kind][0]
     return values, assumed
+
+
+# ---------------- the wire a layout needs ----------------
+# New lights need new wiring. The run is worked out from the layout itself: from the panel to the switch (HOME_RUN_FT, a
+# typical run in a house), up the wall to the ceiling, across to the nearest light, then light to light (nearest next, the
+# way an electrician chains them), a little slack at every box, and WIRE_WASTE on top; rounded up to the next 5 ft.
+HOME_RUN_FT = 25.0
+BOX_SLACK_FT = 1.5
+WIRE_WASTE = 0.10
+
+
+def wire_run(plan, room):
+    """Feet of cable for a layout's lights (dict: feet, and the parts it is made of). The switch sits by the door, taken as
+    the middle of the room's first wall."""
+    points = [tuple(p) for p in (plan.get("positions") or [])]
+    if not points:
+        return {"feet": 0, "chain": 0, "switch_leg": 0, "home_run": 0, "slack": 0}
+    width = room["length"] if room.get("shape") == "circle" else room["width"]
+    switch = (0.0, width / 2)
+    left = list(points)
+    here = min(left, key=lambda p: math.dist(p, switch))
+    switch_leg = math.dist(here, switch) + room["height"]                 # across the ceiling, and up the wall from the switch
+    left.remove(here)
+    chain = 0.0
+    while left:
+        nxt = min(left, key=lambda p: math.dist(p, here))
+        chain += math.dist(here, nxt); here = nxt; left.remove(nxt)
+    slack = BOX_SLACK_FT * (len(points) + 1)
+    total = (HOME_RUN_FT + switch_leg + chain + slack) * (1 + WIRE_WASTE)
+    return {"feet": int(math.ceil(total / 5.0) * 5), "chain": round(chain, 1), "switch_leg": round(switch_leg, 1),
+            "home_run": HOME_RUN_FT, "slack": round(slack, 1)}

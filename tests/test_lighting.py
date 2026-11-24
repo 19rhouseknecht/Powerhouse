@@ -110,9 +110,13 @@ check("LIGHTING_PLAN for Kitchen (14 x 12 ft, 9 ft ceiling" in words and '"price
       "Caden gets the room, every light's layout, and the rule to use its quantity")
 with app.app_context():
     q = db.session.get(m.Quote, quote_id)
-    counts = {line.price_item_id: line.multiplier for option in q.options for line in option.lines if line.price_item_id != ids["dimmer"]}
+    counts = {line.price_item_id: line.multiplier for option in q.options for line in option.lines if line.price_item_id and line.price_item_id != ids["dimmer"]}
     expected = {ids[key]: L.layout(lm, kitchen)["count"] for key, lm in (("cheap", 650), ("mid", 1200), ("premium", 2000))}
     check(counts == expected, "each option's light count is the layout's (%s), not Caden's 10 / 6 / 2" % sorted(expected.values()))
+    wires = [[line for line in option.lines if line.service_name == m.LIGHTING_WIRE_NAME] for option in q.options]
+    check(all(len(w) == 1 and w[0].is_missing for w in wires) and all(w[0].multiplier == option.lighting["wire_feet"] == L.wire_run(L.layout(option.lighting["lumens"], kitchen), kitchen)["feet"]
+                                                                       for w, option in zip(wires, q.options)),
+          "every option carries the wire for its lights, as many feet as its layout needs (to be priced when 14/2 is not on the Pricing Sheet)")
     layouts = [option.lighting for option in q.options]
     check(all(layout and len(layout["positions"]) == layout["count"] for layout in layouts), "every option keeps its layout for the 3D view")
     check(any("set to" in msg.content and "Caden had" in msg.content for msg in q.messages if msg.role == "assistant"), "Caden's message says the counts were set by the layout")
@@ -172,7 +176,7 @@ with app.app_context():
     check(len({layout["fixture"] for layout in layouts}) == 3 and layouts[0]["fixture"] == "4in LED wafer 650 lm",
           "the tiers get different lights, the most economical one that meets the target first")
     check(all(layout["footcandles"] >= layout["target"] * 0.95 for layout in layouts), "each one meets the room's target")
-    middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],)]
+    middle = [line for line in q.options[1].lines if line.price_item_id not in (ids["dimmer"],) and line.service_name != m.LIGHTING_WIRE_NAME]
     check(len(middle) == 1 and middle[0].price_item_id != NOLUMEN and middle[0].multiplier == layouts[1]["count"],
           "a light with no lumens is swapped for one that can be laid out (not a second set of lights)")
     check(any("has no lumens" in msg.content for msg in q.messages if msg.role == "assistant"), "and Caden's message says so")
