@@ -73,7 +73,7 @@ check('id="ai-models"' in page and 'data-quote-model>gpt-5<' in page and "(set i
 owner.post("/settings/ai-model", data=dict(CSRF, quote_model="gpt-5.1"))
 with app.app_context():
     check(m.quote_model() == "gpt-5.1", "and it can be changed there")
-    m.note_model_used("gpt-5-mini", "gpt-5.1"); db.session.commit()
+    m.note_model_used("gpt-5-mini", "gpt-5.1"); m.save_model_used(); db.session.commit()
 page = owner.get("/settings").get_data(as_text=True)
 check('data-model-used>gpt-5-mini<' in page and "wasn't available to your OpenAI account" in page, "it says which model answered the last quote, and when it fell back")
 worker = sign_in(m, "worker", admin=False)
