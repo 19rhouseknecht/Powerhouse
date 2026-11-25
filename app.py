@@ -1771,7 +1771,7 @@ def enforce_role_permissions():
         abort(403)
     permission_by_endpoint = {
         "pricing_sheet":"view_pricing", "labor_calculator":"view_pricing", "upload_labor_reference":"view_pricing", "apply_labor_proposals":"view_pricing", "ask_mike":"view_pricing", "check_cooper_prices":"view_pricing", "cancel_cooper_price_sync":"view_pricing", "cooper_sync_status":"view_pricing", "cooper_sync_preview":"view_pricing", "apply_cooper_prices":"view_pricing", "update_labor_rate":"view_pricing", "create_price_item":"view_pricing", "edit_price_item":"view_pricing", "delete_price_item":"view_pricing", "cleanup_duplicate_price_items":"view_pricing", "upload_price_item_image":"view_pricing", "remove_selected_price_items":"view_pricing", "start_cooper_catalog":"view_pricing", "unconfirmed_switch":"view_pricing", "move_selected_price_items":"view_pricing", "price_item_profile":"view_pricing",
-        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services",
+        "services":"view_services", "create_service":"view_services", "service_detail":"view_services", "save_drawing_spots":"view_services", "start_service_render":"view_services", "service_render_status":"view_services", "service_order_checklist":"view_services", "edit_service":"view_services", "delete_service":"view_services", "duplicate_service":"view_services",
         "generate_quote":"view_quoting", "quote_assistant":"view_quoting", "caden_status":"view_quoting", "quote_presentation":"view_quoting", "reopen_quote":"view_quoting", "edit_saved_quote":"view_quoting", "create_quick_quote":"view_quoting", "assign_quick_quote":"view_quoting", "set_quote_option_count":"view_quoting", "upload_manual_quote_outcome":"view_quoting", "manual_quote_file":"view_quoting", "repair_quote_missing":"view_quoting", "ai_repair_quote_pricing":"view_quoting", "edit_quote_option":"view_quoting", "rework_quote":"view_quoting", "use_quote_prices":"view_quoting", "start_quote_over":"view_quoting", "use_sheet_item":"view_quoting", "suggest_quote_labor":"view_quoting", "save_item_labor":"view_quoting", "quote_price_order":"view_quoting", "confirm_unconfirmed_item":"view_pricing",
         "clients":"view_clients", "create_client":"view_clients", "client_detail":"view_clients", "edit_client":"view_clients", "delete_client":"view_clients",
         "jobs":"view_jobs", "job_schedule_options":"view_jobs", "create_job":"view_jobs", "job_detail":"view_jobs", "edit_job":"view_jobs", "delete_job":"view_jobs", "select_job_quote_option":"view_jobs", "job_material_order":"view_jobs", "update_job_material_order":"view_jobs", "add_job_material_order_item":"view_jobs", "add_job_material_order_to_cart":"view_jobs", "remove_job_material_order_item":"view_jobs", "suggest_job_materials":"view_jobs", "update_job_materials_from_cooper":"view_jobs", "add_job_note":"view_jobs", "remove_job_note":"view_jobs", "job_note_photo":"view_jobs", "set_job_material_order_quantity":"view_jobs", "schedule":"view_schedule",
@@ -2612,6 +2612,61 @@ def edit_service(service_id):
         return redirect(url_for("service_detail", service_id=service.id))
     return render_template("service_form.html", service=service, form={}, pricing_items=[], tool_catalog=ToolCatalog.query.filter_by(active=True).order_by(ToolCatalog.name).all(),
                            picture_watch=ask_cooper_for_pictures([item.catalog_item for item in service.items if item.catalog_item]))
+
+
+def _copy_service_file(filename):
+    """A service file (drawing, step picture) copied under a new name, so the copy and the original never share one.
+    Returns the new name, or None when the file is not there."""
+    if not filename:
+        return None
+    folder = os.path.join(app.static_folder, "uploads", "services")
+    source = os.path.join(folder, filename)
+    if not os.path.isfile(source):
+        return None
+    rest = filename.split("-", 1)[1] if re.match(r"^[0-9a-f]{16}-", filename) else filename
+    new_name = f"{secrets.token_hex(8)}-{rest}"
+    shutil.copy2(source, os.path.join(folder, new_name))
+    return new_name
+
+
+def copy_name(name):
+    """'<name> (copy)', or '(copy 2)', '(copy 3)' … until no service has that name."""
+    taken = {canonical_item_name(s.name) for s in Service.query.with_entities(Service.name).all()}
+    base = re.sub(r"\s*\(copy(?: \d+)?\)$", "", name).strip()
+    for n in range(1, 500):
+        candidate = f"{base} (copy)" if n == 1 else f"{base} (copy {n})"
+        if canonical_item_name(candidate) not in taken:
+            return candidate[:160]
+    return f"{base} (copy {secrets.token_hex(2)})"[:160]
+
+
+@app.route("/quoting/services/<int:service_id>/duplicate", methods=["POST"])
+@login_required
+def duplicate_service(service_id):
+    """Duplicate: a new service with everything the original has (details, labor, materials with their Pricing Sheet links
+    and quantities, tools, step-by-step instructions, the drawing and where the parts are marked on it), its own copies of
+    the pictures, ready to rename and change what's different (overhead / underground). The "after" pictures stay with the
+    original: they show its parts."""
+    check_csrf()
+    source = db.get_or_404(Service, service_id)
+    copy = Service(name=copy_name(source.name), category=source.category, description=source.description,
+                   example_quantity=source.example_quantity, estimated_labor_hours=source.estimated_labor_hours,
+                   has_steps=source.has_steps, drawing_filename=_copy_service_file(source.drawing_filename),
+                   drawing_spots_json=source.drawing_spots_json if source.drawing_filename else "")
+    db.session.add(copy)
+    for item in source.items:
+        row = ServiceItem(name=item.name, quantity=item.quantity, unit=item.unit, unit_price=item.unit_price, notes=item.notes, position=item.position)
+        if item.pricing_link:
+            row.pricing_link = ServiceItemPricingLink(price_item_id=item.pricing_link.price_item_id)
+        copy.items.append(row)
+    for tool in source.tools:
+        copy.tools.append(ServiceTool(tool_id=tool.tool_id, name=tool.name, tool_type=tool.tool_type, rental_cost=tool.rental_cost,
+                                      notes=tool.notes, is_critical=tool.is_critical, position=tool.position))
+    for step in source.steps:
+        copy.steps.append(ServiceStep(position=step.position, title=step.title, body=step.body, image_filename=_copy_service_file(step.image_filename)))
+    db.session.commit()
+    flash(f'Made "{copy.name}" from "{source.name}": rename it and change what\'s different. The original is unchanged.', "success")
+    return redirect(url_for("edit_service", service_id=copy.id))
 
 
 @app.route("/quoting/services/<int:service_id>/delete", methods=["POST"])
